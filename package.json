@@ -1,18 +1,29 @@
 {
   "name": "robot",
   "version": "1.0.0",
-  "main": "dist/index.js",
+  "main": "dist/main/index.js",
   "license": "MIT",
   "scripts": {
-    "start": "ts-node src/index.ts",
-    "build": "tsc"
+    "dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && electronmon -r ts-node/register src/main/index.ts\"",
+    "build": "vite build && tsc -p tsconfig.main.json",
+    "start": "electron dist/main/index.js"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "concurrently": "^9.2.1",
+    "electron": "^41.2.0",
+    "electronmon": "^2.0.4",
     "ts-node": "^10.9.2",
-    "typescript": "^6.0.2"
+    "typescript": "^6.0.2",
+    "vite": "^8.0.8",
+    "wait-on": "^9.0.5"
   },
   "dependencies": {
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
     "robotjs": "^0.7.0",
     "uiohook-napi": "^1.5.5"
   }

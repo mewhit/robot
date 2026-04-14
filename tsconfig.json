@@ -6,6 +6,8 @@
         "outDir": "dist",
         "rootDir": "src",
         "esModuleInterop": true,
+        "skipLibCheck": true,
+        "jsx": "react-jsx",
         "types": [
             "node"
         ]

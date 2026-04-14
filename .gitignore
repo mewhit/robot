@@ -21,3 +21,7 @@ Thumbs.db
 
 # Local click capture output
 clicks.txt
+
+# Runtime-generated native overlay files
+.overlay-window.cs
+.overlay-window.exe
