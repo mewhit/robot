@@ -1,12 +1,19 @@
 import { AppState } from "./global-state";
+import { FALADOR_ROOFTOP_BOT_ID, onFaladorRooftopStart } from "./automateBots/faladorRooftop";
 
-const SUPPORTED_BOT_IDS = new Set(["falador-rooftop"]);
+const botStartHandlers = new Map<string, () => void>([[FALADOR_ROOFTOP_BOT_ID, onFaladorRooftopStart]]);
 
 export function sendAutomateBotState() {
   AppState.mainWindow?.webContents.send("automate-bot-state", {
     selectedBotId: AppState.selectedAutomateBotId,
     isRunning: AppState.automateBotRunning,
+    currentStepId: AppState.automateBotCurrentStepId,
   });
+}
+
+export function setAutomateBotCurrentStep(stepId: string | null) {
+  AppState.automateBotCurrentStepId = stepId;
+  sendAutomateBotState();
 }
 
 export function setActiveView(view: "clicker" | "automateBot") {
@@ -30,6 +37,7 @@ export function stopAutomateBot(source: "f2" | "ui") {
   }
 
   AppState.automateBotRunning = false;
+  AppState.automateBotCurrentStepId = null;
   sendAutomateBotState();
   console.log(`Automate Bot STOPPED via ${source.toUpperCase()}.`);
 }
@@ -44,18 +52,14 @@ export function startSelectedAutomateBot(source: "f2" | "ui") {
     throw new Error("No Automate Bot is selected.");
   }
 
-  if (!SUPPORTED_BOT_IDS.has(selectedBotId)) {
+  const selectedBotStartHandler = botStartHandlers.get(selectedBotId);
+  if (!selectedBotStartHandler) {
     throw new Error(`Unsupported Automate Bot: ${selectedBotId}`);
   }
 
   AppState.automateBotRunning = true;
   sendAutomateBotState();
-
-  if (selectedBotId === "falador-rooftop") {
-    console.log("Automate Bot STARTED (Falador Roof Top): Step 1 - Scroll down to maximum.");
-  } else {
-    console.log(`Automate Bot STARTED: ${selectedBotId}.`);
-  }
+  selectedBotStartHandler();
 }
 
 export function toggleSelectedAutomateBot(source: "f2" | "ui") {

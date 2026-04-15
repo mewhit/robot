@@ -142,6 +142,7 @@ export default function App() {
   });
   const [selectedTaskNodeId, setSelectedTaskNodeId] = useState<string | null>("falador-rooftop");
   const [isSelectedTaskRunning, setIsSelectedTaskRunning] = useState(false);
+  const [currentStepId, setCurrentStepId] = useState<string | null>(null);
   const [taskTree, setTaskTree] = useState<TaskNode[]>([
     {
       id: "agility",
@@ -151,10 +152,19 @@ export default function App() {
           id: "falador-rooftop",
           name: "Falador Roof Top",
           children: [
-            {
-              id: "falador-rooftop-step-1",
-              name: "Step 1: Scroll down to maximum",
-            },
+            { id: "falador-rooftop-step-1", name: "Step 1" },
+            { id: "falador-rooftop-step-2", name: "Step 2: Tightrope" },
+            { id: "falador-rooftop-step-3", name: "Step 3: Hands Hold" },
+            { id: "falador-rooftop-step-4", name: "Step 4: Gap" },
+            { id: "falador-rooftop-step-5", name: "Step 5: Gap" },
+            { id: "falador-rooftop-step-6", name: "Step 6: Tightrope" },
+            { id: "falador-rooftop-step-7", name: "Step 7: Tightrope" },
+            { id: "falador-rooftop-step-8", name: "Step 8: Gap" },
+            { id: "falador-rooftop-step-9", name: "Step 9: Ledge" },
+            { id: "falador-rooftop-step-10", name: "Step 10: Ledge" },
+            { id: "falador-rooftop-step-11", name: "Step 11: Ledge" },
+            { id: "falador-rooftop-step-12", name: "Step 12: Ledge" },
+            { id: "falador-rooftop-step-13", name: "Step 13: Ledge" },
           ],
         },
       ],
@@ -221,9 +231,13 @@ export default function App() {
     const onMarkerColorState = (_: unknown, payload: MarkerColorState) => {
       setMarkerColorState(payload);
     };
-    const onAutomateBotState = (_: unknown, payload: { selectedBotId: string | null; isRunning: boolean }) => {
+    const onAutomateBotState = (
+      _: unknown,
+      payload: { selectedBotId: string | null; isRunning: boolean; currentStepId?: string | null },
+    ) => {
       setSelectedTaskNodeId(payload.selectedBotId ?? "falador-rooftop");
       setIsSelectedTaskRunning(Boolean(payload.isRunning));
+      setCurrentStepId(payload.currentStepId ?? null);
     };
 
     ipcRenderer.on("recording-state", onRecordingState);
@@ -531,6 +545,8 @@ export default function App() {
   const selectedCsvRow =
     selectedCsvRowIndex === null ? null : (folderState.activeFileRows.find((row) => row.index === selectedCsvRowIndex) ?? null);
 
+  const mouseLocationText = cursorPos ? `X: ${cursorPos.x} Y: ${cursorPos.y}` : "X: -- Y: --";
+
   useEffect(() => {
     if (!selectedCsvRow) {
       setRowForm({
@@ -672,6 +688,9 @@ export default function App() {
           <button className={`nav-tab ${activeView === "automateBot" ? "active" : ""}`} onClick={() => setActiveView("automateBot")}>
             Automate Bot
           </button>
+          <div className="nav-mouse-pos" title="Current mouse location">
+            Mouse: {mouseLocationText}
+          </div>
         </div>
 
         {activeView === "clicker" ? (
@@ -719,6 +738,7 @@ export default function App() {
             expandedTaskNodeIds={expandedTaskNodeIds}
             selectedTaskNodeId={selectedTaskNodeId}
             isSelectedTaskRunning={isSelectedTaskRunning}
+            currentStepId={currentStepId}
             onToggleTaskNodeExpand={handleToggleTaskNodeExpand}
             onSelectTaskNode={setSelectedTaskNodeId}
             onToggleSelectedTaskRun={() => void handleToggleSelectedTaskRun()}

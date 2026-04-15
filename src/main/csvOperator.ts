@@ -505,11 +505,32 @@ export function createWindow() {
     window.maximize();
   }
 
+  const rendererBuildPath = path.join(__dirname, "../renderer/index.html");
   const isDev = !app.isPackaged;
+  const devServerUrl = process.env.VITE_DEV_SERVER_URL ?? "http://localhost:5173";
+
   if (isDev) {
-    void window.loadURL("http://localhost:5173");
+    window.webContents.once("did-fail-load", (_event, _errorCode, errorDescription, validatedURL, isMainFrame) => {
+      if (!isMainFrame) {
+        return;
+      }
+
+      if (fs.existsSync(rendererBuildPath)) {
+        console.warn(
+          `Failed to load dev server URL (${validatedURL}): ${errorDescription}. Falling back to built renderer at ${rendererBuildPath}.`,
+        );
+        void window.loadFile(rendererBuildPath);
+        return;
+      }
+
+      console.error(
+        `Failed to load dev server URL (${validatedURL}): ${errorDescription}. No built renderer found at ${rendererBuildPath}.`,
+      );
+    });
+
+    void window.loadURL(devServerUrl);
   } else {
-    void window.loadFile(path.join(__dirname, "../renderer/index.html"));
+    void window.loadFile(rendererBuildPath);
   }
 
   window.on("close", () => {

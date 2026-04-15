@@ -8,6 +8,7 @@ export class AppState {
   static activeView: "clicker" | "automateBot" = "clicker";
   static selectedAutomateBotId: string | null = null;
   static automateBotRunning = false;
+  static automateBotCurrentStepId: string | null = null;
 
   static recording = false;
   static replaying = false;

@@ -1,7 +1,8 @@
 import * as robotModule from "robotjs";
 import { AppState } from "./global-state";
-import { getRunLiteWindowInfo, RuneLiteWindowInfo } from "./ioHookHandlers";
+import { getRunLiteWindowInfo } from "./ioHookHandlers";
 import { sendMarkerColorState } from "./recordingManager";
+import { RuneLiteWindowInfo } from "./runeLiteWindow";
 
 type RobotBitmap = {
   colorAt: (x: number, y: number) => string;
@@ -65,6 +66,20 @@ export async function testColorDetectionOnce() {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`Color detection test failed: ${message}`);
   }
+}
+
+export async function detectMarkerState(): Promise<{
+  color: MarkerColor;
+  point: { x: number; y: number } | null;
+  confidence: number;
+}> {
+  await scanAndPublishMarkerState(false);
+
+  return {
+    color: AppState.markerColor,
+    point: AppState.markerPoint,
+    confidence: AppState.markerConfidence,
+  };
 }
 
 async function runWatcherLoop() {

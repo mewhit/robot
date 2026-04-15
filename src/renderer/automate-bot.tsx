@@ -11,6 +11,7 @@ type AutomateBotProps = {
   expandedTaskNodeIds: Set<string>;
   selectedTaskNodeId: string | null;
   isSelectedTaskRunning: boolean;
+  currentStepId: string | null;
   onToggleTaskNodeExpand: (id: string) => void;
   onSelectTaskNode: (id: string) => void;
   onToggleSelectedTaskRun: () => void;
@@ -21,6 +22,7 @@ function TaskNodeComponent({
   expandedNodeIds,
   selectedNodeId,
   isSelectedTaskRunning,
+  activeStepId,
   onToggleExpand,
   onSelectNode,
   onToggleSelectedTaskRun,
@@ -29,6 +31,7 @@ function TaskNodeComponent({
   expandedNodeIds: Set<string>;
   selectedNodeId: string | null;
   isSelectedTaskRunning: boolean;
+  activeStepId: string | null;
   onToggleExpand: (id: string) => void;
   onSelectNode: (id: string) => void;
   onToggleSelectedTaskRun: () => void;
@@ -37,11 +40,12 @@ function TaskNodeComponent({
   const hasChildren = (node.children ?? []).length > 0;
   const isSelectableTask = node.id === "falador-rooftop";
   const isSelected = isSelectableTask && selectedNodeId === node.id;
+  const isActiveStep = node.id === activeStepId;
 
   return (
     <li>
       <div
-        className={`tree-item task-item${isSelected ? " selected" : ""}`}
+        className={`tree-item task-item${isSelected ? " selected" : ""}${isActiveStep ? " active-step" : ""}`}
         onClick={() => {
           if (isSelectableTask) {
             onSelectNode(node.id);
@@ -84,6 +88,7 @@ function TaskNodeComponent({
               expandedNodeIds={expandedNodeIds}
               selectedNodeId={selectedNodeId}
               isSelectedTaskRunning={isSelectedTaskRunning}
+              activeStepId={activeStepId}
               onToggleExpand={onToggleExpand}
               onSelectNode={onSelectNode}
               onToggleSelectedTaskRun={onToggleSelectedTaskRun}
@@ -101,6 +106,7 @@ export default function AutomateBot(props: AutomateBotProps) {
     expandedTaskNodeIds,
     selectedTaskNodeId,
     isSelectedTaskRunning,
+    currentStepId,
     onToggleTaskNodeExpand,
     onSelectTaskNode,
     onToggleSelectedTaskRun,
@@ -124,6 +130,7 @@ export default function AutomateBot(props: AutomateBotProps) {
                 expandedNodeIds={expandedTaskNodeIds}
                 selectedNodeId={selectedTaskNodeId}
                 isSelectedTaskRunning={isSelectedTaskRunning}
+                activeStepId={currentStepId}
                 onToggleExpand={onToggleTaskNodeExpand}
                 onSelectNode={onSelectTaskNode}
                 onToggleSelectedTaskRun={onToggleSelectedTaskRun}
