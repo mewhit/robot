@@ -9,13 +9,17 @@
     "start": "electron dist/main/index.js"
   },
   "devDependencies": {
+    "@tailwindcss/postcss": "^4.2.2",
     "@types/node": "^25.6.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
+    "autoprefixer": "^10.5.0",
     "concurrently": "^9.2.1",
     "electron": "^41.2.0",
     "electronmon": "^2.0.4",
+    "postcss": "^8.5.9",
+    "tailwindcss": "^4.2.2",
     "ts-node": "^10.9.2",
     "typescript": "^6.0.2",
     "vite": "^8.0.8",
