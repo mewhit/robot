@@ -18,6 +18,12 @@ type ExplorerNode = {
   children?: ExplorerNode[];
 };
 
+type TaskNode = {
+  id: string;
+  name: string;
+  children?: TaskNode[];
+};
+
 type CsvRow = {
   index: number;
   action: string;
@@ -170,6 +176,51 @@ function TreeNode({
   );
 }
 
+function TaskNodeComponent({
+  node,
+  expandedNodeIds,
+  onToggleExpand,
+}: {
+  node: TaskNode;
+  expandedNodeIds: Set<string>;
+  onToggleExpand: (id: string) => void;
+}) {
+  const isExpanded = expandedNodeIds.has(node.id);
+  const hasChildren = (node.children ?? []).length > 0;
+
+  return (
+    <li>
+      <div className="tree-item task-item">
+        {hasChildren && (
+          <span
+            className={`expand-icon${isExpanded ? " expanded" : ""}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleExpand(node.id);
+            }}
+          >
+            ▶
+          </span>
+        )}
+        {!hasChildren && <span className="expand-icon placeholder" />}
+        <span>{node.name}</span>
+      </div>
+      {hasChildren && isExpanded && (
+        <ul className="tree-children">
+          {(node.children ?? []).map((child) => (
+            <TaskNodeComponent
+              key={child.id}
+              node={child}
+              expandedNodeIds={expandedNodeIds}
+              onToggleExpand={onToggleExpand}
+            />
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
 export default function App() {
   const [activeView, setActiveView] = useState<ActiveView>(() => getInitialActiveView());
   const [isRecording, setIsRecording] = useState(false);
@@ -219,6 +270,33 @@ export default function App() {
     confidence: 0,
     point: null,
   });
+  const [taskTree, setTaskTree] = useState<TaskNode[]>([
+    {
+      id: "agility",
+      name: "Agility",
+      children: [
+        {
+          id: "falador-rooftop",
+          name: "Falador Roof Top",
+        },
+      ],
+    },
+  ]);
+  const [expandedTaskNodeIds, setExpandedTaskNodeIds] = useState<Set<string>>(
+    new Set(["agility"])
+  );
+
+  const handleToggleTaskNodeExpand = useCallback((id: string) => {
+    setExpandedTaskNodeIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }, []);
 
   const hideContextMenu = useCallback(() => setContextMenu(null), []);
   const hideCsvRowContextMenu = useCallback(() => setCsvRowContextMenu(null), []);
@@ -998,7 +1076,28 @@ export default function App() {
         ) : (
           <div className="automatebot-view">
             <h1>Automate Bot</h1>
-            <p>Content coming soon...</p>
+            <aside className="sidebar">
+              <div className="sidebar-head">
+                <h2 className="sidebar-title">TASKS</h2>
+              </div>
+              <ul className="tree">
+                {taskTree.length === 0 ? (
+                  <li className="tree-item">No tasks</li>
+                ) : (
+                  taskTree.map((node) => (
+                    <TaskNodeComponent
+                      key={node.id}
+                      node={node}
+                      expandedNodeIds={expandedTaskNodeIds}
+                      onToggleExpand={handleToggleTaskNodeExpand}
+                    />
+                  ))
+                )}
+              </ul>
+            </aside>
+            <main className="main">
+              <p>Select a task from the left panel</p>
+            </main>
           </div>
         )}
       </div>

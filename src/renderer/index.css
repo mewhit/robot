@@ -19,6 +19,10 @@
     @apply flex flex-row gap-3 min-h-0;
   }
 
+  .automatebot-view {
+    @apply flex flex-row gap-3 min-h-0;
+  }
+
   .view-navigation {
     @apply w-full flex gap-2 mb-3.5 border-b border-gray-200 pb-3;
   }
@@ -93,6 +97,22 @@
 
   .tree-children {
     @apply m-0 pl-4 list-none;
+  }
+
+  .task-item {
+    @apply cursor-pointer;
+  }
+
+  .expand-icon {
+    @apply inline-block w-4 text-center transition-transform duration-200 select-none;
+  }
+
+  .expand-icon.expanded {
+    @apply rotate-90;
+  }
+
+  .expand-icon.placeholder {
+    @apply opacity-0;
   }
 
   .main {
