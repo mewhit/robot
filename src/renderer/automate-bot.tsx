@@ -9,24 +9,45 @@ type TaskNode = {
 type AutomateBotProps = {
   taskTree: TaskNode[];
   expandedTaskNodeIds: Set<string>;
+  selectedTaskNodeId: string | null;
+  isSelectedTaskRunning: boolean;
   onToggleTaskNodeExpand: (id: string) => void;
+  onSelectTaskNode: (id: string) => void;
+  onToggleSelectedTaskRun: () => void;
 };
 
 function TaskNodeComponent({
   node,
   expandedNodeIds,
+  selectedNodeId,
+  isSelectedTaskRunning,
   onToggleExpand,
+  onSelectNode,
+  onToggleSelectedTaskRun,
 }: {
   node: TaskNode;
   expandedNodeIds: Set<string>;
+  selectedNodeId: string | null;
+  isSelectedTaskRunning: boolean;
   onToggleExpand: (id: string) => void;
+  onSelectNode: (id: string) => void;
+  onToggleSelectedTaskRun: () => void;
 }) {
   const isExpanded = expandedNodeIds.has(node.id);
   const hasChildren = (node.children ?? []).length > 0;
+  const isSelectableTask = node.id === "falador-rooftop";
+  const isSelected = isSelectableTask && selectedNodeId === node.id;
 
   return (
     <li>
-      <div className="tree-item task-item">
+      <div
+        className={`tree-item task-item${isSelected ? " selected" : ""}`}
+        onClick={() => {
+          if (isSelectableTask) {
+            onSelectNode(node.id);
+          }
+        }}
+      >
         {hasChildren && (
           <span
             className={`expand-icon${isExpanded ? " expanded" : ""}`}
@@ -39,12 +60,34 @@ function TaskNodeComponent({
           </span>
         )}
         {!hasChildren && <span className="expand-icon placeholder" />}
-        <span>{node.name}</span>
+        <span className="task-name">{node.name}</span>
+        {isSelectableTask && (
+          <button
+            type="button"
+            className={`task-play-btn${isSelectedTaskRunning && isSelected ? " running" : ""}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelectNode(node.id);
+              onToggleSelectedTaskRun();
+            }}
+          >
+            {isSelectedTaskRunning && isSelected ? "Stop" : "Play"}
+          </button>
+        )}
       </div>
       {hasChildren && isExpanded && (
         <ul className="tree-children">
           {(node.children ?? []).map((child) => (
-            <TaskNodeComponent key={child.id} node={child} expandedNodeIds={expandedNodeIds} onToggleExpand={onToggleExpand} />
+            <TaskNodeComponent
+              key={child.id}
+              node={child}
+              expandedNodeIds={expandedNodeIds}
+              selectedNodeId={selectedNodeId}
+              isSelectedTaskRunning={isSelectedTaskRunning}
+              onToggleExpand={onToggleExpand}
+              onSelectNode={onSelectNode}
+              onToggleSelectedTaskRun={onToggleSelectedTaskRun}
+            />
           ))}
         </ul>
       )}
@@ -53,7 +96,15 @@ function TaskNodeComponent({
 }
 
 export default function AutomateBot(props: AutomateBotProps) {
-  const { taskTree, expandedTaskNodeIds, onToggleTaskNodeExpand } = props;
+  const {
+    taskTree,
+    expandedTaskNodeIds,
+    selectedTaskNodeId,
+    isSelectedTaskRunning,
+    onToggleTaskNodeExpand,
+    onSelectTaskNode,
+    onToggleSelectedTaskRun,
+  } = props;
 
   return (
     <div className="automatebot-view">
@@ -67,7 +118,16 @@ export default function AutomateBot(props: AutomateBotProps) {
             <li className="tree-item">No tasks</li>
           ) : (
             taskTree.map((node) => (
-              <TaskNodeComponent key={node.id} node={node} expandedNodeIds={expandedTaskNodeIds} onToggleExpand={onToggleTaskNodeExpand} />
+              <TaskNodeComponent
+                key={node.id}
+                node={node}
+                expandedNodeIds={expandedTaskNodeIds}
+                selectedNodeId={selectedTaskNodeId}
+                isSelectedTaskRunning={isSelectedTaskRunning}
+                onToggleExpand={onToggleTaskNodeExpand}
+                onSelectNode={onSelectTaskNode}
+                onToggleSelectedTaskRun={onToggleSelectedTaskRun}
+              />
             ))
           )}
         </ul>

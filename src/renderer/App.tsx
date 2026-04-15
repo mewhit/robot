@@ -140,6 +140,8 @@ export default function App() {
     confidence: 0,
     point: null,
   });
+  const [selectedTaskNodeId, setSelectedTaskNodeId] = useState<string | null>("falador-rooftop");
+  const [isSelectedTaskRunning, setIsSelectedTaskRunning] = useState(false);
   const [taskTree, setTaskTree] = useState<TaskNode[]>([
     {
       id: "agility",
@@ -148,11 +150,17 @@ export default function App() {
         {
           id: "falador-rooftop",
           name: "Falador Roof Top",
+          children: [
+            {
+              id: "falador-rooftop-step-1",
+              name: "Step 1: Scroll down to maximum",
+            },
+          ],
         },
       ],
     },
   ]);
-  const [expandedTaskNodeIds, setExpandedTaskNodeIds] = useState<Set<string>>(new Set(["agility"]));
+  const [expandedTaskNodeIds, setExpandedTaskNodeIds] = useState<Set<string>>(new Set(["agility", "falador-rooftop"]));
 
   const handleToggleTaskNodeExpand = useCallback((id: string) => {
     setExpandedTaskNodeIds((prev) => {
@@ -213,6 +221,10 @@ export default function App() {
     const onMarkerColorState = (_: unknown, payload: MarkerColorState) => {
       setMarkerColorState(payload);
     };
+    const onAutomateBotState = (_: unknown, payload: { selectedBotId: string | null; isRunning: boolean }) => {
+      setSelectedTaskNodeId(payload.selectedBotId ?? "falador-rooftop");
+      setIsSelectedTaskRunning(Boolean(payload.isRunning));
+    };
 
     ipcRenderer.on("recording-state", onRecordingState);
     ipcRenderer.on("replaying-state", onReplayingState);
@@ -220,6 +232,7 @@ export default function App() {
     ipcRenderer.on("replay-delay-state", onReplayDelayState);
     ipcRenderer.on("replay-row-state", onReplayRowState);
     ipcRenderer.on("marker-color-state", onMarkerColorState);
+    ipcRenderer.on("automate-bot-state", onAutomateBotState);
     ipcRenderer.on("output-folder-state", onFolderState);
     const onCursorPos = (
       _: unknown,
@@ -235,6 +248,7 @@ export default function App() {
       ipcRenderer.removeListener("replay-delay-state", onReplayDelayState);
       ipcRenderer.removeListener("replay-row-state", onReplayRowState);
       ipcRenderer.removeListener("marker-color-state", onMarkerColorState);
+      ipcRenderer.removeListener("automate-bot-state", onAutomateBotState);
       ipcRenderer.removeListener("output-folder-state", onFolderState);
       ipcRenderer.removeListener("cursor-pos", onCursorPos);
     };
@@ -255,7 +269,12 @@ export default function App() {
 
   useEffect(() => {
     window.localStorage.setItem(ACTIVE_VIEW_STORAGE_KEY, activeView);
+    ipcRenderer.send("set-active-view", activeView);
   }, [activeView]);
+
+  useEffect(() => {
+    ipcRenderer.send("set-selected-automate-bot", selectedTaskNodeId);
+  }, [selectedTaskNodeId]);
 
   const handleToggleRecording = () => ipcRenderer.send("toggle-recording");
 
@@ -270,6 +289,18 @@ export default function App() {
       window.alert(`Unable to replay CSV: ${message}`);
     }
   };
+
+  const handleToggleSelectedTaskRun = useCallback(async () => {
+    try {
+      const result = await ipcRenderer.invoke("toggle-selected-automate-bot");
+      if (!result?.ok) {
+        window.alert(result?.error || "Unable to toggle Automate Bot.");
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      window.alert(`Unable to toggle Automate Bot: ${message}`);
+    }
+  }, []);
 
   const handleStopReplay = () => {
     ipcRenderer.send("stop-replay");
@@ -683,7 +714,15 @@ export default function App() {
             onSaveRow={() => void handleSaveRow()}
           />
         ) : (
-          <AutomateBot taskTree={taskTree} expandedTaskNodeIds={expandedTaskNodeIds} onToggleTaskNodeExpand={handleToggleTaskNodeExpand} />
+          <AutomateBot
+            taskTree={taskTree}
+            expandedTaskNodeIds={expandedTaskNodeIds}
+            selectedTaskNodeId={selectedTaskNodeId}
+            isSelectedTaskRunning={isSelectedTaskRunning}
+            onToggleTaskNodeExpand={handleToggleTaskNodeExpand}
+            onSelectTaskNode={setSelectedTaskNodeId}
+            onToggleSelectedTaskRun={() => void handleToggleSelectedTaskRun()}
+          />
         )}
       </div>
       {contextMenu && (

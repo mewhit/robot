@@ -31,6 +31,7 @@ import {
 import { testColorDetectionOnce } from "./colorWatcher";
 import { DEFAULT_OUTPUT_FILE_NAME } from "./constants";
 import { ensureRuneLiteWindowBoundsForAutomation } from "./ioHookHandlers";
+import { sendAutomateBotState, setActiveView, setSelectedAutomateBotId, toggleSelectedAutomateBot } from "./automateBotManager";
 
 const robot = ((robotModule as unknown as { default?: any }).default ?? robotModule) as any;
 
@@ -49,7 +50,27 @@ export function setupIpcHandlers() {
     sendReplayRepeatState();
     sendReplayDelayState();
     sendMarkerColorState();
+    sendAutomateBotState();
     sendOutputFolderState();
+  });
+
+  ipcMain.on("set-active-view", (_event, view: "clicker" | "automateBot") => {
+    setActiveView(view === "automateBot" ? "automateBot" : "clicker");
+  });
+
+  ipcMain.on("set-selected-automate-bot", (_event, botId: string | null) => {
+    setSelectedAutomateBotId(botId);
+  });
+
+  ipcMain.handle("toggle-selected-automate-bot", async () => {
+    try {
+      toggleSelectedAutomateBot("ui");
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Could not toggle automate bot: ${message}`);
+      return { ok: false, error: message };
+    }
   });
 
   ipcMain.on("set-replay-repeat", (_event, enabled: boolean) => {
@@ -152,7 +173,7 @@ export function setupIpcHandlers() {
         yMax?: number;
         elapsedMin?: number | null;
         elapsedMax?: number | null;
-      }
+      },
     ) => {
       try {
         updateActiveCsvRow(payload);
@@ -162,7 +183,7 @@ export function setupIpcHandlers() {
         console.error(`Could not update csv row: ${message}`);
         return { ok: false, error: message };
       }
-    }
+    },
   );
 
   ipcMain.handle("play-csv-row", (_event, rowIndex: number) => {

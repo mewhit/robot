@@ -103,6 +103,22 @@
     @apply cursor-pointer;
   }
 
+  .task-item.selected {
+    @apply bg-sky-100 text-sky-900;
+  }
+
+  .task-name {
+    @apply flex-1 min-w-0;
+  }
+
+  .task-play-btn {
+    @apply ml-auto px-2 py-0.5 text-xs font-semibold rounded border border-teal-700 text-teal-700 bg-white hover:bg-teal-50;
+  }
+
+  .task-play-btn.running {
+    @apply border-red-700 text-red-700 hover:bg-red-50;
+  }
+
   .expand-icon {
     @apply inline-block w-4 text-center transition-transform duration-200 select-none;
   }

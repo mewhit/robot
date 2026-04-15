@@ -4,6 +4,7 @@ import { AppState, activeModifiers } from "./global-state";
 import { toggleRecording, recordMouseClick, recordKeyPress } from "./recordingManager";
 import { requestReplayStop, replayActiveCsv } from "./replayManager";
 import { UIOHOOK_KEY_TO_ROBOTJS, MODIFIER_KEYCODES } from "./constants";
+import { toggleSelectedAutomateBot } from "./automateBotManager";
 
 export type RuneLiteWindowInfo = { x: number; y: number; width: number; height: number };
 const DEFAULT_AUTOMATION_RUNELITE_BOUNDS: RuneLiteWindowInfo = { x: 0, y: 0, width: 1280, height: 720 };
@@ -19,6 +20,16 @@ export function setupIoHookHandlers() {
     }
 
     if (e.keycode === UiohookKey.F2) {
+      if (AppState.activeView === "automateBot") {
+        try {
+          toggleSelectedAutomateBot("f2");
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error(`Could not toggle automate bot: ${message}`);
+        }
+        return;
+      }
+
       if (AppState.replaying) {
         requestReplayStop("f2");
         return;
@@ -67,7 +78,7 @@ export function setupIoHookHandlers() {
         const runLiteWindow = getRunLiteWindowInfo();
         AppState.mainWindow?.webContents.send("cursor-pos", { x: e.x, y: e.y, runLiteWindow });
       };
-    })()
+    })(),
   );
 
   uIOhook.on("mousedown", (e) => {
