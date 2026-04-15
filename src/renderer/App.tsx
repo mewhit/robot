@@ -965,14 +965,21 @@ export default function App() {
             >
               {isReplaying ? "Stop Replay (F2)" : "Replay CSV (F2)"}
             </button>
-            <button
-              className="test-color-btn"
-              type="button"
-              onClick={() => void handleTestColorDetection()}
-              disabled={isRecording || isReplaying}
-            >
-              Test Color Matcher
-            </button>
+            <div className="test-color-btn-row">
+              <button
+                className="test-color-btn"
+                type="button"
+                onClick={() => void handleTestColorDetection()}
+                disabled={isRecording || isReplaying}
+              >
+                Test Color Matcher
+              </button>
+              {markerColorState.point && (
+                <span className="marker-coords">
+                  ({markerColorState.point.x}, {markerColorState.point.y})
+                </span>
+              )}
+            </div>
           </div>
         </main>
       </div>

@@ -423,6 +423,19 @@ body {
   cursor: not-allowed;
 }
 
+.test-color-btn-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.marker-coords {
+  font-size: 12px;
+  font-weight: 600;
+  color: #16a34a;
+  white-space: nowrap;
+}
+
 .context-menu {
   position: fixed;
   min-width: 140px;

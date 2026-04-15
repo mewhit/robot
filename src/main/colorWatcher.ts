@@ -3,8 +3,20 @@ import { AppState } from "./global-state";
 import { getRunLiteWindowInfo, RuneLiteWindowInfo } from "./ioHookHandlers";
 import { sendMarkerColorState } from "./recordingManager";
 
+type RobotBitmap = {
+  colorAt: (x: number, y: number) => string;
+  width: number;
+  height: number;
+  byteWidth: number;
+  bytesPerPixel: number;
+  image: Buffer;
+};
+
 type RobotColorApi = {
   getPixelColor: (x: number, y: number) => string;
+  screen: {
+    capture: (x: number, y: number, width: number, height: number) => RobotBitmap;
+  };
 };
 
 type MarkerColor = "green" | "red" | "none";
@@ -16,12 +28,11 @@ type MarkerDetection = {
   confidence: number;
 };
 
-const robot = ((robotModule as unknown as { default?: RobotColorApi }).default ??
-  robotModule) as unknown as RobotColorApi;
+const robot = ((robotModule as unknown as { default?: RobotColorApi }).default ?? robotModule) as unknown as RobotColorApi;
 
 const MARKER_SCAN_INTERVAL_MS = 700;
-const MARKER_SCAN_STEP_PX = 16;
-const MIN_MATCHED_SAMPLES = 12;
+const MARKER_SCAN_STEP_PX = 2;
+const MIN_MATCHED_SAMPLES = 4;
 const STATE_PUSH_MOVE_PX = 20;
 const STATE_PUSH_CONFIDENCE_DELTA = 0.1;
 const YIELD_EVERY_ROW_COUNT = 3;
@@ -49,7 +60,7 @@ export function stopColorWatcher() {
 
 export async function testColorDetectionOnce() {
   try {
-    await scanAndPublishMarkerState();
+    await scanAndPublishMarkerState(false);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`Color detection test failed: ${message}`);
@@ -61,7 +72,7 @@ async function runWatcherLoop() {
     const startedAt = Date.now();
 
     try {
-      await scanAndPublishMarkerState();
+      await scanAndPublishMarkerState(true);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`Color watcher scan failed: ${message}`);
@@ -77,19 +88,26 @@ async function runWatcherLoop() {
   }
 }
 
-async function scanAndPublishMarkerState() {
+async function scanAndPublishMarkerState(abortOnStop = true) {
   const runeliteBounds = getRunLiteWindowInfo();
   if (!runeliteBounds) {
+    console.log("[colorWatcher] No RuneLite window found");
     publishMarkerState({ color: "none", x: null, y: null, confidence: 0 });
     return;
   }
 
-  const detection = await detectMarkerColor(runeliteBounds);
+  console.log(
+    `[colorWatcher] Scanning bounds: x=${runeliteBounds.x} y=${runeliteBounds.y} w=${runeliteBounds.width} h=${runeliteBounds.height}`,
+  );
+
+  const detection = await detectMarkerColor(runeliteBounds, abortOnStop);
   if (!detection) {
+    console.log("[colorWatcher] No marker detected");
     publishMarkerState({ color: "none", x: null, y: null, confidence: 0 });
     return;
   }
 
+  console.log(`[colorWatcher] Detected: ${detection.color} at (${detection.x}, ${detection.y}) confidence=${detection.confidence}`);
   publishMarkerState({
     color: detection.color,
     x: detection.x,
@@ -126,8 +144,36 @@ function publishMarkerState(payload: { color: MarkerColor; x: number | null; y: 
   }
 }
 
-async function detectMarkerColor(bounds: RuneLiteWindowInfo): Promise<MarkerDetection | null> {
+async function detectMarkerColor(bounds: RuneLiteWindowInfo, abortOnStop: boolean): Promise<MarkerDetection | null> {
   const search = getSearchRegion(bounds);
+  const captureWidth = search.right - search.left + 1;
+  const captureHeight = search.bottom - search.top + 1;
+
+  console.log(`[detectMarker] search region: left=${search.left} top=${search.top} w=${captureWidth} h=${captureHeight}`);
+
+  let bitmap: RobotBitmap;
+  try {
+    bitmap = robot.screen.capture(search.left, search.top, captureWidth, captureHeight);
+    console.log(
+      `[detectMarker] bitmap captured: ${bitmap.width}x${bitmap.height} bpp=${bitmap.bytesPerPixel} byteWidth=${bitmap.byteWidth} imageLen=${bitmap.image?.length}`,
+    );
+    // Sample center pixel via direct buffer read to verify channel order
+    const cx = Math.floor(captureWidth / 2);
+    const cy = Math.floor(captureHeight / 2);
+    const sampleViaColorAt = bitmap.colorAt(cx, cy);
+    const off = cy * bitmap.byteWidth + cx * bitmap.bytesPerPixel;
+    const sampleDirect = `b=${bitmap.image[off]} g=${bitmap.image[off + 1]} r=${bitmap.image[off + 2]}`;
+    console.log(`[detectMarker] center pixel colorAt=${sampleViaColorAt} directBuffer=${sampleDirect}`);
+  } catch (err) {
+    console.error(`[detectMarker] screen.capture threw:`, err);
+    return null;
+  }
+
+  // Read pixels directly from the raw image Buffer (BGRA layout on Windows)
+  // to avoid making a native C++ call per pixel (114k calls would take minutes).
+  const image = bitmap.image;
+  const byteWidth = bitmap.byteWidth;
+  const bpp = bitmap.bytesPerPixel;
 
   let greenCount = 0;
   let redCount = 0;
@@ -141,40 +187,51 @@ async function detectMarkerColor(bounds: RuneLiteWindowInfo): Promise<MarkerDete
   let redYSum = 0;
 
   let scannedRows = 0;
-  for (let y = search.top; y <= search.bottom; y += MARKER_SCAN_STEP_PX) {
-    if (!isWatcherRunning) {
-      return null;
-    }
+  let loopError: unknown = null;
 
-    for (let x = search.left; x <= search.right; x += MARKER_SCAN_STEP_PX) {
-      const hex = robot.getPixelColor(x, y);
-      const rgb = parseHexColor(hex);
-      if (!rgb) {
-        continue;
+  try {
+    for (let by = 0; by < captureHeight; by += MARKER_SCAN_STEP_PX) {
+      if (abortOnStop && !isWatcherRunning) {
+        return null;
       }
 
-      const gScore = scoreGreen(rgb.r, rgb.g, rgb.b);
-      if (gScore > 0) {
-        greenCount += 1;
-        greenScoreSum += gScore;
-        greenXSum += x * gScore;
-        greenYSum += y * gScore;
+      for (let bx = 0; bx < captureWidth; bx += MARKER_SCAN_STEP_PX) {
+        const offset = by * byteWidth + bx * bpp;
+        // Windows DIB format: bytes are BGRA
+        const b = image[offset];
+        const g = image[offset + 1];
+        const r = image[offset + 2];
+
+        const absX = search.left + bx;
+        const absY = search.top + by;
+
+        const gScore = scoreGreen(r, g, b);
+        if (gScore > 0) {
+          greenCount += 1;
+          greenScoreSum += gScore;
+          greenXSum += absX * gScore;
+          greenYSum += absY * gScore;
+        }
+
+        const rScore = scoreRed(r, g, b);
+        if (rScore > 0) {
+          redCount += 1;
+          redScoreSum += rScore;
+          redXSum += absX * rScore;
+          redYSum += absY * rScore;
+        }
       }
 
-      const rScore = scoreRed(rgb.r, rgb.g, rgb.b);
-      if (rScore > 0) {
-        redCount += 1;
-        redScoreSum += rScore;
-        redXSum += x * rScore;
-        redYSum += y * rScore;
+      scannedRows += 1;
+      if (scannedRows % YIELD_EVERY_ROW_COUNT === 0) {
+        await yieldToEventLoop();
       }
     }
-
-    scannedRows += 1;
-    if (scannedRows % YIELD_EVERY_ROW_COUNT === 0) {
-      await yieldToEventLoop();
-    }
+  } catch (err) {
+    loopError = err;
   }
+
+  console.log(`[detectMarker] scan done — greenCount=${greenCount} redCount=${redCount} scannedRows=${scannedRows} loopError=${loopError}`);
 
   const hasGreen = greenCount >= MIN_MATCHED_SAMPLES;
   const hasRed = redCount >= MIN_MATCHED_SAMPLES;
@@ -241,31 +298,36 @@ function parseHexColor(value: string): { r: number; g: number; b: number } | nul
 }
 
 function scoreGreen(r: number, g: number, b: number): number {
-  if (g < 120) {
+  // RuneLite obstacle highlight is pure lime: ARGB FF00FF00 → R=0, G=255, B=0.
+  // Require very high G and both R and B clearly dominated by G.
+  if (g < 150) {
     return 0;
   }
 
   const dominance = g - Math.max(r, b);
-  if (dominance < 35) {
+  if (dominance < 80) {
     return 0;
   }
 
-  const brightness = Math.max(r, g, b);
-  return dominance + brightness * 0.25;
+  // Extra boost for near-pure lime (R<30, B<30)
+  const purity = r < 30 && b < 30 ? 80 : 0;
+  return dominance + purity;
 }
 
 function scoreRed(r: number, g: number, b: number): number {
-  if (r < 120) {
+  // RuneLite marker is pure red: ARGB FFFF0000 → R=255, G=0, B=0.
+  if (r < 150) {
     return 0;
   }
 
   const dominance = r - Math.max(g, b);
-  if (dominance < 35) {
+  if (dominance < 80) {
     return 0;
   }
 
-  const brightness = Math.max(r, g, b);
-  return dominance + brightness * 0.25;
+  // Extra boost for near-pure red (G<30, B<30)
+  const purity = g < 30 && b < 30 ? 80 : 0;
+  return dominance + purity;
 }
 
 function normalizeConfidence(scoreSum: number, sampleCount: number): number {
