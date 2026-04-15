@@ -47,6 +47,15 @@ export function stopColorWatcher() {
   }
 }
 
+export async function testColorDetectionOnce() {
+  try {
+    await scanAndPublishMarkerState();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Color detection test failed: ${message}`);
+  }
+}
+
 async function runWatcherLoop() {
   while (isWatcherRunning) {
     const startedAt = Date.now();

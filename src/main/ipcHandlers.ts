@@ -28,6 +28,7 @@ import {
   sendReplayDelayState,
   sendMarkerColorState,
 } from "./recordingManager";
+import { testColorDetectionOnce } from "./colorWatcher";
 import { DEFAULT_OUTPUT_FILE_NAME } from "./constants";
 
 const robot = ((robotModule as unknown as { default?: any }).default ?? robotModule) as any;
@@ -63,6 +64,17 @@ export function setupIpcHandlers() {
 
   ipcMain.on("stop-replay", () => {
     requestReplayStop("ui");
+  });
+
+  ipcMain.handle("test-color-detection", async () => {
+    try {
+      await testColorDetectionOnce();
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Color detection test failed: ${message}`);
+      return { ok: false, error: message };
+    }
   });
 
   ipcMain.on("set-active-file", (_event, relativePath: string) => {

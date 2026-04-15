@@ -316,6 +316,18 @@ export default function App() {
     ipcRenderer.send("stop-replay");
   };
 
+  const handleTestColorDetection = async () => {
+    try {
+      const result = await ipcRenderer.invoke("test-color-detection");
+      if (!result?.ok) {
+        window.alert(result?.error || "Color detection test failed.");
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      window.alert(`Color detection test failed: ${message}`);
+    }
+  };
+
   const handleReplayRepeatChange = (enabled: boolean) => {
     setIsReplayRepeatEnabled(enabled);
     ipcRenderer.send("set-replay-repeat", enabled);
@@ -952,6 +964,14 @@ export default function App() {
               disabled={isRecording}
             >
               {isReplaying ? "Stop Replay (F2)" : "Replay CSV (F2)"}
+            </button>
+            <button
+              className="test-color-btn"
+              type="button"
+              onClick={() => void handleTestColorDetection()}
+              disabled={isRecording || isReplaying}
+            >
+              Test Color Matcher
             </button>
           </div>
         </main>
