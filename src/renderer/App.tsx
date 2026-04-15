@@ -163,6 +163,7 @@ function TreeNode({
 }
 
 export default function App() {
+  const [activeView, setActiveView] = useState<"clicker" | "automateBot">("clicker");
   const [isRecording, setIsRecording] = useState(false);
   const [isReplaying, setIsReplaying] = useState(false);
   const [isReplayRepeatEnabled, setIsReplayRepeatEnabled] = useState(false);
@@ -268,7 +269,7 @@ export default function App() {
     ipcRenderer.on("output-folder-state", onFolderState);
     const onCursorPos = (
       _: unknown,
-      pos: { x: number; y: number; runLiteWindow?: { x: number; y: number; width: number; height: number } | null }
+      pos: { x: number; y: number; runLiteWindow?: { x: number; y: number; width: number; height: number } | null },
     ) => setCursorPos(pos);
     ipcRenderer.on("cursor-pos", onCursorPos);
     ipcRenderer.send("ui-ready");
@@ -413,9 +414,7 @@ export default function App() {
 
   const handleDelete = async () => {
     if (!contextMenu) return;
-    const selectedTargets = selectedFilePaths.includes(contextMenu.relativePath)
-      ? selectedFilePaths
-      : [contextMenu.relativePath];
+    const selectedTargets = selectedFilePaths.includes(contextMenu.relativePath) ? selectedFilePaths : [contextMenu.relativePath];
     const isMassDelete = selectedTargets.length > 1;
     const label = isMassDelete
       ? `${selectedTargets.length} selected files`
@@ -530,7 +529,7 @@ export default function App() {
       setSelectedFilePaths([relativePath]);
       ipcRenderer.send("set-active-file", relativePath);
     },
-    [cancelRename, hideContextMenu]
+    [cancelRename, hideContextMenu],
   );
 
   const contextMenuSelectedTargets = contextMenu
@@ -541,9 +540,7 @@ export default function App() {
   const canRenameContextTarget = contextMenuSelectedTargets.length === 1;
 
   const selectedCsvRow =
-    selectedCsvRowIndex === null
-      ? null
-      : (folderState.activeFileRows.find((row) => row.index === selectedCsvRowIndex) ?? null);
+    selectedCsvRowIndex === null ? null : (folderState.activeFileRows.find((row) => row.index === selectedCsvRowIndex) ?? null);
 
   useEffect(() => {
     if (!selectedCsvRow) {
@@ -615,10 +612,7 @@ export default function App() {
       return;
     }
 
-    if (
-      (elapsedMin !== null && !Number.isFinite(elapsedMin)) ||
-      (elapsedMax !== null && !Number.isFinite(elapsedMax))
-    ) {
+    if ((elapsedMin !== null && !Number.isFinite(elapsedMin)) || (elapsedMax !== null && !Number.isFinite(elapsedMax))) {
       window.alert("Elapsed range values must be numeric or empty.");
       return;
     }
@@ -676,337 +670,340 @@ export default function App() {
         cancelRename();
       }
     },
-    [cancelRename, submitRename]
+    [cancelRename, submitRename],
   );
 
   return (
     <>
       <div className="panel">
-        <aside className="sidebar">
-          <div className="sidebar-head">
-            <h2 className="sidebar-title">EXPLORER</h2>
-            <button
-              className="new-file-btn"
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                void handleNewFile();
-              }}
-            >
-              New File
-            </button>
-          </div>
-          <ul className="tree">
-            {folderState.tree.length === 0 ? (
-              <li className="tree-item">No files</li>
-            ) : (
-              folderState.tree.map((node) => (
-                <TreeNode
-                  key={node.relativePath}
-                  node={node}
-                  activeRelativePath={folderState.activeRelativePath}
-                  selectedFilePaths={selectedFilePaths}
-                  editingRelativePath={editingRelativePath}
-                  editingName={editingName}
-                  onFileClick={handleFileClick}
-                  onContextMenu={handleContextMenu}
-                  onEditingNameChange={setEditingName}
-                  onEditingNameKeyDown={handleEditingNameKeyDown}
-                  onEditingNameBlur={() => void submitRename()}
-                />
-              ))
-            )}
-          </ul>
-        </aside>
-        <aside className="sidebar csv-panel">
-          <div className="sidebar-head">
-            <h2 className="sidebar-title">STEPS</h2>
-          </div>
-          <ul className="tree">
-            {folderState.activeFileRows.length === 0 ? (
-              <li className="tree-item">No steps</li>
-            ) : (
-              folderState.activeFileRows.map((row) => {
-                const isEditingThisRow = editingCsvRowIndex === row.index;
-                return (
-                  <li
-                    key={`row-${row.index}`}
-                    className={`tree-item csv-line${selectedCsvRowIndex === row.index ? " selected" : ""}${
-                      isReplaying && replayingCsvRowIndex === row.index ? " replaying" : ""
-                    }`}
-                    onClick={() => {
-                      if (!isEditingThisRow) setSelectedCsvRowIndex(row.index);
-                    }}
-                    onContextMenu={(e) => {
-                      e.preventDefault();
-                      handleCsvRowContextMenu(e, row.index, row.stepName);
-                    }}
+        <div className="view-navigation">
+          <button className={`nav-tab ${activeView === "clicker" ? "active" : ""}`} onClick={() => setActiveView("clicker")}>
+            Clicker
+          </button>
+          <button className={`nav-tab ${activeView === "automateBot" ? "active" : ""}`} onClick={() => setActiveView("automateBot")}>
+            Automate Bot
+          </button>
+        </div>
+
+        {activeView === "clicker" ? (
+          <div className="clicker-layout">
+            <aside className="sidebar">
+              <div className="sidebar-head">
+                <h2 className="sidebar-title">EXPLORER</h2>
+                <button
+                  className="new-file-btn"
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void handleNewFile();
+                  }}
+                >
+                  New File
+                </button>
+              </div>
+              <ul className="tree">
+                {folderState.tree.length === 0 ? (
+                  <li className="tree-item">No files</li>
+                ) : (
+                  folderState.tree.map((node) => (
+                    <TreeNode
+                      key={node.relativePath}
+                      node={node}
+                      activeRelativePath={folderState.activeRelativePath}
+                      selectedFilePaths={selectedFilePaths}
+                      editingRelativePath={editingRelativePath}
+                      editingName={editingName}
+                      onFileClick={handleFileClick}
+                      onContextMenu={handleContextMenu}
+                      onEditingNameChange={setEditingName}
+                      onEditingNameKeyDown={handleEditingNameKeyDown}
+                      onEditingNameBlur={() => void submitRename()}
+                    />
+                  ))
+                )}
+              </ul>
+            </aside>
+            <aside className="sidebar csv-panel">
+              <div className="sidebar-head">
+                <h2 className="sidebar-title">STEPS</h2>
+              </div>
+              <ul className="tree">
+                {folderState.activeFileRows.length === 0 ? (
+                  <li className="tree-item">No steps</li>
+                ) : (
+                  folderState.activeFileRows.map((row) => {
+                    const isEditingThisRow = editingCsvRowIndex === row.index;
+                    return (
+                      <li
+                        key={`row-${row.index}`}
+                        className={`tree-item csv-line${selectedCsvRowIndex === row.index ? " selected" : ""}${
+                          isReplaying && replayingCsvRowIndex === row.index ? " replaying" : ""
+                        }`}
+                        onClick={() => {
+                          if (!isEditingThisRow) setSelectedCsvRowIndex(row.index);
+                        }}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          handleCsvRowContextMenu(e, row.index, row.stepName);
+                        }}
+                      >
+                        <span style={{ flexShrink: 0 }}>{`${row.index + 1}. `}</span>
+                        {isEditingThisRow ? (
+                          <input
+                            className="rename-input"
+                            value={editingStepName}
+                            ref={(el) => {
+                              if (el && !el.dataset.initialized) {
+                                el.dataset.initialized = "1";
+                                el.focus();
+                                el.select();
+                              }
+                            }}
+                            onChange={(e) => setEditingStepName(e.target.value)}
+                            onClick={(e) => e.stopPropagation()}
+                            onKeyDown={(e) => {
+                              e.stopPropagation();
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                void submitCsvRowRename();
+                              }
+                              if (e.key === "Escape") {
+                                e.preventDefault();
+                                cancelCsvRowRename();
+                              }
+                            }}
+                            onBlur={() => void submitCsvRowRename()}
+                          />
+                        ) : (
+                          row.stepName
+                        )}
+                      </li>
+                    );
+                  })
+                )}
+              </ul>
+            </aside>
+            <main className="main">
+              <h1 className="title">Robot Recorder</h1>
+              <p className="cursor-pos-display">
+                Cursor: {cursorPos ? `${cursorPos.x}, ${cursorPos.y}` : "—"}
+                {cursorPos?.runLiteWindow && (
+                  <>
+                    <br />
+                    RuneLite: X:{cursorPos.runLiteWindow.x}, Y:{cursorPos.runLiteWindow.y}, W:
+                    {cursorPos.runLiteWindow.width}, H:{cursorPos.runLiteWindow.height}
+                  </>
+                )}
+              </p>
+              <p className="status">{isReplaying ? "Replaying..." : isRecording ? "Recording..." : "Stopped"}</p>
+              <p className={`status marker-status marker-${markerColorState.color}`}>
+                Marker: {markerColorState.color.toUpperCase()}
+                {markerColorState.point ? ` at ${markerColorState.point.x}, ${markerColorState.point.y}` : ""}
+                {` (confidence ${Math.round(markerColorState.confidence * 100)}%)`}
+              </p>
+              <div className="meta">
+                <div>
+                  <strong>File:</strong> <span>{folderState.activeFile || "-"}</span>
+                </div>
+                <div>
+                  <strong>Rows:</strong> <span>{folderState.activeFileRows.length}</span>
+                </div>
+                {selectedCsvRow ? (
+                  <>
+                    <div className="edit-groups">
+                      <div className="edit-line">
+                        <strong>Action</strong>
+                        <input value={rowForm.action} onChange={(e) => handleRowFormChange("action", e.target.value)} />
+                      </div>
+                      <div className="group-separator" />
+                      <div className="edit-line">
+                        <strong>Coordinates and allowed range</strong>
+                        <div className="axis-groups">
+                          <div className="axis-row">
+                            <span className="axis-row-label">X values</span>
+                            <div className="inline-fields inline-fields--three">
+                              <label className="field">
+                                <span className="field-label">X coordinate</span>
+                                <input
+                                  aria-label="X coordinate"
+                                  placeholder="e.g. 540"
+                                  value={rowForm.x}
+                                  onChange={(e) => handleRowFormChange("x", e.target.value)}
+                                />
+                              </label>
+                              <label className="field">
+                                <span className="field-label">Minimum X</span>
+                                <input
+                                  aria-label="Minimum X value"
+                                  placeholder="e.g. 500"
+                                  value={rowForm.xMin}
+                                  onChange={(e) => handleRowFormChange("xMin", e.target.value)}
+                                />
+                              </label>
+                              <label className="field">
+                                <span className="field-label">Maximum X</span>
+                                <input
+                                  aria-label="Maximum X value"
+                                  placeholder="e.g. 580"
+                                  value={rowForm.xMax}
+                                  onChange={(e) => handleRowFormChange("xMax", e.target.value)}
+                                />
+                              </label>
+                            </div>
+                          </div>
+                          <div className="axis-row">
+                            <span className="axis-row-label">Y values</span>
+                            <div className="inline-fields inline-fields--three">
+                              <label className="field">
+                                <span className="field-label">Y coordinate</span>
+                                <input
+                                  aria-label="Y coordinate"
+                                  placeholder="e.g. 320"
+                                  value={rowForm.y}
+                                  onChange={(e) => handleRowFormChange("y", e.target.value)}
+                                />
+                              </label>
+                              <label className="field">
+                                <span className="field-label">Minimum Y</span>
+                                <input
+                                  aria-label="Minimum Y value"
+                                  placeholder="e.g. 300"
+                                  value={rowForm.yMin}
+                                  onChange={(e) => handleRowFormChange("yMin", e.target.value)}
+                                />
+                              </label>
+                              <label className="field">
+                                <span className="field-label">Maximum Y</span>
+                                <input
+                                  aria-label="Maximum Y value"
+                                  placeholder="e.g. 340"
+                                  value={rowForm.yMax}
+                                  onChange={(e) => handleRowFormChange("yMax", e.target.value)}
+                                />
+                              </label>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="group-separator" />
+                      <div className="edit-line">
+                        <strong>Elapsed time and allowed range</strong>
+                        <div className="inline-fields inline-fields--three">
+                          <label className="field">
+                            <span className="field-label">Elapsed time (seconds)</span>
+                            <input
+                              aria-label="Elapsed time in seconds"
+                              placeholder="e.g. 0.250"
+                              value={rowForm.elapsedSeconds}
+                              onChange={(e) => handleRowFormChange("elapsedSeconds", e.target.value)}
+                            />
+                          </label>
+                          <label className="field">
+                            <span className="field-label">Minimum elapsed (seconds)</span>
+                            <input
+                              aria-label="Minimum elapsed time in seconds"
+                              placeholder="Leave empty to disable"
+                              value={rowForm.elapsedMin}
+                              onChange={(e) => handleRowFormChange("elapsedMin", e.target.value)}
+                            />
+                          </label>
+                          <label className="field">
+                            <span className="field-label">Maximum elapsed (seconds)</span>
+                            <input
+                              aria-label="Maximum elapsed time in seconds"
+                              placeholder="Leave empty to disable"
+                              value={rowForm.elapsedMax}
+                              onChange={(e) => handleRowFormChange("elapsedMax", e.target.value)}
+                            />
+                          </label>
+                        </div>
+                      </div>
+                      <button type="button" onClick={() => void handleSaveRow()} disabled={isSavingRow}>
+                        {isSavingRow ? "Saving..." : "Save Row"}
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div>
+                    <strong>Selection:</strong> <span>Click a CSV line in the tree.</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="replay-settings">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={isReplayRepeatEnabled}
+                    onChange={(e) => handleReplayRepeatChange(e.target.checked)}
+                    disabled={isRecording}
+                  />
+                  Repeat replay
+                </label>
+                <label className="delay-setting">
+                  <span>Click delay (ms)</span>
+                  <input
+                    type="number"
+                    min={0}
+                    step={50}
+                    value={replayClickDelayMs}
+                    onChange={(e) => handleReplayClickDelayChange(e.target.value)}
+                    disabled={isRecording}
+                  />
+                </label>
+              </div>
+
+              <div className="action-buttons">
+                <button
+                  className={`record-btn${isRecording ? " recording" : ""}`}
+                  type="button"
+                  onClick={handleToggleRecording}
+                  disabled={isReplaying}
+                >
+                  {isRecording ? "Stop Recording (F3)" : "Start Recording (F3)"}
+                </button>
+                <button
+                  className="replay-btn"
+                  type="button"
+                  onClick={isReplaying ? handleStopReplay : () => void handleReplayCsv()}
+                  disabled={isRecording}
+                >
+                  {isReplaying ? "Stop Replay (F2)" : "Replay CSV (F2)"}
+                </button>
+                <div className="test-color-btn-row">
+                  <button
+                    className="test-color-btn"
+                    type="button"
+                    onClick={() => void handleTestColorDetection()}
+                    disabled={isRecording || isReplaying}
                   >
-                    <span style={{ flexShrink: 0 }}>{`${row.index + 1}. `}</span>
-                    {isEditingThisRow ? (
-                      <input
-                        className="rename-input"
-                        value={editingStepName}
-                        ref={(el) => {
-                          if (el && !el.dataset.initialized) {
-                            el.dataset.initialized = "1";
-                            el.focus();
-                            el.select();
-                          }
-                        }}
-                        onChange={(e) => setEditingStepName(e.target.value)}
-                        onClick={(e) => e.stopPropagation()}
-                        onKeyDown={(e) => {
-                          e.stopPropagation();
-                          if (e.key === "Enter") {
-                            e.preventDefault();
-                            void submitCsvRowRename();
-                          }
-                          if (e.key === "Escape") {
-                            e.preventDefault();
-                            cancelCsvRowRename();
-                          }
-                        }}
-                        onBlur={() => void submitCsvRowRename()}
-                      />
-                    ) : (
-                      row.stepName
-                    )}
-                  </li>
-                );
-              })
-            )}
-          </ul>
-        </aside>
-        <main className="main">
-          <h1 className="title">Robot Recorder</h1>
-          <p className="cursor-pos-display">
-            Cursor: {cursorPos ? `${cursorPos.x}, ${cursorPos.y}` : "—"}
-            {cursorPos?.runLiteWindow && (
-              <>
-                <br />
-                RuneLite: X:{cursorPos.runLiteWindow.x}, Y:{cursorPos.runLiteWindow.y}, W:
-                {cursorPos.runLiteWindow.width}, H:{cursorPos.runLiteWindow.height}
-              </>
-            )}
-          </p>
-          <p className="status">{isReplaying ? "Replaying..." : isRecording ? "Recording..." : "Stopped"}</p>
-          <p className={`status marker-status marker-${markerColorState.color}`}>
-            Marker: {markerColorState.color.toUpperCase()}
-            {markerColorState.point ? ` at ${markerColorState.point.x}, ${markerColorState.point.y}` : ""}
-            {` (confidence ${Math.round(markerColorState.confidence * 100)}%)`}
-          </p>
-          <div className="meta">
-            <div>
-              <strong>File:</strong> <span>{folderState.activeFile || "-"}</span>
-            </div>
-            <div>
-              <strong>Rows:</strong> <span>{folderState.activeFileRows.length}</span>
-            </div>
-            {selectedCsvRow ? (
-              <>
-                <div className="edit-groups">
-                  <div className="edit-line">
-                    <strong>Action</strong>
-                    <input value={rowForm.action} onChange={(e) => handleRowFormChange("action", e.target.value)} />
-                  </div>
-                  <div className="group-separator" />
-                  <div className="edit-line">
-                    <strong>Coordinates and allowed range</strong>
-                    <div className="axis-groups">
-                      <div className="axis-row">
-                        <span className="axis-row-label">X values</span>
-                        <div className="inline-fields inline-fields--three">
-                          <label className="field">
-                            <span className="field-label">X coordinate</span>
-                            <input
-                              aria-label="X coordinate"
-                              placeholder="e.g. 540"
-                              value={rowForm.x}
-                              onChange={(e) => handleRowFormChange("x", e.target.value)}
-                            />
-                          </label>
-                          <label className="field">
-                            <span className="field-label">Minimum X</span>
-                            <input
-                              aria-label="Minimum X value"
-                              placeholder="e.g. 500"
-                              value={rowForm.xMin}
-                              onChange={(e) => handleRowFormChange("xMin", e.target.value)}
-                            />
-                          </label>
-                          <label className="field">
-                            <span className="field-label">Maximum X</span>
-                            <input
-                              aria-label="Maximum X value"
-                              placeholder="e.g. 580"
-                              value={rowForm.xMax}
-                              onChange={(e) => handleRowFormChange("xMax", e.target.value)}
-                            />
-                          </label>
-                        </div>
-                      </div>
-                      <div className="axis-row">
-                        <span className="axis-row-label">Y values</span>
-                        <div className="inline-fields inline-fields--three">
-                          <label className="field">
-                            <span className="field-label">Y coordinate</span>
-                            <input
-                              aria-label="Y coordinate"
-                              placeholder="e.g. 320"
-                              value={rowForm.y}
-                              onChange={(e) => handleRowFormChange("y", e.target.value)}
-                            />
-                          </label>
-                          <label className="field">
-                            <span className="field-label">Minimum Y</span>
-                            <input
-                              aria-label="Minimum Y value"
-                              placeholder="e.g. 300"
-                              value={rowForm.yMin}
-                              onChange={(e) => handleRowFormChange("yMin", e.target.value)}
-                            />
-                          </label>
-                          <label className="field">
-                            <span className="field-label">Maximum Y</span>
-                            <input
-                              aria-label="Maximum Y value"
-                              placeholder="e.g. 340"
-                              value={rowForm.yMax}
-                              onChange={(e) => handleRowFormChange("yMax", e.target.value)}
-                            />
-                          </label>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="group-separator" />
-                  <div className="edit-line">
-                    <strong>Elapsed time and allowed range</strong>
-                    <div className="inline-fields inline-fields--three">
-                      <label className="field">
-                        <span className="field-label">Elapsed time (seconds)</span>
-                        <input
-                          aria-label="Elapsed time in seconds"
-                          placeholder="e.g. 0.250"
-                          value={rowForm.elapsedSeconds}
-                          onChange={(e) => handleRowFormChange("elapsedSeconds", e.target.value)}
-                        />
-                      </label>
-                      <label className="field">
-                        <span className="field-label">Minimum elapsed (seconds)</span>
-                        <input
-                          aria-label="Minimum elapsed time in seconds"
-                          placeholder="Leave empty to disable"
-                          value={rowForm.elapsedMin}
-                          onChange={(e) => handleRowFormChange("elapsedMin", e.target.value)}
-                        />
-                      </label>
-                      <label className="field">
-                        <span className="field-label">Maximum elapsed (seconds)</span>
-                        <input
-                          aria-label="Maximum elapsed time in seconds"
-                          placeholder="Leave empty to disable"
-                          value={rowForm.elapsedMax}
-                          onChange={(e) => handleRowFormChange("elapsedMax", e.target.value)}
-                        />
-                      </label>
-                    </div>
-                  </div>
-                  <button type="button" onClick={() => void handleSaveRow()} disabled={isSavingRow}>
-                    {isSavingRow ? "Saving..." : "Save Row"}
+                    Test Color Matcher
                   </button>
                 </div>
-              </>
-            ) : (
-              <div>
-                <strong>Selection:</strong> <span>Click a CSV line in the tree.</span>
               </div>
-            )}
+            </main>
           </div>
-
-          <div className="replay-settings">
-            <label>
-              <input
-                type="checkbox"
-                checked={isReplayRepeatEnabled}
-                onChange={(e) => handleReplayRepeatChange(e.target.checked)}
-                disabled={isRecording}
-              />
-              Repeat replay
-            </label>
-            <label className="delay-setting">
-              <span>Click delay (ms)</span>
-              <input
-                type="number"
-                min={0}
-                step={50}
-                value={replayClickDelayMs}
-                onChange={(e) => handleReplayClickDelayChange(e.target.value)}
-                disabled={isRecording}
-              />
-            </label>
+        ) : (
+          <div className="automatebot-view">
+            <h1>Automate Bot</h1>
+            <p>Content coming soon...</p>
           </div>
-
-          <div className="action-buttons">
-            <button
-              className={`record-btn${isRecording ? " recording" : ""}`}
-              type="button"
-              onClick={handleToggleRecording}
-              disabled={isReplaying}
-            >
-              {isRecording ? "Stop Recording (F3)" : "Start Recording (F3)"}
-            </button>
-            <button
-              className="replay-btn"
-              type="button"
-              onClick={isReplaying ? handleStopReplay : () => void handleReplayCsv()}
-              disabled={isRecording}
-            >
-              {isReplaying ? "Stop Replay (F2)" : "Replay CSV (F2)"}
-            </button>
-            <div className="test-color-btn-row">
-              <button
-                className="test-color-btn"
-                type="button"
-                onClick={() => void handleTestColorDetection()}
-                disabled={isRecording || isReplaying}
-              >
-                Test Color Matcher
-              </button>
-              {markerColorState.point && (
-                <span className="marker-coords">
-                  ({markerColorState.point.x}, {markerColorState.point.y})
-                </span>
-              )}
-            </div>
-          </div>
-        </main>
+        )}
       </div>
       {contextMenu && (
-        <div
-          className="context-menu"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
-          onClick={(e) => e.stopPropagation()}
-        >
+        <div className="context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(e) => e.stopPropagation()}>
           {canRenameContextTarget && (
             <div className="context-item" onClick={() => void handleRename()}>
               Rename
             </div>
           )}
           <div className="context-item context-item--danger" onClick={() => void handleDelete()}>
-            {contextMenuSelectedTargets.length > 1
-              ? `Delete Selected (${contextMenuSelectedTargets.length})`
-              : "Delete"}
+            {contextMenuSelectedTargets.length > 1 ? `Delete Selected (${contextMenuSelectedTargets.length})` : "Delete"}
           </div>
         </div>
       )}
       {csvRowContextMenu && (
-        <div
-          className="context-menu"
-          style={{ left: csvRowContextMenu.x, top: csvRowContextMenu.y }}
-          onClick={(e) => e.stopPropagation()}
-        >
+        <div className="context-menu" style={{ left: csvRowContextMenu.x, top: csvRowContextMenu.y }} onClick={(e) => e.stopPropagation()}>
           <div className="context-item" onClick={() => void handlePlayCsvRow()}>
             Play (row)
           </div>
