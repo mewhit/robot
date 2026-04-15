@@ -75,6 +75,14 @@ type MarkerColorState = {
   point: { x: number; y: number } | null;
 };
 
+type ActiveView = "clicker" | "automateBot";
+const ACTIVE_VIEW_STORAGE_KEY = "robot.activeView";
+
+function getInitialActiveView(): ActiveView {
+  const savedView = window.localStorage.getItem(ACTIVE_VIEW_STORAGE_KEY);
+  return savedView === "automateBot" ? "automateBot" : "clicker";
+}
+
 function TreeNode({
   node,
   activeRelativePath,
@@ -163,7 +171,7 @@ function TreeNode({
 }
 
 export default function App() {
-  const [activeView, setActiveView] = useState<"clicker" | "automateBot">("clicker");
+  const [activeView, setActiveView] = useState<ActiveView>(() => getInitialActiveView());
   const [isRecording, setIsRecording] = useState(false);
   const [isReplaying, setIsReplaying] = useState(false);
   const [isReplayRepeatEnabled, setIsReplayRepeatEnabled] = useState(false);
@@ -298,6 +306,10 @@ export default function App() {
       window.removeEventListener("resize", hideAll);
     };
   }, [hideContextMenu, hideCsvRowContextMenu]);
+
+  useEffect(() => {
+    window.localStorage.setItem(ACTIVE_VIEW_STORAGE_KEY, activeView);
+  }, [activeView]);
 
   const handleToggleRecording = () => ipcRenderer.send("toggle-recording");
 

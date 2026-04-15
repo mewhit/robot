@@ -1,16 +1,141 @@
 import * as fs from "fs";
 import * as path from "path";
-import { dialog, app, BrowserWindow } from "electron";
+import { dialog, app, BrowserWindow, screen, type BrowserWindowConstructorOptions, type Rectangle } from "electron";
 import { AppState } from "./global-state";
-import {
-  ensureOutputFolder,
-  resolveInsideOutputFolder,
-  toCsvFileName,
-  listOutputFolderFiles,
-  buildExplorerTree,
-} from "./fileManager";
+import { ensureOutputFolder, resolveInsideOutputFolder, toCsvFileName, listOutputFolderFiles, buildExplorerTree } from "./fileManager";
 import { readActiveFileRows, listDataLineIndexes, formatCsvRow } from "./csvOperations";
 import { DEFAULT_OUTPUT_FILE_NAME, DEFAULT_ELAPSED_RANGE } from "./constants";
+
+const WINDOW_CONFIG_FILE_NAME = "window-config.json";
+const DEFAULT_WINDOW_WIDTH = 1280;
+const DEFAULT_WINDOW_HEIGHT = 720;
+const MIN_WINDOW_WIDTH = 420;
+const MIN_WINDOW_HEIGHT = 320;
+
+type WindowConfig = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  isMaximized: boolean;
+};
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function getWindowConfigPath() {
+  return path.join(app.getPath("userData"), WINDOW_CONFIG_FILE_NAME);
+}
+
+function toValidWindowConfig(raw: unknown): WindowConfig | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+
+  const candidate = raw as Partial<WindowConfig>;
+  const rawX = candidate.x;
+  const rawY = candidate.y;
+  const rawWidth = candidate.width;
+  const rawHeight = candidate.height;
+  if (!isFiniteNumber(rawX) || !isFiniteNumber(rawY) || !isFiniteNumber(rawWidth) || !isFiniteNumber(rawHeight)) {
+    return null;
+  }
+
+  const width = Math.max(MIN_WINDOW_WIDTH, Math.round(rawWidth));
+  const height = Math.max(MIN_WINDOW_HEIGHT, Math.round(rawHeight));
+  const x = Math.round(rawX);
+  const y = Math.round(rawY);
+
+  return {
+    x,
+    y,
+    width,
+    height,
+    isMaximized: Boolean(candidate.isMaximized),
+  };
+}
+
+function readWindowConfig(): WindowConfig | null {
+  const configPath = getWindowConfigPath();
+  if (!fs.existsSync(configPath)) {
+    return null;
+  }
+
+  try {
+    const content = fs.readFileSync(configPath, "utf8");
+    return toValidWindowConfig(JSON.parse(content));
+  } catch (error) {
+    console.warn(`Unable to read window config at ${configPath}: ${String(error)}`);
+    return null;
+  }
+}
+
+function rectIntersects(a: Rectangle, b: Rectangle) {
+  return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
+}
+
+function isOnAnyDisplay(bounds: Rectangle) {
+  return screen.getAllDisplays().some((display) => rectIntersects(bounds, display.workArea));
+}
+
+function getWindowOptionsFromConfig(savedConfig: WindowConfig | null): BrowserWindowConstructorOptions {
+  const baseOptions: BrowserWindowConstructorOptions = {
+    width: DEFAULT_WINDOW_WIDTH,
+    height: DEFAULT_WINDOW_HEIGHT,
+    minWidth: MIN_WINDOW_WIDTH,
+    minHeight: MIN_WINDOW_HEIGHT,
+    resizable: true,
+    maximizable: true,
+    autoHideMenuBar: false,
+    title: "Robot Recorder",
+    webPreferences: {
+      nodeIntegration: true,
+      contextIsolation: false,
+    },
+  };
+
+  if (!savedConfig) {
+    return baseOptions;
+  }
+
+  const candidateBounds: Rectangle = {
+    x: savedConfig.x,
+    y: savedConfig.y,
+    width: savedConfig.width,
+    height: savedConfig.height,
+  };
+
+  if (!isOnAnyDisplay(candidateBounds)) {
+    return {
+      ...baseOptions,
+      width: savedConfig.width,
+      height: savedConfig.height,
+    };
+  }
+
+  return {
+    ...baseOptions,
+    x: savedConfig.x,
+    y: savedConfig.y,
+    width: savedConfig.width,
+    height: savedConfig.height,
+  };
+}
+
+function writeWindowConfig(window: BrowserWindow) {
+  const targetBounds = window.isMaximized() ? window.getNormalBounds() : window.getBounds();
+  const payload: WindowConfig = {
+    x: Math.round(targetBounds.x),
+    y: Math.round(targetBounds.y),
+    width: Math.max(MIN_WINDOW_WIDTH, Math.round(targetBounds.width)),
+    height: Math.max(MIN_WINDOW_HEIGHT, Math.round(targetBounds.height)),
+    isMaximized: window.isMaximized(),
+  };
+
+  const configPath = getWindowConfigPath();
+  fs.writeFileSync(configPath, JSON.stringify(payload, null, 2), "utf8");
+}
 
 export function sendOutputFolderState() {
   ensureOutputFolder();
@@ -353,29 +478,49 @@ export async function chooseOutputFolder() {
 }
 
 export function createWindow() {
-  AppState.mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 720,
-    minWidth: 420,
-    minHeight: 320,
-    resizable: true,
-    maximizable: true,
-    autoHideMenuBar: false,
-    title: "Robot Recorder",
-    webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
-    },
-  });
+  const savedWindowConfig = readWindowConfig();
+  const browserWindowOptions = getWindowOptionsFromConfig(savedWindowConfig);
+  AppState.mainWindow = new BrowserWindow(browserWindowOptions);
+  const window = AppState.mainWindow;
+
+  let saveTimer: NodeJS.Timeout | null = null;
+  const queueBoundsSave = () => {
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+    }
+    saveTimer = setTimeout(() => {
+      if (!window.isDestroyed()) {
+        writeWindowConfig(window);
+      }
+      saveTimer = null;
+    }, 250);
+  };
+
+  window.on("move", queueBoundsSave);
+  window.on("resize", queueBoundsSave);
+  window.on("maximize", queueBoundsSave);
+  window.on("unmaximize", queueBoundsSave);
+
+  if (savedWindowConfig?.isMaximized) {
+    window.maximize();
+  }
 
   const isDev = !app.isPackaged;
   if (isDev) {
-    void AppState.mainWindow.loadURL("http://localhost:5173");
+    void window.loadURL("http://localhost:5173");
   } else {
-    void AppState.mainWindow.loadFile(path.join(__dirname, "../renderer/index.html"));
+    void window.loadFile(path.join(__dirname, "../renderer/index.html"));
   }
 
-  AppState.mainWindow.on("closed", () => {
+  window.on("close", () => {
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+    writeWindowConfig(window);
+  });
+
+  window.on("closed", () => {
     AppState.mainWindow = null;
   });
 }
