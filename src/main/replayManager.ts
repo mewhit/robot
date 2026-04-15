@@ -1,13 +1,12 @@
-import * as robotModule from "robotjs";
+import * as robot from "robotjs";
 import { windowManager, Window } from "node-window-manager";
 import { AppState } from "./global-state";
-import { CsvRow, RobotApi } from "./types";
+import { CsvRow } from "./types";
 import { getReplayTargetPoint, wait } from "./utils";
 import { readActiveFileRows, normalizeReplayKey } from "./csvOperations";
 import { sendReplayState, sendReplayRowState } from "./recordingManager";
 import { REPLAY_KEY_PRESS_MS, REPLAY_FOCUS_DELAY_MS } from "./constants";
 
-const robot = ((robotModule as unknown as { default?: RobotApi }).default ?? robotModule) as unknown as RobotApi;
 type RuneLiteWindowBounds = { x: number; y: number; width: number; height: number };
 const DEFAULT_REPLAY_RUNELITE_BOUNDS: RuneLiteWindowBounds = { x: 0, y: 0, width: 1280, height: 720 };
 
@@ -207,7 +206,7 @@ function ensureRuneLiteWindowForReplay() {
 
   if (!isMatch) {
     throw new Error(
-      `RuneLite bounds check failed. Expected ${targetBounds.x},${targetBounds.y},${targetBounds.width},${targetBounds.height} but got ${actual.x},${actual.y},${actual.width},${actual.height}.`
+      `RuneLite bounds check failed. Expected ${targetBounds.x},${targetBounds.y},${targetBounds.width},${targetBounds.height} but got ${actual.x},${actual.y},${actual.width},${actual.height}.`,
     );
   }
 }
@@ -271,9 +270,7 @@ export async function replayActiveCsv(options?: { fromUi?: boolean; fromRowIndex
           const keySpec = row.action.slice(4);
           const parts = keySpec.split("+");
           const key = normalizeReplayKey(parts[parts.length - 1]);
-          const modifiers = parts
-            .slice(0, parts.length - 1)
-            .map((mod) => (mod === "ctrl" ? "control" : mod === "meta" ? "command" : mod));
+          const modifiers = parts.slice(0, parts.length - 1).map((mod) => (mod === "ctrl" ? "control" : mod === "meta" ? "command" : mod));
           try {
             await pressReplayKey(key, modifiers);
           } catch (error) {

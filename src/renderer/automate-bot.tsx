@@ -15,6 +15,7 @@ type AutomateBotProps = {
   onToggleTaskNodeExpand: (id: string) => void;
   onSelectTaskNode: (id: string) => void;
   onToggleSelectedTaskRun: () => void;
+  onStepContextMenu: (e: React.MouseEvent, stepId: string, stepName: string) => void;
 };
 
 function TaskNodeComponent({
@@ -26,6 +27,7 @@ function TaskNodeComponent({
   onToggleExpand,
   onSelectNode,
   onToggleSelectedTaskRun,
+  onStepContextMenu,
 }: {
   node: TaskNode;
   expandedNodeIds: Set<string>;
@@ -35,12 +37,14 @@ function TaskNodeComponent({
   onToggleExpand: (id: string) => void;
   onSelectNode: (id: string) => void;
   onToggleSelectedTaskRun: () => void;
+  onStepContextMenu: (e: React.MouseEvent, stepId: string, stepName: string) => void;
 }) {
   const isExpanded = expandedNodeIds.has(node.id);
   const hasChildren = (node.children ?? []).length > 0;
   const isSelectableTask = node.id === "falador-rooftop";
   const isSelected = isSelectableTask && selectedNodeId === node.id;
   const isActiveStep = node.id === activeStepId;
+  const isStep = !hasChildren && node.id.includes("-step-");
 
   return (
     <li>
@@ -49,6 +53,13 @@ function TaskNodeComponent({
         onClick={() => {
           if (isSelectableTask) {
             onSelectNode(node.id);
+          }
+        }}
+        onContextMenu={(e) => {
+          if (isStep) {
+            e.preventDefault();
+            e.stopPropagation();
+            onStepContextMenu(e, node.id, node.name);
           }
         }}
       >
@@ -92,6 +103,7 @@ function TaskNodeComponent({
               onToggleExpand={onToggleExpand}
               onSelectNode={onSelectNode}
               onToggleSelectedTaskRun={onToggleSelectedTaskRun}
+              onStepContextMenu={onStepContextMenu}
             />
           ))}
         </ul>
@@ -110,6 +122,7 @@ export default function AutomateBot(props: AutomateBotProps) {
     onToggleTaskNodeExpand,
     onSelectTaskNode,
     onToggleSelectedTaskRun,
+    onStepContextMenu,
   } = props;
 
   return (
@@ -134,6 +147,7 @@ export default function AutomateBot(props: AutomateBotProps) {
                 onToggleExpand={onToggleTaskNodeExpand}
                 onSelectNode={onSelectTaskNode}
                 onToggleSelectedTaskRun={onToggleSelectedTaskRun}
+                onStepContextMenu={onStepContextMenu}
               />
             ))
           )}

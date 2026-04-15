@@ -31,7 +31,13 @@ import {
 import { testColorDetectionOnce } from "./colorWatcher";
 import { DEFAULT_OUTPUT_FILE_NAME } from "./constants";
 import { ensureRuneLiteWindowBoundsForAutomation } from "./ioHookHandlers";
-import { sendAutomateBotState, setActiveView, setSelectedAutomateBotId, toggleSelectedAutomateBot } from "./automateBotManager";
+import {
+  sendAutomateBotState,
+  setActiveView,
+  setSelectedAutomateBotId,
+  toggleSelectedAutomateBot,
+  startAutomateBotFromStep,
+} from "./automateBotManager";
 
 const robot = ((robotModule as unknown as { default?: any }).default ?? robotModule) as any;
 
@@ -69,6 +75,17 @@ export function setupIpcHandlers() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`Could not toggle automate bot: ${message}`);
+      return { ok: false, error: message };
+    }
+  });
+
+  ipcMain.handle("start-automate-bot-from-step", async (_event, stepId: string) => {
+    try {
+      startAutomateBotFromStep(stepId);
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Could not start automate bot from step: ${message}`);
       return { ok: false, error: message };
     }
   });

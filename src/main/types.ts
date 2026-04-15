@@ -1,12 +1,3 @@
-export type RobotApi = {
-  getMousePos: () => { x: number; y: number };
-  moveMouse: (x: number, y: number) => void;
-  mouseClick: (button?: "left" | "right" | "middle", double?: boolean) => void;
-  getPixelColor?: (x: number, y: number) => string;
-  keyTap: (key: string, modifier?: string | string[]) => void;
-  keyToggle?: (key: string, downOrUp: "down" | "up") => void;
-};
-
 export type ExplorerNode = {
   name: string;
   relativePath: string;

@@ -77,6 +77,13 @@ type CsvRowContextMenuState = {
   stepName: string;
 } | null;
 
+type StepContextMenuState = {
+  x: number;
+  y: number;
+  stepId: string;
+  stepName: string;
+} | null;
+
 type MarkerColorState = {
   color: "green" | "red" | "none";
   confidence: number;
@@ -126,6 +133,7 @@ export default function App() {
   const [isSavingRow, setIsSavingRow] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
   const [csvRowContextMenu, setCsvRowContextMenu] = useState<CsvRowContextMenuState>(null);
+  const [stepContextMenu, setStepContextMenu] = useState<StepContextMenuState>(null);
   const [editingRelativePath, setEditingRelativePath] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
   const [cursorPos, setCursorPos] = useState<{
@@ -186,6 +194,7 @@ export default function App() {
 
   const hideContextMenu = useCallback(() => setContextMenu(null), []);
   const hideCsvRowContextMenu = useCallback(() => setCsvRowContextMenu(null), []);
+  const hideStepContextMenu = useCallback(() => setStepContextMenu(null), []);
 
   const getDefaultNewFileName = useCallback(() => {
     const baseName = "new-clicks";
@@ -272,6 +281,7 @@ export default function App() {
     const hideAll = () => {
       hideContextMenu();
       hideCsvRowContextMenu();
+      hideStepContextMenu();
     };
     window.addEventListener("click", hideAll);
     window.addEventListener("resize", hideAll);
@@ -279,7 +289,7 @@ export default function App() {
       window.removeEventListener("click", hideAll);
       window.removeEventListener("resize", hideAll);
     };
-  }, [hideContextMenu, hideCsvRowContextMenu]);
+  }, [hideContextMenu, hideCsvRowContextMenu, hideStepContextMenu]);
 
   useEffect(() => {
     window.localStorage.setItem(ACTIVE_VIEW_STORAGE_KEY, activeView);
@@ -315,6 +325,28 @@ export default function App() {
       window.alert(`Unable to toggle Automate Bot: ${message}`);
     }
   }, []);
+
+  const handleStepContextMenu = useCallback((e: React.MouseEvent, stepId: string, stepName: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu(null);
+    setCsvRowContextMenu(null);
+    setStepContextMenu({ x: e.clientX, y: e.clientY, stepId, stepName });
+  }, []);
+
+  const handleResumeFromStep = useCallback(async () => {
+    if (!stepContextMenu) return;
+    hideStepContextMenu();
+    try {
+      const result = await ipcRenderer.invoke("start-automate-bot-from-step", stepContextMenu.stepId);
+      if (!result?.ok) {
+        window.alert(result?.error || "Unable to resume from step.");
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      window.alert(`Unable to resume from step: ${message}`);
+    }
+  }, [stepContextMenu, hideStepContextMenu]);
 
   const handleStopReplay = () => {
     ipcRenderer.send("stop-replay");
@@ -742,6 +774,7 @@ export default function App() {
             onToggleTaskNodeExpand={handleToggleTaskNodeExpand}
             onSelectTaskNode={setSelectedTaskNodeId}
             onToggleSelectedTaskRun={() => void handleToggleSelectedTaskRun()}
+            onStepContextMenu={handleStepContextMenu}
           />
         )}
       </div>
@@ -754,6 +787,13 @@ export default function App() {
           )}
           <div className="context-item context-item--danger" onClick={() => void handleDelete()}>
             {contextMenuSelectedTargets.length > 1 ? `Delete Selected (${contextMenuSelectedTargets.length})` : "Delete"}
+          </div>
+        </div>
+      )}
+      {stepContextMenu && (
+        <div className="context-menu" style={{ left: stepContextMenu.x, top: stepContextMenu.y }} onClick={(e) => e.stopPropagation()}>
+          <div className="context-item" onClick={() => void handleResumeFromStep()}>
+            Resume from {stepContextMenu.stepName}
           </div>
         </div>
       )}

@@ -1,11 +1,10 @@
-import * as robotModule from "robotjs";
 import { detectMarkerState } from "../colorWatcher";
 import { AppState } from "../global-state";
 import { getRuneLite } from "../runeLiteWindow";
 import { Window } from "node-window-manager";
 import { findColorShapesInBounds } from "../colorDetection";
 import { Coordinate } from "../colorDetection.types";
-import { mouseClick, moveMouse } from "robotjs";
+import { keyToggle, mouseClick, moveMouse, scrollMouse } from "robotjs";
 import { setAutomateBotCurrentStep } from "../automateBotManager";
 
 export const FALADOR_ROOFTOP_BOT_ID = "falador-rooftop";
@@ -23,21 +22,11 @@ const SAME_MARKER_RECLICK_COOLDOWN_MS = 15000;
 let isFaladorLoopRunning = false;
 let lastHandledMarker: { x: number; y: number; atMs: number } | null = null;
 
-type RobotScrollApi = {
-  scrollMouse?: (x: number, y: number) => void;
-  moveMouse?: (x: number, y: number) => void;
-  mouseClick?: (button?: "left" | "right" | "middle", double?: boolean) => void;
-  getPixelColor?: (x: number, y: number) => string;
-};
-
-const robot = ((robotModule as unknown as { default?: RobotScrollApi }).default ?? robotModule) as unknown as RobotScrollApi;
-
-const performScrollTick = (scrollMouse: NonNullable<RobotScrollApi["scrollMouse"]>) => {
+const performScrollTick = (scrollMouse: any) => {
   scrollMouse(0, SCROLL_DELTA_Y);
 };
 
 function scrollRuneLiteDownToMaximum() {
-  const { scrollMouse } = robot;
   if (typeof scrollMouse !== "function") {
     console.warn("RobotJS scrollMouse is unavailable; skipping Falador startup scroll.");
     return;
@@ -47,7 +36,6 @@ function scrollRuneLiteDownToMaximum() {
 }
 
 function moveMouseToRuneLiteCenter(runeLiteWindow: NonNullable<ReturnType<typeof getRuneLite>>) {
-  const { moveMouse } = robot;
   if (typeof moveMouse !== "function") {
     return;
   }
@@ -88,161 +76,6 @@ function sleep(ms: number) {
 
 function randomIntInclusive(min: number, max: number) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-
-function parseHexColor(value: string): { r: number; g: number; b: number } | null {
-  const safeHex = value.trim().replace(/^#/, "");
-  if (!/^[0-9a-fA-F]{6}$/.test(safeHex)) {
-    return null;
-  }
-
-  const color = Number.parseInt(safeHex, 16);
-  if (!Number.isFinite(color)) {
-    return null;
-  }
-
-  return {
-    r: (color >> 16) & 0xff,
-    g: (color >> 8) & 0xff,
-    b: color & 0xff,
-  };
-}
-
-function isGreenPixel(hexColor: string) {
-  const rgb = parseHexColor(hexColor);
-  if (!rgb) {
-    return false;
-  }
-
-  if (rgb.g < 150) {
-    return false;
-  }
-
-  const dominance = rgb.g - Math.max(rgb.r, rgb.b);
-  return dominance >= 80;
-}
-
-function getRandomOffsetInCircle(radius: number) {
-  while (true) {
-    const offsetX = randomIntInclusive(-radius, radius);
-    const offsetY = randomIntInclusive(-radius, radius);
-    if (offsetX * offsetX + offsetY * offsetY <= radius * radius) {
-      return { offsetX, offsetY };
-    }
-  }
-}
-
-function safeGetPixelColor(getPixelColor: ((x: number, y: number) => string) | undefined, x: number, y: number) {
-  if (typeof getPixelColor !== "function") {
-    return null;
-  }
-
-  try {
-    return getPixelColor(x, y);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message.includes("outside the main screen")) {
-      return null;
-    }
-
-    console.warn(`Falador getPixelColor failed at (${x}, ${y}): ${message}`);
-    return null;
-  }
-}
-
-function getRandomizedClickPoint(point: { x: number; y: number }, getPixelColor?: (x: number, y: number) => string) {
-  if (typeof getPixelColor !== "function") {
-    const { offsetX, offsetY } = getRandomOffsetInCircle(GREEN_CLICK_RANDOM_OFFSET_PX);
-    return {
-      x: point.x + offsetX,
-      y: point.y + offsetY,
-    };
-  }
-
-  const centerColor = safeGetPixelColor(getPixelColor, point.x, point.y);
-  if (centerColor === null) {
-    const { offsetX, offsetY } = getRandomOffsetInCircle(GREEN_CLICK_RANDOM_OFFSET_PX);
-    return {
-      x: point.x + offsetX,
-      y: point.y + offsetY,
-    };
-  }
-
-  if (!isGreenPixel(centerColor)) {
-    return point;
-  }
-
-  for (let i = 0; i < GREEN_CLICK_RANDOM_CANDIDATE_ATTEMPTS; i += 1) {
-    const { offsetX, offsetY } = getRandomOffsetInCircle(GREEN_CLICK_RANDOM_OFFSET_PX);
-    const candidate = {
-      x: point.x + offsetX,
-      y: point.y + offsetY,
-    };
-
-    const candidateColor = safeGetPixelColor(getPixelColor, candidate.x, candidate.y);
-    if (candidateColor !== null && isGreenPixel(candidateColor)) {
-      return candidate;
-    }
-  }
-
-  return point;
-}
-
-function isNewMarkerPoint(point: { x: number; y: number }) {
-  if (lastHandledMarker === null) {
-    return true;
-  }
-
-  const distance = Math.hypot(point.x - lastHandledMarker.x, point.y - lastHandledMarker.y);
-  if (distance >= NEW_MARKER_MIN_MOVE_PX) {
-    return true;
-  }
-
-  const cooldownElapsed = Date.now() - lastHandledMarker.atMs >= SAME_MARKER_RECLICK_COOLDOWN_MS;
-  return cooldownElapsed;
-}
-
-async function detectGreenAndClick() {
-  const { moveMouse, mouseClick, getPixelColor } = robot;
-  if (typeof moveMouse !== "function" || typeof mouseClick !== "function") {
-    console.warn("RobotJS move/click API is unavailable; skipping Falador green click.");
-    return;
-  }
-
-  for (let attempt = 1; attempt <= GREEN_DETECTION_MAX_ATTEMPTS; attempt += 1) {
-    if (!AppState.automateBotRunning) {
-      return;
-    }
-
-    const detection = await detectMarkerState();
-    const isGreen = detection.color === "green";
-    const point = detection.point;
-
-    if (isGreen && point !== null) {
-      if (!isNewMarkerPoint(point)) {
-        console.log(`Automate Bot (Falador Roof Top): marker at (${point.x}, ${point.y}) unchanged; waiting for a new marker.`);
-
-        if (attempt < GREEN_DETECTION_MAX_ATTEMPTS) {
-          await sleep(GREEN_DETECTION_RETRY_DELAY_MS);
-        }
-        continue;
-      }
-
-      moveMouse(point.x, point.y);
-      mouseClick("left", false);
-      lastHandledMarker = { x: point.x, y: point.y, atMs: Date.now() };
-      console.log(
-        `Automate Bot (Falador Roof Top): Step 2 - Green detected at (${point.x}, ${point.y}) and clicked at (${point.x}, ${point.y}), confidence=${detection.confidence}.`,
-      );
-      return;
-    }
-
-    if (attempt < GREEN_DETECTION_MAX_ATTEMPTS) {
-      await sleep(GREEN_DETECTION_RETRY_DELAY_MS);
-    }
-  }
-
-  console.log("Automate Bot (Falador Roof Top): Step 2 - Green marker not detected after scrolling.");
 }
 
 function getReducedShapeCoordinate(shape: Coordinate[]): Coordinate | null {
@@ -328,13 +161,37 @@ function getShapeCenter(shape: Coordinate[]): Coordinate | null {
   };
 }
 
-const clickNearest = (bounds: { x: number; y: number; width: number; height: number }) => {
-  const shapes = findShapes(bounds);
+type Direction = "North" | "South" | "East" | "West";
+
+function filterShapesByDirection(shapes: Coordinate[][], searchCenter: { x: number; y: number }, direction: Direction): Coordinate[][] {
+  const filtered = shapes.filter((shape) => {
+    const center = getShapeCenter(shape);
+    if (!center) return false;
+    switch (direction) {
+      case "North":
+        return center.y < searchCenter.y;
+      case "South":
+        return center.y > searchCenter.y;
+      case "West":
+        return center.x < searchCenter.x;
+      case "East":
+        return center.x > searchCenter.x;
+    }
+  });
+  return filtered.length > 0 ? filtered : shapes;
+}
+
+const clickNearest = (bounds: { x: number; y: number; width: number; height: number }, direction?: Direction) => {
+  let shapes = findShapes(bounds);
 
   const searchCenter = {
     x: bounds.x + bounds.width / 2,
     y: bounds.y + bounds.height / 2,
   };
+
+  if (direction) {
+    shapes = filterShapesByDirection(shapes, searchCenter, direction);
+  }
 
   const shape =
     shapes.reduce<Coordinate[]>((closestShape, currentShape) => {
@@ -405,47 +262,7 @@ const clickSecondNearest = (bounds: { x: number; y: number; width: number; heigh
   mouseClick("left", false);
 };
 
-const clickFarest = (bounds: { x: number; y: number; width: number; height: number }) => {
-  const shapes = findShapes(bounds);
-
-  const searchCenter = {
-    x: bounds.x + bounds.width / 2,
-    y: bounds.y + bounds.height / 2,
-  };
-
-  const shape =
-    shapes.reduce<Coordinate[]>((farthestShape, currentShape) => {
-      if (farthestShape.length === 0) {
-        return currentShape;
-      }
-
-      const currentCenter = getShapeCenter(currentShape);
-      const farthestCenter = getShapeCenter(farthestShape);
-
-      if (!currentCenter) {
-        return farthestShape;
-      }
-
-      if (!farthestCenter) {
-        return currentShape;
-      }
-
-      const currentDistance = Math.hypot(currentCenter.x - searchCenter.x, currentCenter.y - searchCenter.y);
-      const farthestDistance = Math.hypot(farthestCenter.x - searchCenter.x, farthestCenter.y - searchCenter.y);
-
-      return currentDistance > farthestDistance ? currentShape : farthestShape;
-    }, []) ?? [];
-
-  const point = getReducedShapeCoordinate(shape);
-  if (!point) return;
-
-  const clickX = point.x + randomIntInclusive(-5, 5);
-  const clickY = point.y + randomIntInclusive(-5, 5);
-  moveMouse(clickX, clickY);
-  mouseClick("left", false);
-};
-
-async function runFaladorLoop(window: Window) {
+async function runFaladorLoop(window: Window, startStepNumber = 1) {
   if (isFaladorLoopRunning) {
     console.log("Automate Bot (Falador Roof Top): loop already running; skipping new start.");
     return;
@@ -458,89 +275,113 @@ async function runFaladorLoop(window: Window) {
     height: Number(windowBounds.height) - 50,
   };
 
-  // Step 1
-  setAutomateBotCurrentStep("falador-rooftop-step-1");
-  console.log("Falador Step 1");
-  clickNearest(bounds);
-  await sleep(7000);
-  if (!AppState.automateBotRunning) return;
+  if (startStepNumber <= 1) {
+    // Step 1
+    setAutomateBotCurrentStep("falador-rooftop-step-1");
+    console.log("Falador Step 1");
+    clickNearest(bounds);
+    await sleep(7000);
+    if (!AppState.automateBotRunning) return;
+  }
 
-  // Step 2 - Tightrope
-  setAutomateBotCurrentStep("falador-rooftop-step-2");
-  console.log("Falador Step 2 - Tightrope");
-  clickNearest(bounds);
-  await sleep(8000);
-  if (!AppState.automateBotRunning) return;
+  if (startStepNumber <= 2) {
+    // Step 2 - Tightrope
+    setAutomateBotCurrentStep("falador-rooftop-step-2");
+    console.log("Falador Step 2 - Tightrope");
+    clickNearest(bounds);
+    await sleep(8000);
+    if (!AppState.automateBotRunning) return;
+  }
 
-  // Step 3 - Hands Hold
-  setAutomateBotCurrentStep("falador-rooftop-step-3");
-  console.log("Falador Step 3 - Hands Hold");
-  clickSecondNearest(bounds);
-  await sleep(7000);
-  if (!AppState.automateBotRunning) return;
+  if (startStepNumber <= 3) {
+    // Step 3 - Hands Hold
+    setAutomateBotCurrentStep("falador-rooftop-step-3");
+    console.log("Falador Step 3 - Hands Hold");
+    clickNearest(bounds, "East");
+    await sleep(7000);
+    if (!AppState.automateBotRunning) return;
+  }
 
-  // Step 4 - Gap
-  setAutomateBotCurrentStep("falador-rooftop-step-4");
-  console.log("Falador Step 4 - Gap");
-  clickNearest(bounds);
-  await sleep(7000);
-  if (!AppState.automateBotRunning) return;
+  if (startStepNumber <= 4) {
+    // Step 4 - Gap
+    setAutomateBotCurrentStep("falador-rooftop-step-4");
+    console.log("Falador Step 4 - Gap");
+    clickNearest(bounds, "North");
+    await sleep(7000);
+    if (!AppState.automateBotRunning) return;
+  }
 
-  // Step 5 - Gap
-  setAutomateBotCurrentStep("falador-rooftop-step-5");
-  console.log("Falador Step 5 - Gap");
-  clickNearest(bounds);
-  await sleep(7000);
-  if (!AppState.automateBotRunning) return;
+  if (startStepNumber <= 5) {
+    // Step 5 - Gap
+    setAutomateBotCurrentStep("falador-rooftop-step-5");
+    console.log("Falador Step 5 - Gap");
+    clickNearest(bounds, "North");
+    await sleep(7000);
+    if (!AppState.automateBotRunning) return;
+  }
 
-  // Step 6 - Tightrope
-  setAutomateBotCurrentStep("falador-rooftop-step-6");
-  console.log("Falador Step 6 - Tightrope");
-  clickNearest(bounds);
-  await sleep(7000);
-  if (!AppState.automateBotRunning) return;
+  if (startStepNumber <= 6) {
+    // Step 6 - Tightrope
+    setAutomateBotCurrentStep("falador-rooftop-step-6");
+    console.log("Falador Step 6 - Tightrope");
+    clickNearest(bounds, "West");
+    await sleep(7000);
+    if (!AppState.automateBotRunning) return;
+  }
 
-  // Step 7 - Tightrope
-  setAutomateBotCurrentStep("falador-rooftop-step-7");
-  console.log("Falador Step 7 - Tightrope");
-  clickNearest(bounds);
-  await sleep(7000);
-  if (!AppState.automateBotRunning) return;
+  if (startStepNumber <= 7) {
+    // Step 7 - Tightrope
+    setAutomateBotCurrentStep("falador-rooftop-step-7");
+    console.log("Falador Step 7 - Tightrope");
+    clickNearest(bounds, "West");
+    await sleep(7000);
+    if (!AppState.automateBotRunning) return;
+  }
 
-  // Step 8 - Gap
-  setAutomateBotCurrentStep("falador-rooftop-step-8");
-  console.log("Falador Step 8 - Gap");
-  clickNearest(bounds);
-  await sleep(7000);
-  if (!AppState.automateBotRunning) return;
+  if (startStepNumber <= 8) {
+    // Step 8 - Gap
+    setAutomateBotCurrentStep("falador-rooftop-step-8");
+    console.log("Falador Step 8 - Gap");
+    clickNearest(bounds);
+    await sleep(7000);
+    if (!AppState.automateBotRunning) return;
+  }
 
-  // Step 9 - Ledge
-  setAutomateBotCurrentStep("falador-rooftop-step-9");
-  console.log("Falador Step 9 - Ledge");
-  clickNearest(bounds);
-  await sleep(7000);
-  if (!AppState.automateBotRunning) return;
+  if (startStepNumber <= 9) {
+    // Step 9 - Ledge
+    setAutomateBotCurrentStep("falador-rooftop-step-9");
+    console.log("Falador Step 9 - Ledge");
+    clickNearest(bounds);
+    await sleep(7000);
+    if (!AppState.automateBotRunning) return;
+  }
 
-  // Step 10 - Ledge
-  setAutomateBotCurrentStep("falador-rooftop-step-10");
-  console.log("Falador Step 10 - Ledge");
-  clickNearest(bounds);
-  await sleep(7000);
-  if (!AppState.automateBotRunning) return;
+  if (startStepNumber <= 10) {
+    // Step 10 - Ledge
+    setAutomateBotCurrentStep("falador-rooftop-step-10");
+    console.log("Falador Step 10 - Ledge");
+    clickNearest(bounds);
+    await sleep(7000);
+    if (!AppState.automateBotRunning) return;
+  }
 
-  // Step 11 - Ledge
-  setAutomateBotCurrentStep("falador-rooftop-step-11");
-  console.log("Falador Step 11 - Ledge");
-  clickNearest(bounds);
-  await sleep(7000);
-  if (!AppState.automateBotRunning) return;
+  if (startStepNumber <= 11) {
+    // Step 11 - Ledge
+    setAutomateBotCurrentStep("falador-rooftop-step-11");
+    console.log("Falador Step 11 - Ledge");
+    clickNearest(bounds);
+    await sleep(7000);
+    if (!AppState.automateBotRunning) return;
+  }
 
-  // Step 12 - Ledge
-  setAutomateBotCurrentStep("falador-rooftop-step-12");
-  console.log("Falador Step 12 - Ledge");
-  clickNearest(bounds);
-  await sleep(7000);
-  if (!AppState.automateBotRunning) return;
+  if (startStepNumber <= 12) {
+    // Step 12 - Ledge
+    setAutomateBotCurrentStep("falador-rooftop-step-12");
+    console.log("Falador Step 12 - Ledge");
+    clickNearest(bounds);
+    await sleep(7000);
+    if (!AppState.automateBotRunning) return;
+  }
 
   // Step 13 - Ledge
   setAutomateBotCurrentStep("falador-rooftop-step-13");
@@ -549,7 +390,7 @@ async function runFaladorLoop(window: Window) {
   setAutomateBotCurrentStep(null);
 }
 
-export function onFaladorRooftopStart() {
+function startFaladorWindow(startStepNumber: number) {
   const window = getRuneLite();
   if (!window) return;
 
@@ -560,7 +401,33 @@ export function onFaladorRooftopStart() {
 
   window.bringToTop();
   moveMouseToRuneLiteCenter(window);
+  scrollRuneLiteDownToMaximum();
   lastHandledMarker = null;
-  console.log("Automate Bot STARTED (Falador Roof Top).");
-  void runFaladorLoop(window);
+
+  keyTap("n");
+  // Start compass rotation and then the main bot loop
+  void (async () => {
+    if (AppState.automateBotRunning) {
+      void runFaladorLoop(window, startStepNumber);
+    }
+  })();
 }
+
+export function onFaladorRooftopStart() {
+  console.log("Automate Bot STARTED (Falador Roof Top).");
+  startFaladorWindow(1);
+}
+
+export function onFaladorRooftopStartFromStep(stepId: string) {
+  const match = /falador-rooftop-step-(\d+)/.exec(stepId);
+  const startStepNumber = match ? Number(match[1]) : 1;
+  console.log(`Automate Bot STARTED (Falador Roof Top) from step ${startStepNumber}.`);
+  startFaladorWindow(startStepNumber);
+}
+
+const keyTap = (key: string) => {
+  keyToggle(key, "down");
+  setTimeout(() => {
+    keyToggle(key, "up");
+  }, 100);
+};
