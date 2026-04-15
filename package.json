@@ -4,7 +4,7 @@
   "main": "dist/main/index.js",
   "license": "MIT",
   "scripts": {
-    "dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && electronmon -r ts-node/register src/main/index.ts\"",
+    "dev": "concurrently -k \"vite\" \"tsc -p tsconfig.main.json --watch --preserveWatchOutput\" \"wait-on http://localhost:5173 dist/main/index.js && electronmon dist/main/index.js\"",
     "build": "vite build && tsc -p tsconfig.main.json",
     "start": "electron dist/main/index.js"
   },
@@ -22,6 +22,7 @@
     "wait-on": "^9.0.5"
   },
   "dependencies": {
+    "node-window-manager": "^2.2.4",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "robotjs": "^0.7.0",

@@ -28,6 +28,7 @@ type CsvRow = {
   radius: number;
   elapsedRange: string;
   xMin: number;
+
   xMax: number;
   yMin: number;
   yMax: number;
@@ -68,19 +69,19 @@ type CsvRowContextMenuState = {
   stepName: string;
 } | null;
 
+type MarkerColorState = {
+  color: "green" | "red" | "none";
+  confidence: number;
+  point: { x: number; y: number } | null;
+};
+
 function TreeNode({
   node,
   activeRelativePath,
-  activeFileRows,
-  selectedCsvRowIndex,
   selectedFilePaths,
-  replayingCsvRowIndex,
-  isReplaying,
   editingRelativePath,
   editingName,
   onFileClick,
-  onCsvRowClick,
-  onCsvRowContextMenu,
   onContextMenu,
   onEditingNameChange,
   onEditingNameKeyDown,
@@ -88,16 +89,10 @@ function TreeNode({
 }: {
   node: ExplorerNode;
   activeRelativePath: string | null;
-  activeFileRows: CsvRow[];
-  selectedCsvRowIndex: number | null;
   selectedFilePaths: string[];
-  replayingCsvRowIndex: number | null;
-  isReplaying: boolean;
   editingRelativePath: string | null;
   editingName: string;
   onFileClick: (path: string, additive: boolean) => void;
-  onCsvRowClick: (rowIndex: number) => void;
-  onCsvRowContextMenu: (e: React.MouseEvent, rowIndex: number, stepName: string) => void;
   onContextMenu: (e: React.MouseEvent, path: string, additive: boolean) => void;
   onEditingNameChange: (value: string) => void;
   onEditingNameKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void;
@@ -126,7 +121,15 @@ function TreeNode({
           <input
             className="rename-input"
             value={editingName}
-            autoFocus
+            ref={(el) => {
+              if (el && !el.dataset.initialized) {
+                el.dataset.initialized = "1";
+                el.focus();
+                const dotIndex = editingName.lastIndexOf(".");
+                const selEnd = dotIndex > 0 ? dotIndex : editingName.length;
+                el.setSelectionRange(0, selEnd);
+              }
+            }}
             onChange={(e) => onEditingNameChange(e.target.value)}
             onClick={(e) => e.stopPropagation()}
             onKeyDown={onEditingNameKeyDown}
@@ -136,29 +139,6 @@ function TreeNode({
           node.name
         )}
       </div>
-      {isActiveFile && activeFileRows.length > 0 && (
-        <ul className="tree-children">
-          {activeFileRows.map((row) => (
-            <li
-              key={`${node.relativePath}-row-${row.index}`}
-              className={`tree-item csv-line${selectedCsvRowIndex === row.index ? " selected" : ""}${
-                isReplaying && replayingCsvRowIndex === row.index ? " replaying" : ""
-              }`}
-              onClick={(e) => {
-                e.stopPropagation();
-                onCsvRowClick(row.index);
-              }}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                onCsvRowContextMenu(e, row.index, row.stepName);
-              }}
-            >
-              {`${row.index + 1}. ${row.stepName}`}
-            </li>
-          ))}
-        </ul>
-      )}
       {node.isDirectory && (node.children ?? []).length > 0 && (
         <ul className="tree-children">
           {(node.children ?? []).map((child) => (
@@ -166,16 +146,10 @@ function TreeNode({
               key={child.relativePath}
               node={child}
               activeRelativePath={activeRelativePath}
-              activeFileRows={activeFileRows}
-              selectedCsvRowIndex={selectedCsvRowIndex}
               selectedFilePaths={selectedFilePaths}
-              replayingCsvRowIndex={replayingCsvRowIndex}
-              isReplaying={isReplaying}
               editingRelativePath={editingRelativePath}
               editingName={editingName}
               onFileClick={onFileClick}
-              onCsvRowClick={onCsvRowClick}
-              onCsvRowContextMenu={onCsvRowContextMenu}
               onContextMenu={onContextMenu}
               onEditingNameChange={onEditingNameChange}
               onEditingNameKeyDown={onEditingNameKeyDown}
@@ -224,6 +198,18 @@ export default function App() {
   const [csvRowContextMenu, setCsvRowContextMenu] = useState<CsvRowContextMenuState>(null);
   const [editingRelativePath, setEditingRelativePath] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
+  const [cursorPos, setCursorPos] = useState<{
+    x: number;
+    y: number;
+    runLiteWindow?: { x: number; y: number; width: number; height: number } | null;
+  } | null>(null);
+  const [editingCsvRowIndex, setEditingCsvRowIndex] = useState<number | null>(null);
+  const [editingStepName, setEditingStepName] = useState("");
+  const [markerColorState, setMarkerColorState] = useState<MarkerColorState>({
+    color: "none",
+    confidence: 0,
+    point: null,
+  });
 
   const hideContextMenu = useCallback(() => setContextMenu(null), []);
   const hideCsvRowContextMenu = useCallback(() => setCsvRowContextMenu(null), []);
@@ -269,13 +255,22 @@ export default function App() {
         return payload.activeFileRows.some((row) => row.index === current) ? current : null;
       });
     };
+    const onMarkerColorState = (_: unknown, payload: MarkerColorState) => {
+      setMarkerColorState(payload);
+    };
 
     ipcRenderer.on("recording-state", onRecordingState);
     ipcRenderer.on("replaying-state", onReplayingState);
     ipcRenderer.on("replay-repeat-state", onReplayRepeatState);
     ipcRenderer.on("replay-delay-state", onReplayDelayState);
     ipcRenderer.on("replay-row-state", onReplayRowState);
+    ipcRenderer.on("marker-color-state", onMarkerColorState);
     ipcRenderer.on("output-folder-state", onFolderState);
+    const onCursorPos = (
+      _: unknown,
+      pos: { x: number; y: number; runLiteWindow?: { x: number; y: number; width: number; height: number } | null }
+    ) => setCursorPos(pos);
+    ipcRenderer.on("cursor-pos", onCursorPos);
     ipcRenderer.send("ui-ready");
 
     return () => {
@@ -284,7 +279,9 @@ export default function App() {
       ipcRenderer.removeListener("replay-repeat-state", onReplayRepeatState);
       ipcRenderer.removeListener("replay-delay-state", onReplayDelayState);
       ipcRenderer.removeListener("replay-row-state", onReplayRowState);
+      ipcRenderer.removeListener("marker-color-state", onMarkerColorState);
       ipcRenderer.removeListener("output-folder-state", onFolderState);
+      ipcRenderer.removeListener("cursor-pos", onCursorPos);
     };
   }, []);
 
@@ -404,7 +401,9 @@ export default function App() {
 
   const handleDelete = async () => {
     if (!contextMenu) return;
-    const selectedTargets = selectedFilePaths.includes(contextMenu.relativePath) ? selectedFilePaths : [contextMenu.relativePath];
+    const selectedTargets = selectedFilePaths.includes(contextMenu.relativePath)
+      ? selectedFilePaths
+      : [contextMenu.relativePath];
     const isMassDelete = selectedTargets.length > 1;
     const label = isMassDelete
       ? `${selectedTargets.length} selected files`
@@ -426,23 +425,30 @@ export default function App() {
     setCsvRowContextMenu({ x: e.clientX, y: e.clientY, rowIndex, stepName });
   }, []);
 
-  const handleRenameCsvRowStep = useCallback(async () => {
-    if (csvRowContextMenu === null) return;
-    const nextName = window.prompt("Step name", csvRowContextMenu.stepName);
-    hideCsvRowContextMenu();
-    if (nextName === null) return;
-    const trimmed = nextName.trim();
-    if (!trimmed) {
-      window.alert("Step name is required.");
-      return;
-    }
+  const cancelCsvRowRename = useCallback(() => {
+    setEditingCsvRowIndex(null);
+    setEditingStepName("");
+  }, []);
+
+  const submitCsvRowRename = useCallback(async () => {
+    if (editingCsvRowIndex === null) return;
+    const trimmed = editingStepName.trim();
+    cancelCsvRowRename();
+    if (!trimmed) return;
     const result = await ipcRenderer.invoke("rename-active-csv-row-step", {
-      rowIndex: csvRowContextMenu.rowIndex,
+      rowIndex: editingCsvRowIndex,
       stepName: trimmed,
     });
     if (!result?.ok) {
       window.alert(result?.error || "Unable to rename step.");
     }
+  }, [cancelCsvRowRename, editingCsvRowIndex, editingStepName]);
+
+  const handleRenameCsvRowStep = useCallback(() => {
+    if (csvRowContextMenu === null) return;
+    hideCsvRowContextMenu();
+    setEditingCsvRowIndex(csvRowContextMenu.rowIndex);
+    setEditingStepName(csvRowContextMenu.stepName);
   }, [csvRowContextMenu, hideCsvRowContextMenu]);
 
   const handlePlayCsvRow = useCallback(async () => {
@@ -451,6 +457,15 @@ export default function App() {
     const result = await ipcRenderer.invoke("play-csv-row", csvRowContextMenu.rowIndex);
     if (!result?.ok) {
       window.alert(result?.error || "Unable to play row.");
+    }
+  }, [csvRowContextMenu, hideCsvRowContextMenu]);
+
+  const handleResumeCsvRow = useCallback(async () => {
+    if (csvRowContextMenu === null) return;
+    hideCsvRowContextMenu();
+    const result = await ipcRenderer.invoke("replay-active-csv-from-row", { rowIndex: csvRowContextMenu.rowIndex });
+    if (!result?.ok) {
+      window.alert(result?.error || "Unable to resume from row.");
     }
   }, [csvRowContextMenu, hideCsvRowContextMenu]);
 
@@ -463,6 +478,24 @@ export default function App() {
     const result = await ipcRenderer.invoke("delete-active-csv-row", csvRowContextMenu.rowIndex);
     if (!result?.ok) {
       window.alert(result?.error || "Unable to delete row.");
+    }
+  }, [csvRowContextMenu, hideCsvRowContextMenu]);
+
+  const handleInsertStepAbove = useCallback(async () => {
+    if (csvRowContextMenu === null) return;
+    hideCsvRowContextMenu();
+    const result = await ipcRenderer.invoke("insert-active-csv-row-above", csvRowContextMenu.rowIndex);
+    if (!result?.ok) {
+      window.alert(result?.error || "Unable to insert step above.");
+    }
+  }, [csvRowContextMenu, hideCsvRowContextMenu]);
+
+  const handleInsertStepBelow = useCallback(async () => {
+    if (csvRowContextMenu === null) return;
+    hideCsvRowContextMenu();
+    const result = await ipcRenderer.invoke("insert-active-csv-row-below", csvRowContextMenu.rowIndex);
+    if (!result?.ok) {
+      window.alert(result?.error || "Unable to insert step below.");
     }
   }, [csvRowContextMenu, hideCsvRowContextMenu]);
 
@@ -485,7 +518,7 @@ export default function App() {
       setSelectedFilePaths([relativePath]);
       ipcRenderer.send("set-active-file", relativePath);
     },
-    [cancelRename, hideContextMenu],
+    [cancelRename, hideContextMenu]
   );
 
   const contextMenuSelectedTargets = contextMenu
@@ -496,7 +529,9 @@ export default function App() {
   const canRenameContextTarget = contextMenuSelectedTargets.length === 1;
 
   const selectedCsvRow =
-    selectedCsvRowIndex === null ? null : (folderState.activeFileRows.find((row) => row.index === selectedCsvRowIndex) ?? null);
+    selectedCsvRowIndex === null
+      ? null
+      : (folderState.activeFileRows.find((row) => row.index === selectedCsvRowIndex) ?? null);
 
   useEffect(() => {
     if (!selectedCsvRow) {
@@ -568,7 +603,10 @@ export default function App() {
       return;
     }
 
-    if ((elapsedMin !== null && !Number.isFinite(elapsedMin)) || (elapsedMax !== null && !Number.isFinite(elapsedMax))) {
+    if (
+      (elapsedMin !== null && !Number.isFinite(elapsedMin)) ||
+      (elapsedMax !== null && !Number.isFinite(elapsedMax))
+    ) {
       window.alert("Elapsed range values must be numeric or empty.");
       return;
     }
@@ -626,7 +664,7 @@ export default function App() {
         cancelRename();
       }
     },
-    [cancelRename, submitRename],
+    [cancelRename, submitRename]
   );
 
   return (
@@ -655,16 +693,10 @@ export default function App() {
                   key={node.relativePath}
                   node={node}
                   activeRelativePath={folderState.activeRelativePath}
-                  activeFileRows={folderState.activeFileRows}
-                  selectedCsvRowIndex={selectedCsvRowIndex}
                   selectedFilePaths={selectedFilePaths}
-                  replayingCsvRowIndex={replayingCsvRowIndex}
-                  isReplaying={isReplaying}
                   editingRelativePath={editingRelativePath}
                   editingName={editingName}
                   onFileClick={handleFileClick}
-                  onCsvRowClick={setSelectedCsvRowIndex}
-                  onCsvRowContextMenu={handleCsvRowContextMenu}
                   onContextMenu={handleContextMenu}
                   onEditingNameChange={setEditingName}
                   onEditingNameKeyDown={handleEditingNameKeyDown}
@@ -674,9 +706,84 @@ export default function App() {
             )}
           </ul>
         </aside>
+        <aside className="sidebar csv-panel">
+          <div className="sidebar-head">
+            <h2 className="sidebar-title">STEPS</h2>
+          </div>
+          <ul className="tree">
+            {folderState.activeFileRows.length === 0 ? (
+              <li className="tree-item">No steps</li>
+            ) : (
+              folderState.activeFileRows.map((row) => {
+                const isEditingThisRow = editingCsvRowIndex === row.index;
+                return (
+                  <li
+                    key={`row-${row.index}`}
+                    className={`tree-item csv-line${selectedCsvRowIndex === row.index ? " selected" : ""}${
+                      isReplaying && replayingCsvRowIndex === row.index ? " replaying" : ""
+                    }`}
+                    onClick={() => {
+                      if (!isEditingThisRow) setSelectedCsvRowIndex(row.index);
+                    }}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      handleCsvRowContextMenu(e, row.index, row.stepName);
+                    }}
+                  >
+                    <span style={{ flexShrink: 0 }}>{`${row.index + 1}. `}</span>
+                    {isEditingThisRow ? (
+                      <input
+                        className="rename-input"
+                        value={editingStepName}
+                        ref={(el) => {
+                          if (el && !el.dataset.initialized) {
+                            el.dataset.initialized = "1";
+                            el.focus();
+                            el.select();
+                          }
+                        }}
+                        onChange={(e) => setEditingStepName(e.target.value)}
+                        onClick={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => {
+                          e.stopPropagation();
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            void submitCsvRowRename();
+                          }
+                          if (e.key === "Escape") {
+                            e.preventDefault();
+                            cancelCsvRowRename();
+                          }
+                        }}
+                        onBlur={() => void submitCsvRowRename()}
+                      />
+                    ) : (
+                      row.stepName
+                    )}
+                  </li>
+                );
+              })
+            )}
+          </ul>
+        </aside>
         <main className="main">
           <h1 className="title">Robot Recorder</h1>
+          <p className="cursor-pos-display">
+            Cursor: {cursorPos ? `${cursorPos.x}, ${cursorPos.y}` : "—"}
+            {cursorPos?.runLiteWindow && (
+              <>
+                <br />
+                RuneLite: X:{cursorPos.runLiteWindow.x}, Y:{cursorPos.runLiteWindow.y}, W:
+                {cursorPos.runLiteWindow.width}, H:{cursorPos.runLiteWindow.height}
+              </>
+            )}
+          </p>
           <p className="status">{isReplaying ? "Replaying..." : isRecording ? "Recording..." : "Stopped"}</p>
+          <p className={`status marker-status marker-${markerColorState.color}`}>
+            Marker: {markerColorState.color.toUpperCase()}
+            {markerColorState.point ? ` at ${markerColorState.point.x}, ${markerColorState.point.y}` : ""}
+            {` (confidence ${Math.round(markerColorState.confidence * 100)}%)`}
+          </p>
           <div className="meta">
             <div>
               <strong>File:</strong> <span>{folderState.activeFile || "-"}</span>
@@ -850,24 +957,43 @@ export default function App() {
         </main>
       </div>
       {contextMenu && (
-        <div className="context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(e) => e.stopPropagation()}>
+        <div
+          className="context-menu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
           {canRenameContextTarget && (
             <div className="context-item" onClick={() => void handleRename()}>
               Rename
             </div>
           )}
           <div className="context-item context-item--danger" onClick={() => void handleDelete()}>
-            {contextMenuSelectedTargets.length > 1 ? `Delete Selected (${contextMenuSelectedTargets.length})` : "Delete"}
+            {contextMenuSelectedTargets.length > 1
+              ? `Delete Selected (${contextMenuSelectedTargets.length})`
+              : "Delete"}
           </div>
         </div>
       )}
       {csvRowContextMenu && (
-        <div className="context-menu" style={{ left: csvRowContextMenu.x, top: csvRowContextMenu.y }} onClick={(e) => e.stopPropagation()}>
+        <div
+          className="context-menu"
+          style={{ left: csvRowContextMenu.x, top: csvRowContextMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
           <div className="context-item" onClick={() => void handlePlayCsvRow()}>
             Play (row)
           </div>
+          <div className="context-item" onClick={() => void handleResumeCsvRow()}>
+            Resume from here
+          </div>
           <div className="context-item" onClick={() => void handleRenameCsvRowStep()}>
             Rename Step
+          </div>
+          <div className="context-item" onClick={() => void handleInsertStepAbove()}>
+            Step above
+          </div>
+          <div className="context-item" onClick={() => void handleInsertStepBelow()}>
+            Step under
           </div>
           <div className="context-item context-item--danger" onClick={() => void handleDeleteCsvRow()}>
             Delete Row

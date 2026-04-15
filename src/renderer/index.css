@@ -42,14 +42,19 @@ body {
 }
 
 .sidebar {
-  width: 260px;
-  min-width: 220px;
+  width: 220px;
+  min-width: 180px;
   display: flex;
   flex-direction: column;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
   background: #f8fafc;
   overflow: hidden;
+}
+
+.csv-panel {
+  width: 200px;
+  min-width: 160px;
 }
 
 .sidebar-head {
@@ -171,16 +176,41 @@ body {
 }
 
 .title {
-  margin: 0 0 8px;
+  margin: 0 0 4px;
   font-size: 15px;
   font-weight: 700;
   letter-spacing: 0.2px;
+}
+
+.cursor-pos-display {
+  margin: 0 0 4px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  letter-spacing: 0.3px;
 }
 
 .status {
   margin: 0 0 12px;
   color: var(--muted);
   font-size: 13px;
+}
+
+.marker-status {
+  margin-top: -8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.marker-green {
+  color: #166534;
+}
+
+.marker-red {
+  color: #b42318;
+}
+
+.marker-none {
+  color: #6b7280;
 }
 
 .meta {
@@ -427,7 +457,8 @@ body {
     flex-direction: column;
   }
 
-  .sidebar {
+  .sidebar,
+  .csv-panel {
     width: 100%;
     min-height: 180px;
   }
