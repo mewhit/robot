@@ -6,11 +6,14 @@ import { requestReplayStop, replayActiveCsv } from "./replayManager";
 import { UIOHOOK_KEY_TO_ROBOTJS, MODIFIER_KEYCODES } from "./constants";
 
 export type RuneLiteWindowInfo = { x: number; y: number; width: number; height: number };
-const DEFAULT_FORCED_RUNELITE_BOUNDS: RuneLiteWindowInfo = { x: 0, y: 0, width: 1280, height: 720 };
+const DEFAULT_AUTOMATION_RUNELITE_BOUNDS: RuneLiteWindowInfo = { x: 0, y: 0, width: 1280, height: 720 };
 
 export function setupIoHookHandlers() {
   uIOhook.on("keydown", (e) => {
     if (e.keycode === UiohookKey.F3) {
+      if (!AppState.recording) {
+        ensureRuneLiteWindowBoundsForAutomation();
+      }
       toggleRecording("f3");
       return;
     }
@@ -139,16 +142,6 @@ function queryRuneLiteWindowInfo(): RuneLiteWindowInfo | null {
     return null;
   }
 
-  const forcedBounds = getForcedRuneLiteWindowInfo();
-  if (forcedBounds) {
-    try {
-      runeLiteWindow.setBounds(forcedBounds);
-    } catch (error) {
-      console.error("Could not force RuneLite bounds:", error);
-    }
-    return forcedBounds;
-  }
-
   const bounds = runeLiteWindow.getBounds();
   const x = Number(bounds.x);
   const y = Number(bounds.y);
@@ -169,6 +162,25 @@ function queryRuneLiteWindowInfo(): RuneLiteWindowInfo | null {
     width: Math.round(width),
     height: Math.round(height),
   };
+}
+
+export function ensureRuneLiteWindowBoundsForAutomation() {
+  if (process.platform !== "win32") {
+    return;
+  }
+
+  const runeLiteWindow = findRuneLiteWindow();
+  if (!runeLiteWindow) {
+    console.warn("RuneLite window not found; skipping bounds alignment.");
+    return;
+  }
+
+  const targetBounds = getAutomationRuneLiteWindowBounds();
+  try {
+    runeLiteWindow.setBounds(targetBounds);
+  } catch (error) {
+    console.error("Could not align RuneLite bounds:", error);
+  }
 }
 
 function findRuneLiteWindow(): Window | null {
@@ -214,20 +226,20 @@ function findRuneLiteWindow(): Window | null {
   return bestMatch?.window ?? null;
 }
 
-function getForcedRuneLiteWindowInfo(): RuneLiteWindowInfo | null {
+function getAutomationRuneLiteWindowBounds(): RuneLiteWindowInfo {
   const raw = process.env.RUNELITE_FORCE_BOUNDS?.trim();
   if (!raw) {
-    return DEFAULT_FORCED_RUNELITE_BOUNDS;
+    return DEFAULT_AUTOMATION_RUNELITE_BOUNDS;
   }
 
   const values = raw.split(",").map((part) => Number(part.trim()));
   if (values.length !== 4 || values.some((value) => !Number.isFinite(value))) {
-    return null;
+    return DEFAULT_AUTOMATION_RUNELITE_BOUNDS;
   }
 
   const [x, y, width, height] = values;
   if (width <= 0 || height <= 0) {
-    return null;
+    return DEFAULT_AUTOMATION_RUNELITE_BOUNDS;
   }
 
   return {

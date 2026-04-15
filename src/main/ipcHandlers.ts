@@ -30,11 +30,15 @@ import {
 } from "./recordingManager";
 import { testColorDetectionOnce } from "./colorWatcher";
 import { DEFAULT_OUTPUT_FILE_NAME } from "./constants";
+import { ensureRuneLiteWindowBoundsForAutomation } from "./ioHookHandlers";
 
 const robot = ((robotModule as unknown as { default?: any }).default ?? robotModule) as any;
 
 export function setupIpcHandlers() {
   ipcMain.on("toggle-recording", () => {
+    if (!AppState.recording) {
+      ensureRuneLiteWindowBoundsForAutomation();
+    }
     toggleRecording("ui");
   });
 
