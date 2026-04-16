@@ -15,6 +15,7 @@
 import fs from "fs";
 import path from "path";
 import { PNG } from "pngjs";
+import * as robotModule from "robotjs";
 
 const DEFAULT_OCR_DEBUG_DIR = "./ocr-debug";
 
@@ -50,8 +51,8 @@ export type GameStatsReadResult = {
 // Configuration Constants
 // ============================================
 
-/** Upscaling factor for image preprocessing (4x provides better digit recognition) */
-export const OCR_SCALE_FACTOR = 4;
+/** Upscaling factor for image preprocessing (6x provides better digit recognition) */
+export const OCR_SCALE_FACTOR = 6;
 
 /** Binary threshold value (0-255); pixels >= threshold become 1, else 0 */
 export const OCR_THRESHOLD = 180;
@@ -216,21 +217,41 @@ export function flushOcrDebugDirectory(outputDir: string = DEFAULT_OCR_DEBUG_DIR
 }
 
 // ============================================
+// Segment Debug Log (populated during OCR, cleared per read)
+// ============================================
+
+export type SegmentDebugEntry = {
+  x0: number;
+  x1: number;
+  glyphWidth: number;
+  glyphHeight: number;
+  bits: string; // 5-char rows joined by "|"
+  bestChar: string;
+  bestDistance: number;
+};
+
+export let lastSegmentDebugLog: SegmentDebugEntry[] = [];
+
+export function clearSegmentDebugLog(): void {
+  lastSegmentDebugLog = [];
+}
+
+// ============================================
 // Character Templates for Template Matching
 // ============================================
 
 const DIGIT_TEMPLATE_ROWS: Record<string, string[]> = {
-  // Improved templates with more generous patterns for better recognition
-  "0": ["01110", "10001", "10011", "10101", "11001", "10001", "01110"],
+  // Actual RuneLite font patterns observed from segment debug (6× scale, 5×7 template):
+  "0": ["01110", "10001", "10001", "10001", "10001", "10001", "01110"],
   "1": ["00100", "01100", "00100", "00100", "00100", "00100", "01110"],
   "2": ["01110", "10001", "00001", "00010", "00100", "01000", "11111"],
-  "3": ["11110", "00001", "00001", "01110", "00001", "00001", "11110"],
+  "3": ["01110", "10001", "00001", "01111", "00001", "10001", "01110"],
   "4": ["00010", "00110", "01010", "10010", "11111", "00010", "00010"],
   "5": ["11111", "10000", "11110", "00001", "00001", "10001", "01110"],
   "6": ["00110", "01000", "10000", "11110", "10001", "10001", "01110"],
   "7": ["11111", "00001", "00010", "00100", "01000", "01000", "01000"],
   "8": ["01110", "10001", "10001", "01110", "10001", "10001", "01110"],
-  "9": ["01110", "10001", "10001", "01111", "00001", "00010", "11100"],
+  "9": ["01110", "10001", "10001", "01111", "00001", "00001", "01110"],
   ",": ["00000", "00000", "00000", "00000", "00000", "00110", "00100"],
 };
 
@@ -339,6 +360,49 @@ function upscaleImage(binary: Uint8Array, width: number, height: number, scale: 
   }
 
   return upscaled;
+}
+
+/**
+ * Find the leftmost and rightmost columns containing white pixels
+ * Dynamically detects text boundaries regardless of overlay size
+ * @param mask - Upscaled binary mask (1 = text, 0 = background)
+ * @param width - Mask width (upscaled)
+ * @param height - Mask height (upscaled)
+ * @returns Object with minX and maxX (inclusive bounds), or null if no text found
+ */
+function findTextBounds(mask: Uint8Array, width: number, height: number): { minX: number; maxX: number } | null {
+  let minX = width;
+  let maxX = -1;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (mask[y * width + x] > 0) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+      }
+    }
+  }
+
+  return maxX >= 0 ? { minX, maxX } : null;
+}
+
+/**
+ * Calculate optimal scan start position (x-ratio) based on detected text bounds
+ * Skips left padding and starts from where text actually begins
+ * @param mask - Upscaled binary mask
+ * @param maskWidth - Upscaled mask width
+ * @param maskHeight - Upscaled mask height
+ * @returns startXRatio to use for scanning (0.0-1.0), or null if no text found
+ */
+function calculateOptimalStartXRatio(mask: Uint8Array, maskWidth: number, maskHeight: number): number | null {
+  const bounds = findTextBounds(mask, maskWidth, maskHeight);
+  if (!bounds) {
+    return null;
+  }
+
+  // Start from just before the detected text to ensure we capture the beginning
+  const safeMargin = Math.max(0, bounds.minX - 10);
+  return Math.max(0, safeMargin / maskWidth);
 }
 
 /**
@@ -496,7 +560,7 @@ function readNumericLine(
     segments.push({ startX: segmentStart, endX: x1 });
   }
 
-  const mergedSegments = mergeCloseSegments(segments, 2);
+  const mergedSegments = mergeCloseSegments(segments, OCR_SCALE_FACTOR);
   let output = "";
   for (const segment of mergedSegments) {
     const char = classifySegment(mask, width, y0, y1, segment.startX, segment.endX, strictMode);
@@ -629,7 +693,8 @@ function classifySegment(
 
   const glyphWidth = x1 - x0 + 1;
   const glyphHeight = maxY - minY + 1;
-  if (glyphWidth <= 2 && glyphHeight <= 3) {
+  // Comma is ~2 source px wide × 3 source px tall; threshold must be in upscaled coords
+  if (glyphWidth <= OCR_SCALE_FACTOR * 2 && glyphHeight <= OCR_SCALE_FACTOR * 4) {
     return ",";
   }
 
@@ -650,6 +715,21 @@ function classifySegment(
       bestChar = template.char;
     }
   }
+
+  // Record debug entry so callers can inspect what was seen
+  const rows: string[] = [];
+  for (let row = 0; row < 7; row++) {
+    rows.push(normalizedBits.slice(row * 5, row * 5 + 5).join(""));
+  }
+  lastSegmentDebugLog.push({
+    x0,
+    x1,
+    glyphWidth: x1 - x0 + 1,
+    glyphHeight: maxY - minY + 1,
+    bits: rows.join("|"),
+    bestChar,
+    bestDistance,
+  });
 
   // Use configurable tolerance - relaxed in normal mode for better number detection
   const tolerance = strictMode ? GLYPH_MATCH_TOLERANCE : 25;
@@ -884,22 +964,16 @@ export function readTileCoordinateFromOverlay(
     width: number;
     height: number;
   },
-  robotScreen: {
-    screen: {
-      capture: (x: number, y: number, width: number, height: number) => RobotBitmap;
-    };
-  },
-  debugRawScreenshotPath: string | null = "./ocr-debug/debug_raw.png",
+  robotScreen: (typeof robotModule)["screen"],
+  debugRawScreenshotPath: string | null = null,
 ): TileReadResult {
-  // 🎯 HARD FIXED OVERLAY (no more guessing)
-  const overlay = {
-    x: bounds.x + 10,
-    y: bounds.y + 30,
-    width: 220,
-    height: 80,
-  };
+  // Capture only the Tile row overlay (top-left of the RuneLite window)
+  const overlayX = bounds.x;
+  const overlayY = bounds.y;
+  const overlayWidth = bounds.width * 0.15;
+  const overlayHeight = bounds.height * 0.15;
 
-  const bitmap = robotScreen.screen.capture(overlay.x, overlay.y, overlay.width, overlay.height);
+  const bitmap = robotScreen.capture(overlayX, overlayY, overlayWidth, overlayHeight);
 
   if (debugRawScreenshotPath) {
     saveBitmap(bitmap, debugRawScreenshotPath);
@@ -916,7 +990,28 @@ export function readTileCoordinateFromOverlay(
   let best: TileCoordinate | null = null;
   let bestScore = Number.NEGATIVE_INFINITY;
   let raw: string | null = null;
-  const scanRatios = [0.08, 0.12, 0.16, 0.2];
+
+  // Dynamically calculate optimal starting position based on detected text bounds
+  const maskWidth = bitmap.width * OCR_SCALE_FACTOR;
+  const maskHeight = bitmap.height * OCR_SCALE_FACTOR;
+  const textBounds = findTextBounds(mask, maskWidth, maskHeight);
+  const optimalStartRatio = textBounds !== null ? Math.max(0, (textBounds.minX - 10) / maskWidth) : null;
+  const scanRatios = optimalStartRatio !== null ? [optimalStartRatio] : [0.08, 0.12, 0.16, 0.2];
+
+  // Save cropped mask PNG for debugging
+  if (debugRawScreenshotPath && textBounds) {
+    const cropStartX = Math.max(0, textBounds.minX - 10);
+    const cropEndX = Math.min(maskWidth - 1, textBounds.maxX + 10);
+    const cropWidth = cropEndX - cropStartX + 1;
+    const croppedMask = new Uint8Array(cropWidth * maskHeight);
+    for (let y = 0; y < maskHeight; y++) {
+      for (let x = cropStartX; x <= cropEndX; x++) {
+        croppedMask[y * cropWidth + (x - cropStartX)] = mask[y * maskWidth + x];
+      }
+    }
+    const croppedPath = debugRawScreenshotPath.replace("-raw.png", "-cropped.png");
+    saveMask(croppedMask, cropWidth, maskHeight, croppedPath, 1);
+  }
 
   for (const band of bands) {
     for (const startXRatio of scanRatios) {
@@ -950,57 +1045,5 @@ export function readTileCoordinateFromOverlay(
   return {
     tile: best,
     rawLine: raw,
-  };
-}
-/**
- * Read game statistics from RuneLite overlay
- * Extracts Total Laps, Laps until goal, and other numeric stats
- * @param bounds - Screen capture bounds
- * @param robotScreen - Robot screen API
- * @param overlayWidthRatio - Width as fraction of game window
- * @param overlayHeightRatio - Height as fraction of game window
- * @param debugMode - Save OCR preprocessing debug images
- * @param debugOutputDir - Directory for debug images
- * @returns Game statistics with extracted numbers
- */
-export function readGameStatsFromOverlay(
-  bounds: {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  },
-  robotScreen: {
-    screen: {
-      capture: (x: number, y: number, width: number, height: number) => RobotBitmap;
-    };
-  },
-  overlayWidthRatio: number = 0.25,
-  overlayHeightRatio: number = 0.25,
-  debugMode: boolean = false,
-  debugOutputDir: string = "./ocr-debug",
-): GameStatsReadResult {
-  // FIX #4: Hardcode overlay bounding box relative to window
-  // Stats overlay appears in a different location - upper right area
-  const overlay = {
-    x: bounds.x + 10,
-    y: bounds.y + 30,
-    width: 220,
-    height: 80,
-  };
-
-  const bitmap = robotScreen.screen.capture(overlay.x, overlay.y, overlay.width, overlay.height);
-
-  if (debugMode) {
-    debugSaveAllStages(bitmap, debugOutputDir);
-  }
-
-  const whiteMask = buildWhiteTextMask(bitmap);
-  const stats = extractGameStats(whiteMask, bitmap.width, bitmap.height);
-  const rawLines = Object.keys(stats.rawStats);
-
-  return {
-    stats,
-    rawLines,
   };
 }

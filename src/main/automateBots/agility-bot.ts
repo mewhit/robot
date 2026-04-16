@@ -1,21 +1,12 @@
 import { windowManager, Window } from "node-window-manager";
-import * as robotModule from "robotjs";
-import { mouseClick, moveMouse } from "robotjs";
+import { mouseClick, moveMouse, screen } from "robotjs";
 import { setAutomateBotCurrentStep } from "../automateBotManager";
 import { findColorShapesInBounds } from "../colorDetection";
 import { Coordinate, Shape } from "../colorDetection.types";
 import { AppState } from "../global-state";
 import * as logger from "../logger";
 import { getRuneLite } from "../runeLiteWindow";
-import {
-  readTileCoordinateFromOverlay,
-  readGameStatsFromOverlay,
-  TileCoordinate,
-  TileReadResult,
-  GameStatsReadResult,
-  debugSaveAllStages,
-  RobotBitmap,
-} from "./ocr-engine";
+import { readTileCoordinateFromOverlay, TileCoordinate, TileReadResult, lastSegmentDebugLog, clearSegmentDebugLog } from "./ocr-engine";
 
 export const AGILITY_BOT_ID = "agility";
 
@@ -36,21 +27,11 @@ const DEBUG_OVERLAY_WIDTH_RATIO = 0.25;
 const DEBUG_OVERLAY_HEIGHT_RATIO = 0.25;
 const OCR_STARTUP_WARMUP_MS = 700;
 
-type RobotScreenApi = {
-  screen: {
-    capture: (x: number, y: number, width: number, height: number) => RobotBitmap;
-  };
-};
-
 function isSameTile(a: TileCoordinate | null, b: TileCoordinate | null): boolean {
-  if (!a || !b) {
-    return false;
-  }
+  if (!!a && !!b) return a.x === b.x && a.y === b.y && a.z === b.z;
 
-  return a.x === b.x && a.y === b.y && a.z === b.z;
+  return a === b;
 }
-
-const robotScreen = ((robotModule as unknown as { default?: RobotScreenApi }).default ?? robotModule) as unknown as RobotScreenApi;
 
 let isFaladorV2LoopRunning = false;
 let faladorV2StartedAtMs: number | null = null;
@@ -206,6 +187,88 @@ function getRandomPointInsideShape(shape: Shape): Coordinate {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Loop state — immutable record, updated functionally each tick
+// ---------------------------------------------------------------------------
+
+type LoopState = {
+  readonly loopIndex: number;
+  readonly lastClickAtMs: number | null;
+  readonly lastClickedShapeType: "magenta" | "green" | null;
+  readonly lastTile: TileCoordinate | null;
+  readonly lastObservedTile: TileCoordinate | null;
+  readonly tileStableSinceMs: number | null;
+  readonly hasMoved: boolean;
+};
+
+const initialLoopState: LoopState = {
+  loopIndex: 0,
+  lastClickAtMs: null,
+  lastClickedShapeType: null,
+  lastTile: null,
+  lastObservedTile: null,
+  tileStableSinceMs: null,
+  hasMoved: true,
+};
+
+// Pure: derive new tile-tracking state from a completed OCR read.
+function applyTileRead(state: LoopState, tileRead: TileReadResult, now: number): LoopState {
+  const { tile } = tileRead;
+  if (!tile) {
+    return { ...state, lastObservedTile: null, tileStableSinceMs: null };
+  }
+  const lastTile = isSameTile(state.lastTile, tile) ? state.lastTile : tile;
+  const observedChanged = !isSameTile(state.lastObservedTile, tile);
+  return {
+    ...state,
+    lastTile,
+    lastObservedTile: observedChanged ? tile : state.lastObservedTile,
+    tileStableSinceMs: observedChanged ? now : state.tileStableSinceMs,
+    hasMoved: !isSameTile(state.lastTile, tile),
+  };
+}
+
+// Pure: decide which color to target given current shapes and last-click history.
+function resolveTargetColor(
+  lastClickedShapeType: "magenta" | "green" | null,
+  magentaShape: Shape | null,
+  greenShape: Shape | null,
+): "magenta" | "green" | null {
+  if (magentaShape !== null) {
+    if (lastClickedShapeType === "magenta") {
+      return greenShape !== null ? "green" : null;
+    }
+    return "magenta";
+  }
+  return greenShape !== null ? "green" : null;
+}
+
+// Pure: how many ms of click cooldown remain (0 = ready).
+function clickCooldownRemainingMs(lastClickAtMs: number | null, now: number): number {
+  if (lastClickAtMs === null) return 0;
+  return Math.max(0, MIN_CLICK_INTERVAL_MS - (now - lastClickAtMs));
+}
+
+// Pure: true when the tile has been stable long enough to allow a click.
+function isTileReadyForClick(
+  tile: TileCoordinate | null,
+  lastObservedTile: TileCoordinate | null,
+  tileStableSinceMs: number | null,
+  now: number,
+): boolean {
+  if (!tile || tileStableSinceMs === null || !isSameTile(lastObservedTile, tile)) return false;
+  return now - tileStableSinceMs >= GAME_TICK_MS;
+}
+
+// Pure: record that a click just happened.
+function applyClick(state: LoopState, color: "magenta" | "green", now: number): LoopState {
+  return { ...state, lastClickAtMs: now, lastClickedShapeType: color };
+}
+
+// ---------------------------------------------------------------------------
+// Loop — threads LoopState through each tick; side effects are isolated here
+// ---------------------------------------------------------------------------
+
 async function runFaladorV2Loop(window: Window): Promise<void> {
   if (isFaladorV2LoopRunning) {
     logWithDelta("Automate Bot (Falador Roof Top V2): loop already running; skipping new start.");
@@ -214,145 +277,79 @@ async function runFaladorV2Loop(window: Window): Promise<void> {
 
   isFaladorV2LoopRunning = true;
   setAutomateBotCurrentStep("falador-rooftop-v2-step-watch");
-  let loopIndex = 0;
-  let lastClickAtMs: number | null = null;
-  let lastClickedShapeType: "magenta" | "green" | null = null;
-  let lastTile: TileCoordinate | null = null;
-  let lastObservedTile: TileCoordinate | null = null;
-  let tileStableSinceMs: number | null = null;
 
   try {
-    // Give RuneLite one short moment after restore so overlays are present in the first OCR capture.
     await sleepWithAbort(OCR_STARTUP_WARMUP_MS);
 
+    let state: LoopState = initialLoopState;
+
     while (AppState.automateBotRunning) {
-      loopIndex += 1;
+      const loopIndex = state.loopIndex + 1;
+      state = { ...state, loopIndex };
       const tickStartedAt = Date.now();
+
       try {
         const bounds = getPlayableBounds(window);
 
         if (!bounds) {
-          warnWithDelta(`Automate Bot (Falador Roof Top V2): loop #${loopIndex} - invalid RuneLite bounds.`);
+          warnWithDelta(`Automate Bot (Agility): loop #${loopIndex} - invalid RuneLite bounds.`);
         } else {
+          // --- OCR: tile ---
           const loopRawScreenshotPath = DEBUG_OCR_SCREENSHOTS ? `./ocr-debug/loop-${String(loopIndex).padStart(6, "0")}-raw.png` : null;
-          const tileRead = readTileCoordinateFromOverlay(bounds, robotScreen, loopRawScreenshotPath);
-          const tile = tileRead.tile;
-          if (tile) {
-            logWithDelta(
-              `Automate Bot (Agility): loop #${loopIndex} - tile OCR raw='${tileRead.rawLine ?? ""}' parsed=${tile.x},${tile.y},${tile.z}.`,
-            );
-            const tileChanged = !isSameTile(lastTile, tile);
-            if (tileChanged) {
-              logWithDelta(`Automate Bot (Agility): loop #${loopIndex} - player tile ${tile.x},${tile.y},${tile.z}.`);
-              lastTile = tile;
-            }
+          const playerTile = readTileCoordinateFromOverlay(bounds, screen, loopRawScreenshotPath);
 
-            if (!isSameTile(lastObservedTile, tile)) {
-              lastObservedTile = tile;
-              tileStableSinceMs = Date.now();
-            }
-          } else {
-            logWithDelta(`Automate Bot (Agility): loop #${loopIndex} - tile OCR failed (no tile match), raw='${tileRead.rawLine}'.`);
-            lastObservedTile = null;
-            tileStableSinceMs = null;
-          }
+          state = applyTileRead(state, playerTile, Date.now());
 
-          // Read game stats (laps, goal progress, etc.)
-          const statsRead = readGameStatsFromOverlay(
-            bounds,
-            robotScreen,
-            DEBUG_OVERLAY_WIDTH_RATIO,
-            DEBUG_OVERLAY_HEIGHT_RATIO,
-            false, // Only enable debug on demand
+          logWithDelta(
+            `Automate Bot (Agility): loop #${loopIndex} - tile OCR raw='${playerTile.rawLine ?? ""}' parsed=${playerTile.tile?.x},${playerTile.tile?.y},${playerTile.tile?.z}.`,
           );
-          if (statsRead.stats.totalLaps !== null || statsRead.stats.lapsUntilGoal !== null) {
-            if (statsRead.stats.totalLaps !== null) {
-              logWithDelta(`Automate Bot (Agility): loop #${loopIndex} - Total Laps: ${statsRead.stats.totalLaps}`);
-            }
-            if (statsRead.stats.lapsUntilGoal !== null) {
-              logWithDelta(`Automate Bot (Agility): loop #${loopIndex} - Laps Until Goal: ${statsRead.stats.lapsUntilGoal}`);
-            }
+
+          if (state.hasMoved) {
+            logWithDelta(`Automate Bot (Agility): loop #${loopIndex} - player moved, skipping color detection and click logic.`);
+            await sleepWithAbort(GAME_TICK_MS);
+            continue;
           }
 
+          // --- Color detection & target resolution ---
           const magentaShape = findStrictMagentaShape(bounds);
           const greenShape = findStrictGreenShape(bounds);
 
-          // Priority: magenta first. If magenta is persistent (still detected after we just clicked it),
-          // click green first to let the game progress, then retry magenta on the next iteration.
-          let targetColor: "magenta" | "green" | null = null;
-          if (magentaShape !== null) {
-            if (lastClickedShapeType === "magenta") {
-              if (greenShape !== null) {
-                targetColor = "green";
-                logWithDelta(`Automate Bot (Agility): loop #${loopIndex} - magenta persistent, clicking green first.`);
-              } else {
-                logWithDelta(`Automate Bot (Agility): loop #${loopIndex} - magenta persistent, no green available, skipping.`);
-              }
-            } else {
-              targetColor = "magenta";
-              logWithDelta(
-                `Automate Bot (Agility): loop #${loopIndex} - magenta shape found ` +
-                  `(area=${magentaShape.area}, width=${magentaShape.width}, height=${magentaShape.height}).`,
-              );
-            }
-          } else if (greenShape !== null) {
-            targetColor = "green";
-            logWithDelta(
-              `Automate Bot (Agility): loop #${loopIndex} - green shape found ` +
-                `(area=${greenShape.area}, width=${greenShape.width}, height=${greenShape.height}).`,
-            );
-          } else {
-            logWithDelta(`Automate Bot (Agility): loop #${loopIndex} - no target shape found.`);
+          const targetColor = resolveTargetColor(state.lastClickedShapeType, magentaShape, greenShape);
+
+          if (!targetColor) {
+            logWithDelta(`Automate Bot (Agility): loop #${loopIndex} - no target shapes detected.`);
+            await sleepWithAbort(GAME_TICK_MS);
+            continue;
           }
 
-          if (targetColor !== null) {
-            let canAttemptClick = true;
-            if (!tile || tileStableSinceMs === null || !isSameTile(lastObservedTile, tile)) {
-              logWithDelta(`Automate Bot (Agility): loop #${loopIndex} - tile unavailable/unstable, waiting before click.`);
-              canAttemptClick = false;
-            }
+          // --- Click gating (pure checks, async delays as side effects) ---
+          if (!isTileReadyForClick(playerTile.tile, state.lastObservedTile, state.tileStableSinceMs, Date.now())) {
+            logWithDelta(`Automate Bot (Agility): loop #${loopIndex} - tile unavailable/unstable, waiting before click.`);
+            await sleepWithAbort(GAME_TICK_MS);
+            continue;
+          }
 
-            if (canAttemptClick && tileStableSinceMs !== null) {
-              const stableForMs = Date.now() - tileStableSinceMs;
-              if (stableForMs < GAME_TICK_MS) {
-                const remainingStableMs = GAME_TICK_MS - stableForMs;
-                logWithDelta(`Automate Bot (Agility): loop #${loopIndex} - waiting ${remainingStableMs}ms for 1-tick tile stability.`);
-                canAttemptClick = false;
-              }
-            }
+          const cooldown = clickCooldownRemainingMs(state.lastClickAtMs, Date.now());
+          if (cooldown > 0) {
+            logWithDelta(`Automate Bot (Agility): loop #${loopIndex} - click cooldown ${cooldown}ms.`);
+            await sleepWithAbort(cooldown);
+            if (!AppState.automateBotRunning) break;
+          }
 
-            if (canAttemptClick && lastClickAtMs !== null) {
-              const elapsedSinceLastClickMs = Date.now() - lastClickAtMs;
-              if (elapsedSinceLastClickMs < MIN_CLICK_INTERVAL_MS) {
-                const remainingCooldownMs = MIN_CLICK_INTERVAL_MS - elapsedSinceLastClickMs;
-                logWithDelta(`Automate Bot (Agility): loop #${loopIndex} - click cooldown ${remainingCooldownMs}ms.`);
-                await sleepWithAbort(remainingCooldownMs);
-                if (!AppState.automateBotRunning) {
-                  break;
-                }
-              }
-            }
+          const clickDelayMs = randomIntInclusive(CLICK_DELAY_MIN_MS, CLICK_DELAY_MAX_MS);
+          await sleepWithAbort(clickDelayMs);
+          if (!AppState.automateBotRunning) break;
 
-            if (canAttemptClick) {
-              const clickDelayMs = randomIntInclusive(CLICK_DELAY_MIN_MS, CLICK_DELAY_MAX_MS);
-              await sleepWithAbort(clickDelayMs);
-              if (!AppState.automateBotRunning) {
-                break;
-              }
-
-              // Re-detect after all delays to avoid clicking a stale position.
-              const freshShape = targetColor === "magenta" ? findStrictMagentaShape(bounds) : findStrictGreenShape(bounds);
-              if (!freshShape) {
-                logWithDelta(`Automate Bot (Agility): loop #${loopIndex} - ${targetColor} shape gone after delays, skipping click.`);
-              } else {
-                const clickPoint = getRandomPointInsideShape(freshShape);
-                logWithDelta(`Automate Bot (Agility): loop #${loopIndex} - clicking ${targetColor} at (${clickPoint.x},${clickPoint.y}).`);
-                moveMouse(clickPoint.x, clickPoint.y);
-                mouseClick("left", false);
-                lastClickAtMs = Date.now();
-                lastClickedShapeType = targetColor;
-              }
-            }
+          // Re-detect after delays to avoid clicking a stale position.
+          const freshShape = targetColor === "magenta" ? findStrictMagentaShape(bounds) : findStrictGreenShape(bounds);
+          if (!freshShape) {
+            logWithDelta(`Automate Bot (Agility): loop #${loopIndex} - ${targetColor} shape gone after delays, skipping click.`);
+          } else {
+            const clickPoint = getRandomPointInsideShape(freshShape);
+            logWithDelta(`Automate Bot (Agility): loop #${loopIndex} - clicking ${targetColor} at (${clickPoint.x},${clickPoint.y}).`);
+            moveMouse(clickPoint.x, clickPoint.y);
+            mouseClick("left", false);
+            state = applyClick(state, targetColor, Date.now());
           }
         }
       } catch (error) {
@@ -360,8 +357,7 @@ async function runFaladorV2Loop(window: Window): Promise<void> {
         errorWithDelta(`Automate Bot (Agility): loop #${loopIndex} failed: ${message}`);
       }
 
-      const elapsedMs = Date.now() - tickStartedAt;
-      const waitToNextTickMs = Math.max(0, GAME_TICK_MS - elapsedMs);
+      const waitToNextTickMs = Math.max(0, GAME_TICK_MS - (Date.now() - tickStartedAt));
       if (waitToNextTickMs > 0) {
         await sleepWithAbort(waitToNextTickMs);
       }
@@ -384,10 +380,14 @@ export function onAgilityBotStart(): void {
     return;
   }
 
-  if (!isWindowActive(window)) {
-    window.restore();
-  }
-  // window.bringToTop();
+  // if (!window.isVisible()) {
+  window.show();
+  // }
+
+  // if (!isWindowActive(window)) {
+  //
+  // }
+  window.bringToTop();
 
   void runFaladorV2Loop(window);
 }

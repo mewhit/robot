@@ -19,7 +19,7 @@ export function setupIoHookHandlers() {
     }
 
     if (e.keycode === UiohookKey.F2) {
-      if (AppState.activeView === "automateBot") {
+      if (AppState.activeView === "automateBot" || AppState.automateBotRunning) {
         try {
           toggleSelectedAutomateBot("f2");
         } catch (error) {
