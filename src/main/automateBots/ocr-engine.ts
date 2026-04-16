@@ -13,6 +13,7 @@
  */
 
 import fs from "fs";
+import path from "path";
 import { PNG } from "pngjs";
 
 const DEFAULT_OCR_DEBUG_DIR = "./ocr-debug";
@@ -56,7 +57,7 @@ export const OCR_SCALE_FACTOR = 4;
 export const OCR_THRESHOLD = 180;
 
 /** Regex to filter allowed characters in OCR output (digits and commas only) */
-export const ALLOWED_OCR_CHARS = /[0-9,]/g;
+export const ALLOWED_OCR_CHARS = /[0-9,]/;
 
 /** Glyph matching tolerance (max distance before rejecting a match) - increased for better number detection accuracy */
 export const GLYPH_MATCH_TOLERANCE = 20;
@@ -110,6 +111,14 @@ export function saveBitmap(bitmap: RobotBitmap, filename: string): void {
  * @param scale - Pixel scale factor (1 = normal, 4 = 4x size) for visualization
  */
 export function saveMask(mask: Uint8Array, width: number, height: number, filename: string, scale: number = 1): void {
+  let maxValue = 0;
+  for (let i = 0; i < mask.length; i += 1) {
+    if (mask[i] > maxValue) {
+      maxValue = mask[i];
+    }
+  }
+  const isBinaryMask = maxValue <= 1;
+
   const png = new PNG({
     width: width * scale,
     height: height * scale,
@@ -118,8 +127,8 @@ export function saveMask(mask: Uint8Array, width: number, height: number, filena
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const val = mask[y * width + x];
-      // Convert 0-255 (grayscale) or 0-1 (binary) to RGB
-      const pixel = Math.floor((val / 255) * 255);
+      // Convert binary masks to full white for visibility; keep grayscale masks unchanged.
+      const pixel = isBinaryMask ? (val > 0 ? 255 : 0) : val;
 
       // Replicate pixel according to scale factor
       for (let dy = 0; dy < scale; dy++) {
@@ -162,18 +171,43 @@ export function debugSaveAllStages(bitmap: RobotBitmap, outputDir: string = "./o
   saveMask(gray, bitmap.width, bitmap.height, `${outputDir}/02_grayscale.png`);
 
   // Stage 3: Binary threshold
-  const binary = applyBinaryThreshold(gray, bitmap.width, bitmap.height, OCR_THRESHOLD);
+  const threshold = computeDynamicThreshold(gray);
+  const binary = applyBinaryThreshold(gray, bitmap.width, bitmap.height, threshold);
   saveMask(binary, bitmap.width, bitmap.height, `${outputDir}/03_binary.png`);
 
   // Stage 4: Upscaled
   const upscaled = upscaleImage(binary, bitmap.width, bitmap.height, OCR_SCALE_FACTOR);
-  saveMask(
-    upscaled,
-    bitmap.width * OCR_SCALE_FACTOR,
-    bitmap.height * OCR_SCALE_FACTOR,
-    `${outputDir}/04_upscaled.png`,
-    1,
-  );
+  saveMask(upscaled, bitmap.width * OCR_SCALE_FACTOR, bitmap.height * OCR_SCALE_FACTOR, `${outputDir}/04_upscaled.png`, 1);
+}
+
+/**
+ * Save OCR stage images next to a raw screenshot path using per-loop filenames.
+ * Example raw path: ./ocr-debug/loop-000001-raw.png
+ * Output files: loop-000001-01-original.png, -02-grayscale.png, -03-binary.png, -04-upscaled.png
+ */
+export function debugSaveAllStagesForRaw(bitmap: RobotBitmap, rawScreenshotPath: string): void {
+  const parsed = path.parse(rawScreenshotPath);
+  const outputDir = parsed.dir || ".";
+  const baseName = parsed.name.endsWith("-raw") ? parsed.name.slice(0, -4) : parsed.name;
+
+  fs.mkdirSync(outputDir, { recursive: true });
+
+  const originalPath = path.join(outputDir, `${baseName}-01-original.png`);
+  const grayscalePath = path.join(outputDir, `${baseName}-02-grayscale.png`);
+  const binaryPath = path.join(outputDir, `${baseName}-03-binary.png`);
+  const upscaledPath = path.join(outputDir, `${baseName}-04-upscaled.png`);
+
+  saveBitmap(bitmap, originalPath);
+
+  const gray = bitmapToGrayscale(bitmap);
+  saveMask(gray, bitmap.width, bitmap.height, grayscalePath);
+
+  const threshold = computeDynamicThreshold(gray);
+  const binary = applyBinaryThreshold(gray, bitmap.width, bitmap.height, threshold);
+  saveMask(binary, bitmap.width, bitmap.height, binaryPath);
+
+  const upscaled = upscaleImage(binary, bitmap.width, bitmap.height, OCR_SCALE_FACTOR);
+  saveMask(upscaled, bitmap.width * OCR_SCALE_FACTOR, bitmap.height * OCR_SCALE_FACTOR, upscaledPath, 1);
 }
 
 export function flushOcrDebugDirectory(outputDir: string = DEFAULT_OCR_DEBUG_DIR): void {
@@ -332,11 +366,7 @@ function buildWhiteTextMask(bitmap: RobotBitmap): Uint8Array {
  * @param origHeight - Original bitmap height
  * @returns Array of y-ranges containing text
  */
-function findTextBands(
-  mask: Uint8Array,
-  origWidth: number,
-  origHeight: number,
-): Array<{ startY: number; endY: number }> {
+function findTextBands(mask: Uint8Array, origWidth: number, origHeight: number): Array<{ startY: number; endY: number }> {
   const width = origWidth * OCR_SCALE_FACTOR;
   const height = origHeight * OCR_SCALE_FACTOR;
   const rowThreshold = Math.max(4, Math.floor(width * 0.018));
@@ -419,8 +449,8 @@ function splitTallBands(bands: Array<{ startY: number; endY: number }>): Array<{
  * @param mask - Binary mask
  * @param origWidth - Original bitmap width
  * @param origHeight - Original bitmap height
- * @param startY - Band start y (in original coordinates)
- * @param endY - Band end y (in original coordinates)
+ * @param startY - Band start y (in upscaled mask coordinates)
+ * @param endY - Band end y (in upscaled mask coordinates)
  * @param startXRatio - Start scanning from this fraction of image width (0-1)
  * @param strictMode - Use strict glyph matching tolerance
  * @returns String of recognized digits and commas
@@ -436,10 +466,8 @@ function readNumericLine(
 ): string {
   const width = origWidth * OCR_SCALE_FACTOR;
   const height = origHeight * OCR_SCALE_FACTOR;
-  const scaledStartY = startY * OCR_SCALE_FACTOR;
-  const scaledEndY = endY * OCR_SCALE_FACTOR;
-  const y0 = Math.max(0, scaledStartY - 2);
-  const y1 = Math.min(height - 1, scaledEndY + 2);
+  const y0 = Math.max(0, startY - 2);
+  const y1 = Math.min(height - 1, endY + 2);
   const x0 = Math.max(0, Math.floor(width * startXRatio));
   const x1 = width - 1;
   const segments: Array<{ startX: number; endX: number }> = [];
@@ -486,10 +514,7 @@ function readNumericLine(
  * @param maxGap - Maximum gap (in pixels) to merge
  * @returns Merged segments
  */
-function mergeCloseSegments(
-  segments: Array<{ startX: number; endX: number }>,
-  maxGap: number,
-): Array<{ startX: number; endX: number }> {
+function mergeCloseSegments(segments: Array<{ startX: number; endX: number }>, maxGap: number): Array<{ startX: number; endX: number }> {
   if (segments.length === 0) {
     return [];
   }
@@ -687,6 +712,76 @@ function extractTileCandidate(line: string): { tile: TileCoordinate; score: numb
   };
 }
 
+/**
+ * Fallback parser when OCR misses comma glyphs.
+ * Tries plausible splits for X,Y,Z directly from digits.
+ */
+function extractTileCandidateFromDigitsOnly(digitsOnly: string): { tile: TileCoordinate; score: number } | null {
+  if (!/^\d+$/.test(digitsOnly)) {
+    return null;
+  }
+
+  let best: { tile: TileCoordinate; score: number } | null = null;
+
+  const minTileDigits = 7;
+  const maxTileDigits = 12;
+
+  for (let start = 0; start < digitsOnly.length; start += 1) {
+    for (let totalLen = minTileDigits; totalLen <= maxTileDigits; totalLen += 1) {
+      if (start + totalLen > digitsOnly.length) {
+        continue;
+      }
+
+      const candidateDigits = digitsOnly.slice(start, start + totalLen);
+
+      for (let xLen = 3; xLen <= 5; xLen += 1) {
+        for (let yLen = 3; yLen <= 5; yLen += 1) {
+          for (let zLen = 1; zLen <= 2; zLen += 1) {
+            if (xLen + yLen + zLen !== candidateDigits.length) {
+              continue;
+            }
+
+            const x = Number(candidateDigits.slice(0, xLen));
+            const y = Number(candidateDigits.slice(xLen, xLen + yLen));
+            const z = Number(candidateDigits.slice(xLen + yLen));
+            if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+              continue;
+            }
+
+            let score = 0;
+            if (x >= 2500 && x <= 4000) {
+              score += 4;
+            }
+            if (y >= 2500 && y <= 4000) {
+              score += 4;
+            }
+            if (z >= 0 && z <= 3) {
+              score += 3;
+            }
+            if (xLen === 4 || xLen === 5) {
+              score += 1;
+            }
+            if (yLen === 4 || yLen === 5) {
+              score += 1;
+            }
+
+            if (score < 9) {
+              continue;
+            }
+
+            const candidate = { tile: { x, y, z }, score };
+            if (!best || candidate.score > best.score) {
+              best = candidate;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return best;
+}
+
 // ============================================
 // Game Stats Extraction
 // ============================================
@@ -794,6 +889,7 @@ export function readTileCoordinateFromOverlay(
       capture: (x: number, y: number, width: number, height: number) => RobotBitmap;
     };
   },
+  debugRawScreenshotPath: string | null = "./ocr-debug/debug_raw.png",
 ): TileReadResult {
   // 🎯 HARD FIXED OVERLAY (no more guessing)
   const overlay = {
@@ -805,49 +901,49 @@ export function readTileCoordinateFromOverlay(
 
   const bitmap = robotScreen.screen.capture(overlay.x, overlay.y, overlay.width, overlay.height);
 
-  saveBitmap(bitmap, "./ocr-debug/debug_raw.png");
+  if (debugRawScreenshotPath) {
+    saveBitmap(bitmap, debugRawScreenshotPath);
+    debugSaveAllStagesForRaw(bitmap, debugRawScreenshotPath);
+  }
 
   // 🧠 PREPROCESS
   const mask = buildWhiteTextMask(bitmap);
 
   // 🧠 FIND TEXT LINES
-  const bands = findTextBands(mask, bitmap.width, bitmap.height)
-    .sort((a, b) => a.startY - b.startY)
-    .slice(0, 1); // ONLY TOP LINE (Tile)
+  const baseBands = findTextBands(mask, bitmap.width, bitmap.height).sort((a, b) => a.startY - b.startY);
+  const bands = splitTallBands(baseBands).sort((a, b) => a.startY - b.startY);
 
   let best: TileCoordinate | null = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
   let raw: string | null = null;
+  const scanRatios = [0.08, 0.12, 0.16, 0.2];
 
   for (const band of bands) {
-    const line = readNumericLine(
-      mask,
-      bitmap.width,
-      bitmap.height,
-      band.startY,
-      band.endY,
-      0.2, // skip "Tile"
-    );
+    for (const startXRatio of scanRatios) {
+      const line = readNumericLine(mask, bitmap.width, bitmap.height, band.startY, band.endY, startXRatio);
+      if (!line) {
+        continue;
+      }
 
-    if (!line) continue;
+      if (raw === null) {
+        raw = line;
+      }
 
-    // 🔥 STRICT FILTERS
-    if (line.length < 8 || line.length > 15) continue;
+      const cleaned = line.replace(/[^0-9,]/g, "");
+      if (cleaned.length < 7 || cleaned.length > 16) {
+        continue;
+      }
 
-    const commas = (line.match(/,/g) || []).length;
-    if (commas !== 2) continue;
+      const fromDelimited = extractTileCandidate(cleaned);
+      const digitsOnly = cleaned.replace(/,/g, "");
+      const fromDigitsOnly = extractTileCandidateFromDigitsOnly(digitsOnly);
+      const candidate = fromDelimited ?? fromDigitsOnly;
 
-    raw = line;
-
-    const match = line.match(/(\d{3,5}),(\d{3,5}),(\d{1})/);
-    if (!match) continue;
-
-    const x = Number(match[1]);
-    const y = Number(match[2]);
-    const z = Number(match[3]);
-
-    if (x >= 2500 && x <= 4000 && y >= 2500 && y <= 4000 && z >= 0 && z <= 3) {
-      best = { x, y, z };
-      break;
+      if (candidate && candidate.score > bestScore) {
+        best = candidate.tile;
+        bestScore = candidate.score;
+        raw = cleaned;
+      }
     }
   }
 
