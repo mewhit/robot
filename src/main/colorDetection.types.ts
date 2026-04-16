@@ -22,3 +22,15 @@ export type DetectColorShapesOptions = {
   stepPx?: number;
   mergeGapPx?: number;
 };
+
+export type Shape = {
+  coordinates: Coordinate[];
+  center: Coordinate;
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+  width: number;
+  height: number;
+  area: number;
+};

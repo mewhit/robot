@@ -41,7 +41,7 @@ function TaskNodeComponent({
 }) {
   const isExpanded = expandedNodeIds.has(node.id);
   const hasChildren = (node.children ?? []).length > 0;
-  const isSelectableTask = node.id === "falador-rooftop";
+  const isSelectableTask = node.id === "agility";
   const isSelected = isSelectableTask && selectedNodeId === node.id;
   const isActiveStep = node.id === activeStepId;
   const isStep = !hasChildren && node.id.includes("-step-");

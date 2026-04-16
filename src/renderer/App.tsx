@@ -148,37 +148,16 @@ export default function App() {
     confidence: 0,
     point: null,
   });
-  const [selectedTaskNodeId, setSelectedTaskNodeId] = useState<string | null>("falador-rooftop");
+  const [selectedTaskNodeId, setSelectedTaskNodeId] = useState<string | null>("agility");
   const [isSelectedTaskRunning, setIsSelectedTaskRunning] = useState(false);
   const [currentStepId, setCurrentStepId] = useState<string | null>(null);
   const [taskTree, setTaskTree] = useState<TaskNode[]>([
     {
       id: "agility",
       name: "Agility",
-      children: [
-        {
-          id: "falador-rooftop",
-          name: "Falador Roof Top",
-          children: [
-            { id: "falador-rooftop-step-1", name: "Step 1" },
-            { id: "falador-rooftop-step-2", name: "Step 2: Tightrope" },
-            { id: "falador-rooftop-step-3", name: "Step 3: Hands Hold" },
-            { id: "falador-rooftop-step-4", name: "Step 4: Gap" },
-            { id: "falador-rooftop-step-5", name: "Step 5: Gap" },
-            { id: "falador-rooftop-step-6", name: "Step 6: Tightrope" },
-            { id: "falador-rooftop-step-7", name: "Step 7: Tightrope" },
-            { id: "falador-rooftop-step-8", name: "Step 8: Gap" },
-            { id: "falador-rooftop-step-9", name: "Step 9: Ledge" },
-            { id: "falador-rooftop-step-10", name: "Step 10: Ledge" },
-            { id: "falador-rooftop-step-11", name: "Step 11: Ledge" },
-            { id: "falador-rooftop-step-12", name: "Step 12: Ledge" },
-            { id: "falador-rooftop-step-13", name: "Step 13: Ledge" },
-          ],
-        },
-      ],
     },
   ]);
-  const [expandedTaskNodeIds, setExpandedTaskNodeIds] = useState<Set<string>>(new Set(["agility", "falador-rooftop"]));
+  const [expandedTaskNodeIds, setExpandedTaskNodeIds] = useState<Set<string>>(new Set());
 
   const handleToggleTaskNodeExpand = useCallback((id: string) => {
     setExpandedTaskNodeIds((prev) => {
@@ -242,9 +221,9 @@ export default function App() {
     };
     const onAutomateBotState = (
       _: unknown,
-      payload: { selectedBotId: string | null; isRunning: boolean; currentStepId?: string | null },
+      payload: { selectedBotId: string | null; isRunning: boolean; currentStepId?: string | null }
     ) => {
-      setSelectedTaskNodeId(payload.selectedBotId ?? "falador-rooftop");
+      setSelectedTaskNodeId(payload.selectedBotId ?? "falador-rooftop-v2");
       setIsSelectedTaskRunning(Boolean(payload.isRunning));
       setCurrentStepId(payload.currentStepId ?? null);
     };
@@ -259,7 +238,7 @@ export default function App() {
     ipcRenderer.on("output-folder-state", onFolderState);
     const onCursorPos = (
       _: unknown,
-      pos: { x: number; y: number; runLiteWindow?: { x: number; y: number; width: number; height: number } | null },
+      pos: { x: number; y: number; runLiteWindow?: { x: number; y: number; width: number; height: number } | null }
     ) => setCursorPos(pos);
     ipcRenderer.on("cursor-pos", onCursorPos);
     ipcRenderer.send("ui-ready");
@@ -449,7 +428,9 @@ export default function App() {
 
   const handleDelete = async () => {
     if (!contextMenu) return;
-    const selectedTargets = selectedFilePaths.includes(contextMenu.relativePath) ? selectedFilePaths : [contextMenu.relativePath];
+    const selectedTargets = selectedFilePaths.includes(contextMenu.relativePath)
+      ? selectedFilePaths
+      : [contextMenu.relativePath];
     const isMassDelete = selectedTargets.length > 1;
     const label = isMassDelete
       ? `${selectedTargets.length} selected files`
@@ -564,7 +545,7 @@ export default function App() {
       setSelectedFilePaths([relativePath]);
       ipcRenderer.send("set-active-file", relativePath);
     },
-    [cancelRename, hideContextMenu],
+    [cancelRename, hideContextMenu]
   );
 
   const contextMenuSelectedTargets = contextMenu
@@ -575,7 +556,9 @@ export default function App() {
   const canRenameContextTarget = contextMenuSelectedTargets.length === 1;
 
   const selectedCsvRow =
-    selectedCsvRowIndex === null ? null : (folderState.activeFileRows.find((row) => row.index === selectedCsvRowIndex) ?? null);
+    selectedCsvRowIndex === null
+      ? null
+      : (folderState.activeFileRows.find((row) => row.index === selectedCsvRowIndex) ?? null);
 
   const mouseLocationText = cursorPos ? `X: ${cursorPos.x} Y: ${cursorPos.y}` : "X: -- Y: --";
 
@@ -649,7 +632,10 @@ export default function App() {
       return;
     }
 
-    if ((elapsedMin !== null && !Number.isFinite(elapsedMin)) || (elapsedMax !== null && !Number.isFinite(elapsedMax))) {
+    if (
+      (elapsedMin !== null && !Number.isFinite(elapsedMin)) ||
+      (elapsedMax !== null && !Number.isFinite(elapsedMax))
+    ) {
       window.alert("Elapsed range values must be numeric or empty.");
       return;
     }
@@ -707,17 +693,23 @@ export default function App() {
         cancelRename();
       }
     },
-    [cancelRename, submitRename],
+    [cancelRename, submitRename]
   );
 
   return (
     <>
       <div className="panel">
         <div className="view-navigation">
-          <button className={`nav-tab ${activeView === "clicker" ? "active" : ""}`} onClick={() => setActiveView("clicker")}>
+          <button
+            className={`nav-tab ${activeView === "clicker" ? "active" : ""}`}
+            onClick={() => setActiveView("clicker")}
+          >
             Clicker
           </button>
-          <button className={`nav-tab ${activeView === "automateBot" ? "active" : ""}`} onClick={() => setActiveView("automateBot")}>
+          <button
+            className={`nav-tab ${activeView === "automateBot" ? "active" : ""}`}
+            onClick={() => setActiveView("automateBot")}
+          >
             Automate Bot
           </button>
           <div className="nav-mouse-pos" title="Current mouse location">
@@ -779,26 +771,40 @@ export default function App() {
         )}
       </div>
       {contextMenu && (
-        <div className="context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(e) => e.stopPropagation()}>
+        <div
+          className="context-menu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
           {canRenameContextTarget && (
             <div className="context-item" onClick={() => void handleRename()}>
               Rename
             </div>
           )}
           <div className="context-item context-item--danger" onClick={() => void handleDelete()}>
-            {contextMenuSelectedTargets.length > 1 ? `Delete Selected (${contextMenuSelectedTargets.length})` : "Delete"}
+            {contextMenuSelectedTargets.length > 1
+              ? `Delete Selected (${contextMenuSelectedTargets.length})`
+              : "Delete"}
           </div>
         </div>
       )}
       {stepContextMenu && (
-        <div className="context-menu" style={{ left: stepContextMenu.x, top: stepContextMenu.y }} onClick={(e) => e.stopPropagation()}>
+        <div
+          className="context-menu"
+          style={{ left: stepContextMenu.x, top: stepContextMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
           <div className="context-item" onClick={() => void handleResumeFromStep()}>
             Resume from {stepContextMenu.stepName}
           </div>
         </div>
       )}
       {csvRowContextMenu && (
-        <div className="context-menu" style={{ left: csvRowContextMenu.x, top: csvRowContextMenu.y }} onClick={(e) => e.stopPropagation()}>
+        <div
+          className="context-menu"
+          style={{ left: csvRowContextMenu.x, top: csvRowContextMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
           <div className="context-item" onClick={() => void handlePlayCsvRow()}>
             Play (row)
           </div>

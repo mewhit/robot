@@ -1,5 +1,5 @@
 import * as robotModule from "robotjs";
-import { Coordinate, DetectColorShapesOptions, RgbColor, WatchBounds } from "./colorDetection.types";
+import { Coordinate, DetectColorShapesOptions, RgbColor, Shape, WatchBounds } from "./colorDetection.types";
 
 type RobotBitmap = {
   width: number;
@@ -15,14 +15,15 @@ type RobotColorApi = {
   };
 };
 
-const robot = ((robotModule as unknown as { default?: RobotColorApi }).default ?? robotModule) as unknown as RobotColorApi;
+const robot = ((robotModule as unknown as { default?: RobotColorApi }).default ??
+  robotModule) as unknown as RobotColorApi;
 
 // First function for colorDetection: find connected shapes of a target color in a bounded screen region.
 export function findColorShapesInBounds(
   bounds: WatchBounds,
   color: string | RgbColor,
-  options: DetectColorShapesOptions = {},
-): Array<Array<Coordinate>> {
+  options: DetectColorShapesOptions = {}
+): Array<Shape> {
   const normalizedBounds = normalizeBounds(bounds);
   if (!normalizedBounds) {
     return [];
@@ -38,9 +39,21 @@ export function findColorShapesInBounds(
   const stepPx = Math.max(1, Math.floor(options.stepPx ?? 1));
   const mergeGapPx = Math.max(0, Math.floor(options.mergeGapPx ?? 0));
 
-  const bitmap = robot.screen.capture(normalizedBounds.x, normalizedBounds.y, normalizedBounds.width, normalizedBounds.height);
+  const bitmap = robot.screen.capture(
+    normalizedBounds.x,
+    normalizedBounds.y,
+    normalizedBounds.width,
+    normalizedBounds.height
+  );
 
-  const sampledMatches = collectMatchingPixels(bitmap, normalizedBounds.x, normalizedBounds.y, target, tolerance, stepPx);
+  const sampledMatches = collectMatchingPixels(
+    bitmap,
+    normalizedBounds.x,
+    normalizedBounds.y,
+    target,
+    tolerance,
+    stepPx
+  );
   const groupedShapes = groupConnectedPixels(sampledMatches, minShapeSize);
   return mergeOverlappingShapes(groupedShapes, mergeGapPx, minShapeSize);
 }
@@ -51,7 +64,7 @@ function collectMatchingPixels(
   absTop: number,
   target: RgbColor,
   tolerance: number,
-  stepPx: number,
+  stepPx: number
 ): Coordinate[] {
   const matches: Coordinate[] = [];
   const image = bitmap.image;
@@ -75,7 +88,7 @@ function collectMatchingPixels(
   return matches;
 }
 
-function groupConnectedPixels(matches: Coordinate[], minShapeSize: number): Array<Array<Coordinate>> {
+function groupConnectedPixels(matches: Coordinate[], minShapeSize: number): Array<Shape> {
   if (matches.length === 0) {
     return [];
   }
@@ -86,7 +99,7 @@ function groupConnectedPixels(matches: Coordinate[], minShapeSize: number): Arra
   }
 
   const visited = new Set<string>();
-  const shapes: Array<Array<Coordinate>> = [];
+  const shapes: Array<Coordinate[]> = [];
 
   for (const point of matches) {
     const startKey = keyFromPoint(point.x, point.y);
@@ -127,15 +140,20 @@ function groupConnectedPixels(matches: Coordinate[], minShapeSize: number): Arra
     }
   }
 
-  return shapes;
+  return shapes.map((shape) => constructShape(shape));
 }
 
-function mergeOverlappingShapes(shapes: Array<Array<Coordinate>>, mergeGapPx: number, minShapeSize: number): Array<Array<Coordinate>> {
+function mergeOverlappingShapes(shapes: Array<Shape>, mergeGapPx: number, minShapeSize: number): Array<Shape> {
   if (shapes.length <= 1) {
     return shapes;
   }
 
-  const shapeBoxes = shapes.map((shape) => getBoundingBox(shape));
+  const shapeBoxes = shapes.map((shape) => ({
+    minX: shape.minX,
+    maxX: shape.maxX,
+    minY: shape.minY,
+    maxY: shape.maxY,
+  }));
   const parent = Array.from({ length: shapes.length }, (_, index) => index);
 
   const find = (index: number): number => {
@@ -168,17 +186,17 @@ function mergeOverlappingShapes(shapes: Array<Array<Coordinate>>, mergeGapPx: nu
     const root = find(i);
     const existing = groupedByRoot.get(root);
     if (existing) {
-      existing.push(...shapes[i]);
+      existing.push(...shapes[i].coordinates);
     } else {
-      groupedByRoot.set(root, [...shapes[i]]);
+      groupedByRoot.set(root, [...shapes[i].coordinates]);
     }
   }
 
-  const mergedShapes: Array<Array<Coordinate>> = [];
+  const mergedShapes: Array<Shape> = [];
   for (const shape of groupedByRoot.values()) {
     const uniquePoints = dedupePoints(shape);
     if (uniquePoints.length >= minShapeSize) {
-      mergedShapes.push(uniquePoints);
+      mergedShapes.push(constructShape(uniquePoints));
     }
   }
 
@@ -218,10 +236,30 @@ function getBoundingBox(points: Coordinate[]): { minX: number; maxX: number; min
   return { minX, maxX, minY, maxY };
 }
 
+function constructShape(coordinates: Coordinate[]): Shape {
+  const box = getBoundingBox(coordinates);
+  const width = box.maxX - box.minX + 1;
+  const height = box.maxY - box.minY + 1;
+  const centerX = box.minX + width / 2 - 0.5;
+  const centerY = box.minY + height / 2 - 0.5;
+
+  return {
+    coordinates,
+    center: { x: centerX, y: centerY },
+    minX: box.minX,
+    maxX: box.maxX,
+    minY: box.minY,
+    maxY: box.maxY,
+    width,
+    height,
+    area: coordinates.length,
+  };
+}
+
 function boxesOverlapOrTouch(
   a: { minX: number; maxX: number; minY: number; maxY: number },
   b: { minX: number; maxX: number; minY: number; maxY: number },
-  gap: number,
+  gap: number
 ): boolean {
   return a.minX <= b.maxX + gap && a.maxX + gap >= b.minX && a.minY <= b.maxY + gap && a.maxY + gap >= b.minY;
 }
@@ -240,7 +278,9 @@ function getNeighbors(point: Coordinate): Coordinate[] {
 }
 
 function isColorMatch(r: number, g: number, b: number, target: RgbColor, tolerance: number): boolean {
-  return Math.abs(r - target.r) <= tolerance && Math.abs(g - target.g) <= tolerance && Math.abs(b - target.b) <= tolerance;
+  return (
+    Math.abs(r - target.r) <= tolerance && Math.abs(g - target.g) <= tolerance && Math.abs(b - target.b) <= tolerance
+  );
 }
 
 function normalizeBounds(bounds: WatchBounds): WatchBounds | null {
@@ -298,4 +338,4 @@ function keyFromPoint(x: number, y: number): string {
   return `${x},${y}`;
 }
 
-export type { Coordinate, DetectColorShapesOptions, RgbColor, WatchBounds } from "./colorDetection.types";
+export type { Coordinate, DetectColorShapesOptions, RgbColor, Shape, WatchBounds } from "./colorDetection.types";

@@ -1,4 +1,5 @@
 import { windowManager, Window } from "node-window-manager";
+import { screen } from "electron";
 
 export type RuneLiteWindowInfo = { x: number; y: number; width: number; height: number };
 
@@ -8,6 +9,18 @@ const DEFAULT_AUTOMATION_RUNELITE_BOUNDS: RuneLiteWindowInfo = {
   width: 1280,
   height: 720,
 };
+
+function getWindowsDPIScalingFactor(): number {
+  try {
+    const primaryDisplay = screen.getPrimaryDisplay();
+    const scaleFactor = primaryDisplay.scaleFactor;
+    console.log(`Detected Windows DPI scaling: ${scaleFactor}x (${Math.round(scaleFactor * 100)}%)`);
+    return scaleFactor;
+  } catch (error) {
+    console.warn(`Could not detect DPI scaling, using 1x:`, error);
+    return 1;
+  }
+}
 
 export function findRuneLiteWindow(): Window | null {
   const windows = windowManager.getWindows();
@@ -82,6 +95,25 @@ export function getRuneLite(): Window | null {
     console.warn("RuneLite window not found; skipping bounds alignment.");
     return null;
   }
+
+  const bounds = runeLiteWindow.getBounds();
+  if (
+    !bounds ||
+    typeof bounds.x !== "number" ||
+    typeof bounds.y !== "number" ||
+    typeof bounds.width !== "number" ||
+    typeof bounds.height !== "number"
+  ) {
+    console.warn("Invalid window bounds, returning original window");
+    return runeLiteWindow;
+  }
+
+  console.log(
+    `getRuneLite() found window: title="${runeLiteWindow.getTitle()}", raw bounds: x=${bounds.x}, y=${bounds.y}, width=${bounds.width}, height=${bounds.height}`,
+  );
+
+  // Use raw bounds directly without DPI scaling
+  // robotjs captures at pixel level, DPI scaling causes coordinate mismatch
 
   return runeLiteWindow;
 }

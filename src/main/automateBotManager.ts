@@ -1,9 +1,10 @@
 import { AppState } from "./global-state";
-import { FALADOR_ROOFTOP_BOT_ID, onFaladorRooftopStart, onFaladorRooftopStartFromStep } from "./automateBots/faladorRooftop";
+import { AGILITY_BOT_ID, onAgilityBotStart } from "./automateBots/agility-bot";
+import { flushOcrDebugDirectory } from "./automateBots/ocr-engine";
 
-const botStartHandlers = new Map<string, () => void>([[FALADOR_ROOFTOP_BOT_ID, onFaladorRooftopStart]]);
+const botStartHandlers = new Map<string, () => void>([[AGILITY_BOT_ID, onAgilityBotStart]]);
 
-const botStartFromStepHandlers = new Map<string, (stepId: string) => void>([[FALADOR_ROOFTOP_BOT_ID, onFaladorRooftopStartFromStep]]);
+const botStartFromStepHandlers = new Map<string, (stepId: string) => void>();
 
 export function sendAutomateBotState() {
   AppState.mainWindow?.webContents.send("automate-bot-state", {
@@ -24,7 +25,11 @@ export function setActiveView(view: "clicker" | "automateBot") {
 
 export function setSelectedAutomateBotId(botId: string | null) {
   const normalized = typeof botId === "string" ? botId.trim() : "";
-  AppState.selectedAutomateBotId = normalized.length > 0 ? normalized : null;
+  if (normalized === AGILITY_BOT_ID || normalized.length === 0) {
+    AppState.selectedAutomateBotId = AGILITY_BOT_ID;
+  } else {
+    AppState.selectedAutomateBotId = AGILITY_BOT_ID;
+  }
 
   if (AppState.automateBotRunning && AppState.selectedAutomateBotId === null) {
     AppState.automateBotRunning = false;
@@ -59,6 +64,8 @@ export function startSelectedAutomateBot(source: "f2" | "ui") {
     throw new Error(`Unsupported Automate Bot: ${selectedBotId}`);
   }
 
+  flushOcrDebugDirectory();
+
   AppState.automateBotRunning = true;
   sendAutomateBotState();
   selectedBotStartHandler();
@@ -83,6 +90,8 @@ export function startAutomateBotFromStep(stepId: string) {
   if (!matchedBotId || !matchedHandler) {
     throw new Error(`Unknown step ID: ${stepId}`);
   }
+
+  flushOcrDebugDirectory();
 
   AppState.selectedAutomateBotId = matchedBotId;
   AppState.automateBotRunning = true;
