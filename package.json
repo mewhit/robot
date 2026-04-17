@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "concurrently -k \"vite\" \"tsc -p tsconfig.main.json --watch --preserveWatchOutput\" \"wait-on http://localhost:5173 dist/main/index.js && electronmon dist/main/index.js\"",
     "build": "vite build && tsc -p tsconfig.main.json",
-    "start": "electron dist/main/index.js"
+    "start": "electron dist/main/index.js",
+    "test:screenshot": "ts-node src/main/automateBots/test-detector.ts test-images/tile-*.png"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.2.2",

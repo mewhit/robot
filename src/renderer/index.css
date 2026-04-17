@@ -127,6 +127,26 @@
     @apply border-red-700 text-red-700 hover:bg-red-50;
   }
 
+  .task-detector-btn {
+    @apply w-auto m-0 px-2 py-1 text-xs rounded-md bg-red-700 text-white border-0 cursor-pointer hover:bg-red-800 transition-colors;
+  }
+
+  .task-actions {
+    @apply flex items-center gap-2;
+  }
+
+  .task-screenshot-btn {
+    @apply w-auto m-0 px-2 py-1 text-xs rounded-md bg-slate-700 text-white border-0 cursor-pointer hover:bg-slate-800 transition-colors;
+  }
+
+  .task-feedback {
+    @apply m-0 px-1 text-xs text-emerald-700 truncate;
+  }
+
+  .task-feedback-error {
+    @apply text-red-700;
+  }
+
   .expand-icon {
     @apply inline-block w-4 text-center transition-transform duration-200 select-none;
   }

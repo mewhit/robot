@@ -97,6 +97,7 @@ export function getRuneLite(): Window | null {
   }
 
   const bounds = runeLiteWindow.getBounds();
+  console.log(bounds);
   if (
     !bounds ||
     typeof bounds.x !== "number" ||

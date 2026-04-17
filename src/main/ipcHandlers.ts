@@ -38,6 +38,8 @@ import {
   toggleSelectedAutomateBot,
   startAutomateBotFromStep,
 } from "./automateBotManager";
+import { runAgilityCoordinateDetector } from "./automateBots/agility-bot";
+import { runAgilityScreenshotCapture } from "./automateBots/screenshot-capture";
 
 const robot = ((robotModule as unknown as { default?: any }).default ?? robotModule) as any;
 
@@ -86,6 +88,34 @@ export function setupIpcHandlers() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`Could not start automate bot from step: ${message}`);
+      return { ok: false, error: message };
+    }
+  });
+
+  ipcMain.handle("run-coordinate-detector", async () => {
+    try {
+      const result = runAgilityCoordinateDetector();
+      if (!result.ok) {
+        return { ok: false, error: result.error ?? "Detector failed." };
+      }
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Could not run coordinate detector: ${message}`);
+      return { ok: false, error: message };
+    }
+  });
+
+  ipcMain.handle("run-screenshot-capture", async () => {
+    try {
+      const result = runAgilityScreenshotCapture();
+      if (!result.ok) {
+        return { ok: false, error: result.error ?? "Screenshot capture failed." };
+      }
+      return { ok: true, filePath: result.filePath };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Could not capture screenshot: ${message}`);
       return { ok: false, error: message };
     }
   });

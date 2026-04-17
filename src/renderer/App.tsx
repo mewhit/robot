@@ -158,6 +158,7 @@ export default function App() {
     },
   ]);
   const [expandedTaskNodeIds, setExpandedTaskNodeIds] = useState<Set<string>>(new Set());
+  const [screenshotNotice, setScreenshotNotice] = useState<{ text: string; tone: "success" | "error" } | null>(null);
 
   const handleToggleTaskNodeExpand = useCallback((id: string) => {
     setExpandedTaskNodeIds((prev) => {
@@ -221,7 +222,7 @@ export default function App() {
     };
     const onAutomateBotState = (
       _: unknown,
-      payload: { selectedBotId: string | null; isRunning: boolean; currentStepId?: string | null }
+      payload: { selectedBotId: string | null; isRunning: boolean; currentStepId?: string | null },
     ) => {
       setSelectedTaskNodeId(payload.selectedBotId ?? "falador-rooftop-v2");
       setIsSelectedTaskRunning(Boolean(payload.isRunning));
@@ -238,7 +239,7 @@ export default function App() {
     ipcRenderer.on("output-folder-state", onFolderState);
     const onCursorPos = (
       _: unknown,
-      pos: { x: number; y: number; runLiteWindow?: { x: number; y: number; width: number; height: number } | null }
+      pos: { x: number; y: number; runLiteWindow?: { x: number; y: number; width: number; height: number } | null },
     ) => setCursorPos(pos);
     ipcRenderer.on("cursor-pos", onCursorPos);
     ipcRenderer.send("ui-ready");
@@ -304,6 +305,60 @@ export default function App() {
       window.alert(`Unable to toggle Automate Bot: ${message}`);
     }
   }, []);
+
+  const handleRunCoordinateDetector = useCallback(async () => {
+    try {
+      const result = await ipcRenderer.invoke("run-coordinate-detector");
+      if (!result?.ok) {
+        window.alert(result?.error || "Unable to run coordinate detector.");
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      window.alert(`Unable to run coordinate detector: ${message}`);
+    }
+  }, []);
+
+  const handleRunScreenshotCapture = useCallback(async () => {
+    try {
+      const result = await ipcRenderer.invoke("run-screenshot-capture");
+      if (!result?.ok) {
+        setScreenshotNotice({
+          text: result?.error || "Unable to capture screenshot.",
+          tone: "error",
+        });
+        return;
+      }
+
+      if (result.filePath) {
+        const normalizedPath = String(result.filePath).replace(/\\/g, "/");
+        const fileName = normalizedPath.split("/").pop() ?? normalizedPath;
+        setScreenshotNotice({
+          text: `Saved ${fileName}`,
+          tone: "success",
+        });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setScreenshotNotice({
+        text: `Unable to capture screenshot: ${message}`,
+        tone: "error",
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!screenshotNotice) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setScreenshotNotice(null);
+    }, 3000);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [screenshotNotice]);
 
   const handleStepContextMenu = useCallback((e: React.MouseEvent, stepId: string, stepName: string) => {
     e.preventDefault();
@@ -545,7 +600,7 @@ export default function App() {
       setSelectedFilePaths([relativePath]);
       ipcRenderer.send("set-active-file", relativePath);
     },
-    [cancelRename, hideContextMenu]
+    [cancelRename, hideContextMenu],
   );
 
   const contextMenuSelectedTargets = contextMenu
@@ -693,7 +748,7 @@ export default function App() {
         cancelRename();
       }
     },
-    [cancelRename, submitRename]
+    [cancelRename, submitRename],
   );
 
   return (
@@ -766,6 +821,9 @@ export default function App() {
             onToggleTaskNodeExpand={handleToggleTaskNodeExpand}
             onSelectTaskNode={setSelectedTaskNodeId}
             onToggleSelectedTaskRun={() => void handleToggleSelectedTaskRun()}
+            onRunCoordinateDetector={() => void handleRunCoordinateDetector()}
+            onRunScreenshotCapture={() => void handleRunScreenshotCapture()}
+            screenshotNotice={screenshotNotice}
             onStepContextMenu={handleStepContextMenu}
           />
         )}

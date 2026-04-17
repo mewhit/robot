@@ -15,6 +15,9 @@ type AutomateBotProps = {
   onToggleTaskNodeExpand: (id: string) => void;
   onSelectTaskNode: (id: string) => void;
   onToggleSelectedTaskRun: () => void;
+  onRunCoordinateDetector: () => void;
+  onRunScreenshotCapture: () => void;
+  screenshotNotice: { text: string; tone: "success" | "error" } | null;
   onStepContextMenu: (e: React.MouseEvent, stepId: string, stepName: string) => void;
 };
 
@@ -122,6 +125,9 @@ export default function AutomateBot(props: AutomateBotProps) {
     onToggleTaskNodeExpand,
     onSelectTaskNode,
     onToggleSelectedTaskRun,
+    onRunCoordinateDetector,
+    onRunScreenshotCapture,
+    screenshotNotice,
     onStepContextMenu,
   } = props;
 
@@ -131,7 +137,20 @@ export default function AutomateBot(props: AutomateBotProps) {
       <aside className="sidebar">
         <div className="sidebar-head">
           <h2 className="sidebar-title">TASKS</h2>
+          <div className="task-actions">
+            <button type="button" className="task-detector-btn" onClick={onRunCoordinateDetector}>
+              Run Detector
+            </button>
+            <button type="button" className="task-screenshot-btn" onClick={onRunScreenshotCapture}>
+              Screenshot
+            </button>
+          </div>
         </div>
+        {screenshotNotice && (
+          <p className={`task-feedback${screenshotNotice.tone === "error" ? " task-feedback-error" : ""}`}>
+            {screenshotNotice.text}
+          </p>
+        )}
         <ul className="tree">
           {taskTree.length === 0 ? (
             <li className="tree-item">No tasks</li>

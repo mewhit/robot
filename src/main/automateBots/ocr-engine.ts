@@ -16,6 +16,7 @@ import fs from "fs";
 import path from "path";
 import { PNG } from "pngjs";
 import * as robotModule from "robotjs";
+import { saveBitmap } from "./save-bitmap";
 
 const DEFAULT_OCR_DEBUG_DIR = "./ocr-debug";
 
@@ -66,41 +67,6 @@ export const GLYPH_MATCH_TOLERANCE = 20;
 // ============================================
 // Debug Screenshot Export
 // ============================================
-
-/**
- * Save bitmap as PNG file for debugging OCR preprocessing
- * Converts robotjs BGR format to standard RGB PNG
- * Usage: saveBitmap(bitmap, "debug_original.png")
- *
- * @param bitmap - RobotBitmap to save
- * @param filename - Output PNG filename (e.g., "debug_ocr.png")
- */
-export function saveBitmap(bitmap: RobotBitmap, filename: string): void {
-  const png = new PNG({
-    width: bitmap.width,
-    height: bitmap.height,
-  });
-
-  for (let y = 0; y < bitmap.height; y++) {
-    for (let x = 0; x < bitmap.width; x++) {
-      const idx = (y * bitmap.width + x) * 4;
-      const offset = y * bitmap.byteWidth + x * bitmap.bytesPerPixel;
-
-      // robotjs = BGR format
-      const b = bitmap.image[offset];
-      const g = bitmap.image[offset + 1];
-      const r = bitmap.image[offset + 2];
-
-      // PNG = RGBA format
-      png.data[idx] = r;
-      png.data[idx + 1] = g;
-      png.data[idx + 2] = b;
-      png.data[idx + 3] = 255;
-    }
-  }
-
-  png.pack().pipe(fs.createWriteStream(filename));
-}
 
 /**
  * Save binary/mask image as PNG for debugging text detection
@@ -178,7 +144,13 @@ export function debugSaveAllStages(bitmap: RobotBitmap, outputDir: string = "./o
 
   // Stage 4: Upscaled
   const upscaled = upscaleImage(binary, bitmap.width, bitmap.height, OCR_SCALE_FACTOR);
-  saveMask(upscaled, bitmap.width * OCR_SCALE_FACTOR, bitmap.height * OCR_SCALE_FACTOR, `${outputDir}/04_upscaled.png`, 1);
+  saveMask(
+    upscaled,
+    bitmap.width * OCR_SCALE_FACTOR,
+    bitmap.height * OCR_SCALE_FACTOR,
+    `${outputDir}/04_upscaled.png`,
+    1,
+  );
 }
 
 /**
@@ -412,7 +384,7 @@ function calculateOptimalStartXRatio(mask: Uint8Array, maskWidth: number, maskHe
  * @param bitmap - RGB bitmap from screen capture
  * @returns Binary mask (1 = text, 0 = background)
  */
-function buildWhiteTextMask(bitmap: RobotBitmap): Uint8Array {
+export function buildWhiteTextMask(bitmap: RobotBitmap): Uint8Array {
   const gray = bitmapToGrayscale(bitmap);
   const threshold = computeDynamicThreshold(gray);
   const binary = applyBinaryThreshold(gray, bitmap.width, bitmap.height, threshold);
@@ -430,7 +402,11 @@ function buildWhiteTextMask(bitmap: RobotBitmap): Uint8Array {
  * @param origHeight - Original bitmap height
  * @returns Array of y-ranges containing text
  */
-function findTextBands(mask: Uint8Array, origWidth: number, origHeight: number): Array<{ startY: number; endY: number }> {
+function findTextBands(
+  mask: Uint8Array,
+  origWidth: number,
+  origHeight: number,
+): Array<{ startY: number; endY: number }> {
   const width = origWidth * OCR_SCALE_FACTOR;
   const height = origHeight * OCR_SCALE_FACTOR;
   const rowThreshold = Math.max(4, Math.floor(width * 0.018));
@@ -519,7 +495,7 @@ function splitTallBands(bands: Array<{ startY: number; endY: number }>): Array<{
  * @param strictMode - Use strict glyph matching tolerance
  * @returns String of recognized digits and commas
  */
-function readNumericLine(
+export function readNumericLine(
   mask: Uint8Array,
   origWidth: number,
   origHeight: number,
@@ -578,7 +554,10 @@ function readNumericLine(
  * @param maxGap - Maximum gap (in pixels) to merge
  * @returns Merged segments
  */
-function mergeCloseSegments(segments: Array<{ startX: number; endX: number }>, maxGap: number): Array<{ startX: number; endX: number }> {
+function mergeCloseSegments(
+  segments: Array<{ startX: number; endX: number }>,
+  maxGap: number,
+): Array<{ startX: number; endX: number }> {
   if (segments.length === 0) {
     return [];
   }

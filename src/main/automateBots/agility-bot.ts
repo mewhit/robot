@@ -6,7 +6,18 @@ import { Coordinate, Shape } from "../colorDetection.types";
 import { AppState } from "../global-state";
 import * as logger from "../logger";
 import { getRuneLite } from "../runeLiteWindow";
-import { readTileCoordinateFromOverlay, TileCoordinate, TileReadResult, lastSegmentDebugLog, clearSegmentDebugLog } from "./ocr-engine";
+import {
+  TileReadResult,
+  lastSegmentDebugLog,
+  clearSegmentDebugLog,
+  flushOcrDebugDirectory,
+  readTileCoordinateFromOverlay,
+  RobotBitmap,
+  TileCoordinate,
+} from "./ocr-engine";
+import { detectOverlayBoxInScreenshot, saveBitmapWithBox } from "./coordinate-detector";
+import { saveBitmap } from "./save-bitmap";
+import { initBotCoordinateDetection } from "./init-bot";
 
 export const AGILITY_BOT_ID = "agility";
 
@@ -100,15 +111,6 @@ function getPlayableBounds(window: Window): { x: number; y: number; width: numbe
   }
 
   return { x, y, width, height };
-}
-
-function isWindowActive(targetWindow: Window): boolean {
-  try {
-    const activeWindow = windowManager.getActiveWindow();
-    return Boolean(activeWindow) && activeWindow.id === targetWindow.id;
-  } catch {
-    return false;
-  }
 }
 
 function findStrictGreenShape(bounds: { x: number; y: number; width: number; height: number }): Shape | null {
@@ -279,6 +281,17 @@ async function runFaladorV2Loop(window: Window): Promise<void> {
   setAutomateBotCurrentStep("falador-rooftop-v2-step-watch");
 
   try {
+    // Initialize bot: verify RuneLite window and detect coordinates overlay
+    const initResult = initBotCoordinateDetection();
+    if (!initResult.ok) {
+      logWithDelta(`Automate Bot (Agility): initialization failed - ${initResult.error}`);
+      return;
+    }
+
+    logWithDelta(
+      `Automate Bot (Agility): initialization successful - overlay detected at '${initResult.overlay?.matchedLine}'`,
+    );
+
     await sleepWithAbort(OCR_STARTUP_WARMUP_MS);
 
     let state: LoopState = initialLoopState;
@@ -295,7 +308,9 @@ async function runFaladorV2Loop(window: Window): Promise<void> {
           warnWithDelta(`Automate Bot (Agility): loop #${loopIndex} - invalid RuneLite bounds.`);
         } else {
           // --- OCR: tile ---
-          const loopRawScreenshotPath = DEBUG_OCR_SCREENSHOTS ? `./ocr-debug/loop-${String(loopIndex).padStart(6, "0")}-raw.png` : null;
+          const loopRawScreenshotPath = DEBUG_OCR_SCREENSHOTS
+            ? `./ocr-debug/loop-${String(loopIndex).padStart(6, "0")}-raw.png`
+            : null;
           const playerTile = readTileCoordinateFromOverlay(bounds, screen, loopRawScreenshotPath);
 
           state = applyTileRead(state, playerTile, Date.now());
@@ -305,7 +320,9 @@ async function runFaladorV2Loop(window: Window): Promise<void> {
           );
 
           if (state.hasMoved) {
-            logWithDelta(`Automate Bot (Agility): loop #${loopIndex} - player moved, skipping color detection and click logic.`);
+            logWithDelta(
+              `Automate Bot (Agility): loop #${loopIndex} - player moved, skipping color detection and click logic.`,
+            );
             await sleepWithAbort(GAME_TICK_MS);
             continue;
           }
@@ -324,7 +341,9 @@ async function runFaladorV2Loop(window: Window): Promise<void> {
 
           // --- Click gating (pure checks, async delays as side effects) ---
           if (!isTileReadyForClick(playerTile.tile, state.lastObservedTile, state.tileStableSinceMs, Date.now())) {
-            logWithDelta(`Automate Bot (Agility): loop #${loopIndex} - tile unavailable/unstable, waiting before click.`);
+            logWithDelta(
+              `Automate Bot (Agility): loop #${loopIndex} - tile unavailable/unstable, waiting before click.`,
+            );
             await sleepWithAbort(GAME_TICK_MS);
             continue;
           }
@@ -343,10 +362,14 @@ async function runFaladorV2Loop(window: Window): Promise<void> {
           // Re-detect after delays to avoid clicking a stale position.
           const freshShape = targetColor === "magenta" ? findStrictMagentaShape(bounds) : findStrictGreenShape(bounds);
           if (!freshShape) {
-            logWithDelta(`Automate Bot (Agility): loop #${loopIndex} - ${targetColor} shape gone after delays, skipping click.`);
+            logWithDelta(
+              `Automate Bot (Agility): loop #${loopIndex} - ${targetColor} shape gone after delays, skipping click.`,
+            );
           } else {
             const clickPoint = getRandomPointInsideShape(freshShape);
-            logWithDelta(`Automate Bot (Agility): loop #${loopIndex} - clicking ${targetColor} at (${clickPoint.x},${clickPoint.y}).`);
+            logWithDelta(
+              `Automate Bot (Agility): loop #${loopIndex} - clicking ${targetColor} at (${clickPoint.x},${clickPoint.y}).`,
+            );
             moveMouse(clickPoint.x, clickPoint.y);
             mouseClick("left", false);
             state = applyClick(state, targetColor, Date.now());
@@ -380,13 +403,10 @@ export function onAgilityBotStart(): void {
     return;
   }
 
-  // if (!window.isVisible()) {
-  window.show();
-  // }
+  if (!window.isVisible()) {
+    window.show();
+  }
 
-  // if (!isWindowActive(window)) {
-  //
-  // }
   window.bringToTop();
 
   void runFaladorV2Loop(window);
