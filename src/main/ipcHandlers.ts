@@ -38,20 +38,20 @@ import {
   toggleSelectedAutomateBot,
   startAutomateBotFromStep,
 } from "./automateBotManager";
-import { runAgilityCoordinateDetector } from "./automateBots/agility-bot";
-import { runAgilityScreenshotCapture } from "./automateBots/screenshot-capture";
+import { sendAutomateBotLogs } from "./automateBotLogs";
+import { CHANNELS } from "./ipcChannels";
 
 const robot = ((robotModule as unknown as { default?: any }).default ?? robotModule) as any;
 
 export function setupIpcHandlers() {
-  ipcMain.on("toggle-recording", () => {
+  ipcMain.on(CHANNELS.TOGGLE_RECORDING, () => {
     if (!AppState.recording) {
       ensureRuneLiteWindowBoundsForAutomation();
     }
     toggleRecording("ui");
   });
 
-  ipcMain.on("ui-ready", () => {
+  ipcMain.on(CHANNELS.UI_READY, () => {
     sendRecordingState();
     sendReplayState();
     sendReplayRowState();
@@ -59,18 +59,19 @@ export function setupIpcHandlers() {
     sendReplayDelayState();
     sendMarkerColorState();
     sendAutomateBotState();
+    sendAutomateBotLogs();
     sendOutputFolderState();
   });
 
-  ipcMain.on("set-active-view", (_event, view: "clicker" | "automateBot") => {
+  ipcMain.on(CHANNELS.SET_ACTIVE_VIEW, (_event, view: "clicker" | "automateBot") => {
     setActiveView(view === "automateBot" ? "automateBot" : "clicker");
   });
 
-  ipcMain.on("set-selected-automate-bot", (_event, botId: string | null) => {
+  ipcMain.on(CHANNELS.SET_SELECTED_AUTOMATE_BOT, (_event, botId: string | null) => {
     setSelectedAutomateBotId(botId);
   });
 
-  ipcMain.handle("toggle-selected-automate-bot", async () => {
+  ipcMain.handle(CHANNELS.TOGGLE_SELECTED_AUTOMATE_BOT, async () => {
     try {
       toggleSelectedAutomateBot("ui");
       return { ok: true };
@@ -81,7 +82,7 @@ export function setupIpcHandlers() {
     }
   });
 
-  ipcMain.handle("start-automate-bot-from-step", async (_event, stepId: string) => {
+  ipcMain.handle(CHANNELS.START_AUTOMATE_BOT_FROM_STEP, async (_event, stepId: string) => {
     try {
       startAutomateBotFromStep(stepId);
       return { ok: true };
@@ -92,40 +93,12 @@ export function setupIpcHandlers() {
     }
   });
 
-  ipcMain.handle("run-coordinate-detector", async () => {
-    try {
-      const result = runAgilityCoordinateDetector();
-      if (!result.ok) {
-        return { ok: false, error: result.error ?? "Detector failed." };
-      }
-      return { ok: true };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`Could not run coordinate detector: ${message}`);
-      return { ok: false, error: message };
-    }
-  });
-
-  ipcMain.handle("run-screenshot-capture", async () => {
-    try {
-      const result = runAgilityScreenshotCapture();
-      if (!result.ok) {
-        return { ok: false, error: result.error ?? "Screenshot capture failed." };
-      }
-      return { ok: true, filePath: result.filePath };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`Could not capture screenshot: ${message}`);
-      return { ok: false, error: message };
-    }
-  });
-
-  ipcMain.on("set-replay-repeat", (_event, enabled: boolean) => {
+  ipcMain.on(CHANNELS.SET_REPLAY_REPEAT, (_event, enabled: boolean) => {
     AppState.replayRepeatEnabled = Boolean(enabled);
     sendReplayRepeatState();
   });
 
-  ipcMain.on("set-replay-click-delay-ms", (_event, delayMs: number) => {
+  ipcMain.on(CHANNELS.SET_REPLAY_CLICK_DELAY_MS, (_event, delayMs: number) => {
     if (!Number.isFinite(delayMs)) {
       AppState.replayExtraDelayMs = 0;
     } else {
@@ -134,11 +107,11 @@ export function setupIpcHandlers() {
     sendReplayDelayState();
   });
 
-  ipcMain.on("stop-replay", () => {
+  ipcMain.on(CHANNELS.STOP_REPLAY, () => {
     requestReplayStop("ui");
   });
 
-  ipcMain.handle("test-color-detection", async () => {
+  ipcMain.handle(CHANNELS.TEST_COLOR_DETECTION, async () => {
     try {
       await testColorDetectionOnce();
       return { ok: true };
@@ -149,7 +122,7 @@ export function setupIpcHandlers() {
     }
   });
 
-  ipcMain.on("set-active-file", (_event, relativePath: string) => {
+  ipcMain.on(CHANNELS.SET_ACTIVE_FILE, (_event, relativePath: string) => {
     try {
       setActiveFileFromRelativePath(relativePath);
     } catch (error) {
@@ -158,7 +131,7 @@ export function setupIpcHandlers() {
     }
   });
 
-  ipcMain.handle("create-file", (_event, fileName: string) => {
+  ipcMain.handle(CHANNELS.CREATE_FILE, (_event, fileName: string) => {
     try {
       console.log(`create-file IPC received: ${fileName}`);
       createFileInOutputFolder(fileName);
@@ -170,7 +143,7 @@ export function setupIpcHandlers() {
     }
   });
 
-  ipcMain.handle("rename-file", (_event, payload: { relativePath: string; newName: string }) => {
+  ipcMain.handle(CHANNELS.RENAME_FILE, (_event, payload: { relativePath: string; newName: string }) => {
     try {
       renameFileInOutputFolder(payload.relativePath, payload.newName);
       return { ok: true };
@@ -181,7 +154,7 @@ export function setupIpcHandlers() {
     }
   });
 
-  ipcMain.handle("delete-file", (_event, relativePath: string) => {
+  ipcMain.handle(CHANNELS.DELETE_FILE, (_event, relativePath: string) => {
     try {
       const targetPath = resolveInsideOutputFolder(relativePath);
       if (!fs.existsSync(targetPath) || fs.statSync(targetPath).isDirectory()) {
@@ -203,7 +176,7 @@ export function setupIpcHandlers() {
   });
 
   ipcMain.handle(
-    "update-active-csv-row",
+    CHANNELS.UPDATE_ACTIVE_CSV_ROW,
     (
       _event,
       payload: {
@@ -233,7 +206,7 @@ export function setupIpcHandlers() {
     },
   );
 
-  ipcMain.handle("play-csv-row", (_event, rowIndex: number) => {
+  ipcMain.handle(CHANNELS.PLAY_CSV_ROW, (_event, rowIndex: number) => {
     try {
       if (!Number.isInteger(rowIndex) || rowIndex < 0) {
         throw new Error("Invalid row index");
@@ -253,7 +226,7 @@ export function setupIpcHandlers() {
     }
   });
 
-  ipcMain.handle("delete-active-csv-row", (_event, rowIndex: number) => {
+  ipcMain.handle(CHANNELS.DELETE_ACTIVE_CSV_ROW, (_event, rowIndex: number) => {
     try {
       deleteActiveCsvRow(rowIndex);
       return { ok: true };
@@ -264,7 +237,7 @@ export function setupIpcHandlers() {
     }
   });
 
-  ipcMain.handle("insert-active-csv-row-above", (_event, rowIndex: number) => {
+  ipcMain.handle(CHANNELS.INSERT_ACTIVE_CSV_ROW_ABOVE, (_event, rowIndex: number) => {
     try {
       insertActiveCsvRowAbove(rowIndex);
       return { ok: true };
@@ -275,7 +248,7 @@ export function setupIpcHandlers() {
     }
   });
 
-  ipcMain.handle("insert-active-csv-row-below", (_event, rowIndex: number) => {
+  ipcMain.handle(CHANNELS.INSERT_ACTIVE_CSV_ROW_BELOW, (_event, rowIndex: number) => {
     try {
       insertActiveCsvRowBelow(rowIndex);
       return { ok: true };
@@ -286,7 +259,7 @@ export function setupIpcHandlers() {
     }
   });
 
-  ipcMain.handle("rename-active-csv-row-step", (_event, payload: { rowIndex: number; stepName: string }) => {
+  ipcMain.handle(CHANNELS.RENAME_ACTIVE_CSV_ROW_STEP, (_event, payload: { rowIndex: number; stepName: string }) => {
     try {
       renameActiveCsvRowStep(payload.rowIndex, payload.stepName);
       return { ok: true };
@@ -297,7 +270,7 @@ export function setupIpcHandlers() {
     }
   });
 
-  ipcMain.handle("replay-active-csv", async (_event, payload?: { fromUi?: boolean }) => {
+  ipcMain.handle(CHANNELS.REPLAY_ACTIVE_CSV, async (_event, payload?: { fromUi?: boolean }) => {
     try {
       await replayActiveCsv({ fromUi: payload?.fromUi === true });
       return { ok: true };
@@ -308,7 +281,7 @@ export function setupIpcHandlers() {
     }
   });
 
-  ipcMain.handle("replay-active-csv-from-row", async (_event, payload: { rowIndex: number }) => {
+  ipcMain.handle(CHANNELS.REPLAY_ACTIVE_CSV_FROM_ROW, async (_event, payload: { rowIndex: number }) => {
     try {
       await replayActiveCsv({ fromUi: true, fromRowIndex: payload.rowIndex });
       return { ok: true };

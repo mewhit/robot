@@ -144,13 +144,7 @@ export function debugSaveAllStages(bitmap: RobotBitmap, outputDir: string = "./o
 
   // Stage 4: Upscaled
   const upscaled = upscaleImage(binary, bitmap.width, bitmap.height, OCR_SCALE_FACTOR);
-  saveMask(
-    upscaled,
-    bitmap.width * OCR_SCALE_FACTOR,
-    bitmap.height * OCR_SCALE_FACTOR,
-    `${outputDir}/04_upscaled.png`,
-    1,
-  );
+  saveMask(upscaled, bitmap.width * OCR_SCALE_FACTOR, bitmap.height * OCR_SCALE_FACTOR, `${outputDir}/04_upscaled.png`, 1);
 }
 
 /**
@@ -402,11 +396,7 @@ export function buildWhiteTextMask(bitmap: RobotBitmap): Uint8Array {
  * @param origHeight - Original bitmap height
  * @returns Array of y-ranges containing text
  */
-function findTextBands(
-  mask: Uint8Array,
-  origWidth: number,
-  origHeight: number,
-): Array<{ startY: number; endY: number }> {
+function findTextBands(mask: Uint8Array, origWidth: number, origHeight: number): Array<{ startY: number; endY: number }> {
   const width = origWidth * OCR_SCALE_FACTOR;
   const height = origHeight * OCR_SCALE_FACTOR;
   const rowThreshold = Math.max(4, Math.floor(width * 0.018));
@@ -554,10 +544,7 @@ export function readNumericLine(
  * @param maxGap - Maximum gap (in pixels) to merge
  * @returns Merged segments
  */
-function mergeCloseSegments(
-  segments: Array<{ startX: number; endX: number }>,
-  maxGap: number,
-): Array<{ startX: number; endX: number }> {
+function mergeCloseSegments(segments: Array<{ startX: number; endX: number }>, maxGap: number): Array<{ startX: number; endX: number }> {
   if (segments.length === 0) {
     return [];
   }

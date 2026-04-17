@@ -3,29 +3,30 @@ import { AppState, activeModifiers } from "./global-state";
 import { showOverlay, hideOverlay } from "./overlay";
 import { sendOutputFolderState } from "./csvOperator";
 import { DEFAULT_CLICK_RADIUS, DEFAULT_ELAPSED_RANGE } from "./constants";
+import { CHANNELS } from "./ipcChannels";
 
 export function sendRecordingState() {
-  AppState.mainWindow?.webContents.send("recording-state", AppState.recording);
+  AppState.mainWindow?.webContents.send(CHANNELS.RECORDING_STATE, AppState.recording);
 }
 
 export function sendReplayState() {
-  AppState.mainWindow?.webContents.send("replaying-state", AppState.replaying);
+  AppState.mainWindow?.webContents.send(CHANNELS.REPLAYING_STATE, AppState.replaying);
 }
 
 export function sendReplayRepeatState() {
-  AppState.mainWindow?.webContents.send("replay-repeat-state", AppState.replayRepeatEnabled);
+  AppState.mainWindow?.webContents.send(CHANNELS.REPLAY_REPEAT_STATE, AppState.replayRepeatEnabled);
 }
 
 export function sendReplayDelayState() {
-  AppState.mainWindow?.webContents.send("replay-delay-state", AppState.replayExtraDelayMs);
+  AppState.mainWindow?.webContents.send(CHANNELS.REPLAY_DELAY_STATE, AppState.replayExtraDelayMs);
 }
 
 export function sendReplayRowState() {
-  AppState.mainWindow?.webContents.send("replay-row-state", AppState.currentReplayRowIndex);
+  AppState.mainWindow?.webContents.send(CHANNELS.REPLAY_ROW_STATE, AppState.currentReplayRowIndex);
 }
 
 export function sendMarkerColorState() {
-  AppState.mainWindow?.webContents.send("marker-color-state", {
+  AppState.mainWindow?.webContents.send(CHANNELS.MARKER_COLOR_STATE, {
     color: AppState.markerColor,
     confidence: AppState.markerConfidence,
     point: AppState.markerPoint,

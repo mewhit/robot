@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect, useMemo, useRef } from "react";
 
 type TaskNode = {
   id: string;
@@ -12,12 +12,10 @@ type AutomateBotProps = {
   selectedTaskNodeId: string | null;
   isSelectedTaskRunning: boolean;
   currentStepId: string | null;
+  logLines: string[];
   onToggleTaskNodeExpand: (id: string) => void;
   onSelectTaskNode: (id: string) => void;
   onToggleSelectedTaskRun: () => void;
-  onRunCoordinateDetector: () => void;
-  onRunScreenshotCapture: () => void;
-  screenshotNotice: { text: string; tone: "success" | "error" } | null;
   onStepContextMenu: (e: React.MouseEvent, stepId: string, stepName: string) => void;
 };
 
@@ -122,35 +120,30 @@ export default function AutomateBot(props: AutomateBotProps) {
     selectedTaskNodeId,
     isSelectedTaskRunning,
     currentStepId,
+    logLines,
     onToggleTaskNodeExpand,
     onSelectTaskNode,
     onToggleSelectedTaskRun,
-    onRunCoordinateDetector,
-    onRunScreenshotCapture,
-    screenshotNotice,
     onStepContextMenu,
   } = props;
 
+  const logContainerRef = useRef<HTMLDivElement | null>(null);
+  const visibleLogLines = useMemo(() => logLines.slice(-500), [logLines]);
+
+  useEffect(() => {
+    const container = logContainerRef.current;
+    if (!container) {
+      return;
+    }
+    container.scrollTop = container.scrollHeight;
+  }, [visibleLogLines]);
+
   return (
     <div className="automatebot-view">
-      <h1>Automate Bot</h1>
-      <aside className="sidebar">
+      <aside className="sidebar automatebot-sidebar">
         <div className="sidebar-head">
           <h2 className="sidebar-title">TASKS</h2>
-          <div className="task-actions">
-            <button type="button" className="task-detector-btn" onClick={onRunCoordinateDetector}>
-              Run Detector
-            </button>
-            <button type="button" className="task-screenshot-btn" onClick={onRunScreenshotCapture}>
-              Screenshot
-            </button>
-          </div>
         </div>
-        {screenshotNotice && (
-          <p className={`task-feedback${screenshotNotice.tone === "error" ? " task-feedback-error" : ""}`}>
-            {screenshotNotice.text}
-          </p>
-        )}
         <ul className="tree">
           {taskTree.length === 0 ? (
             <li className="tree-item">No tasks</li>
@@ -172,9 +165,24 @@ export default function AutomateBot(props: AutomateBotProps) {
           )}
         </ul>
       </aside>
-      <main className="main">
-        <p>Select a task from the left panel</p>
-      </main>
+
+      <aside className="automatebot-log-panel">
+        <div className="automatebot-log-head">
+          <h2 className="sidebar-title">LOGS</h2>
+          <span className="automatebot-log-count">{visibleLogLines.length}</span>
+        </div>
+        <div className="automatebot-log-list" ref={logContainerRef}>
+          {visibleLogLines.length === 0 ? (
+            <p className="automatebot-log-empty">No logs yet.</p>
+          ) : (
+            visibleLogLines.map((line, index) => (
+              <p key={`${index}-${line}`} className="automatebot-log-line">
+                {line}
+              </p>
+            ))
+          )}
+        </div>
+      </aside>
     </div>
   );
 }

@@ -1,7 +1,7 @@
 import { screen as electronScreen } from "electron";
 import { screen } from "robotjs";
-import * as logger from "../logger";
-import { getRuneLite } from "../runeLiteWindow";
+import * as logger from "../../logger";
+import { getRuneLite } from "../../runeLiteWindow";
 import { saveBitmap } from "./save-bitmap";
 
 function getResolutionTierLabel(width: number, height: number): string {

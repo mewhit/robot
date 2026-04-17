@@ -1,13 +1,15 @@
 import { AppState } from "./global-state";
-import { AGILITY_BOT_ID, onAgilityBotStart } from "./automateBots/agility-bot";
-import { flushOcrDebugDirectory } from "./automateBots/ocr-engine";
+import { AGILITY_BOT_ID, onAgilityBotStart } from "./automate-bots/agility-bot";
+import { flushOcrDebugDirectory } from "./automate-bots/shared/ocr-engine";
+import { startAutomateBotLogSession, stopAutomateBotLogSession } from "./automateBotLogs";
+import { CHANNELS } from "./ipcChannels";
 
 const botStartHandlers = new Map<string, () => void>([[AGILITY_BOT_ID, onAgilityBotStart]]);
 
 const botStartFromStepHandlers = new Map<string, (stepId: string) => void>();
 
 export function sendAutomateBotState() {
-  AppState.mainWindow?.webContents.send("automate-bot-state", {
+  AppState.mainWindow?.webContents.send(CHANNELS.AUTOMATE_BOT_STATE, {
     selectedBotId: AppState.selectedAutomateBotId,
     isRunning: AppState.automateBotRunning,
     currentStepId: AppState.automateBotCurrentStepId,
@@ -43,6 +45,7 @@ export function stopAutomateBot(source: "f2" | "ui") {
     return;
   }
 
+  stopAutomateBotLogSession(source, "bot-stopped");
   AppState.automateBotRunning = false;
   AppState.automateBotCurrentStepId = null;
   sendAutomateBotState();
@@ -66,6 +69,7 @@ export function startSelectedAutomateBot(source: "f2" | "ui") {
 
   flushOcrDebugDirectory();
 
+  startAutomateBotLogSession(selectedBotId, source);
   AppState.automateBotRunning = true;
   sendAutomateBotState();
   selectedBotStartHandler();
@@ -93,6 +97,7 @@ export function startAutomateBotFromStep(stepId: string) {
 
   flushOcrDebugDirectory();
 
+  startAutomateBotLogSession(matchedBotId, "ui");
   AppState.selectedAutomateBotId = matchedBotId;
   AppState.automateBotRunning = true;
   sendAutomateBotState();

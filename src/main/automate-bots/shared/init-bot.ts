@@ -1,10 +1,11 @@
 import { screen } from "robotjs";
 import { Window } from "node-window-manager";
-import * as logger from "../logger";
-import { getRuneLite } from "../runeLiteWindow";
-import { stopAutomateBot } from "../automateBotManager";
-import { detectOverlayBoxInScreenshot, OverlayBox } from "./coordinate-detector";
-import { AppState } from "../global-state";
+import * as logger from "../../logger";
+import { getRuneLite } from "../../runeLiteWindow";
+import { stopAutomateBot } from "../../automateBotManager";
+import { detectOverlayBoxInScreenshot, OverlayBox } from "./coordinate-box-detector";
+import { AppState } from "../../global-state";
+import { CHANNELS } from "../../ipcChannels";
 
 const RUNELIT_PLUGIN_ERROR_MESSAGE =
   "Failed to detect coordinates overlay. Please ensure you are using RuneLite Client with the 'Word Location' plugin enabled and the 'Grid Info' option turned on.";
@@ -69,9 +70,7 @@ export function initBotCoordinateDetection(): InitBotResult {
     return { ok: false, error: RUNELIT_PLUGIN_ERROR_MESSAGE };
   }
 
-  logger.info(
-    `Bot Init: Coordinates detected - ${detectedOverlay.matchedLine} at x=${detectedOverlay.x}, y=${detectedOverlay.y}`,
-  );
+  logger.info(`Bot Init: Coordinates detected - ${detectedOverlay.matchedLine} at x=${detectedOverlay.x}, y=${detectedOverlay.y}`);
 
   return { ok: true, window, overlay: detectedOverlay };
 }
@@ -82,7 +81,7 @@ export function initBotCoordinateDetection(): InitBotResult {
 function notifyUserAndStop(errorMessage: string): void {
   // Send error notification to UI
   if (AppState.mainWindow?.webContents) {
-    AppState.mainWindow.webContents.send("automate-bot-error", {
+    AppState.mainWindow.webContents.send(CHANNELS.AUTOMATE_BOT_ERROR, {
       message: errorMessage,
     });
   }

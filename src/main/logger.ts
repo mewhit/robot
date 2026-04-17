@@ -1,3 +1,5 @@
+import { pushAutomateBotLog } from "./automateBotLogs";
+
 let enabled = true;
 
 export function setLoggerEnabled(nextEnabled: boolean): void {
@@ -13,6 +15,7 @@ export function log(...args: unknown[]): void {
     return;
   }
 
+  pushAutomateBotLog("log", ...args);
   console.log(...args);
 }
 
@@ -21,6 +24,7 @@ export function info(...args: unknown[]): void {
     return;
   }
 
+  pushAutomateBotLog("info", ...args);
   console.info(...args);
 }
 
@@ -29,6 +33,7 @@ export function warn(...args: unknown[]): void {
     return;
   }
 
+  pushAutomateBotLog("warn", ...args);
   console.warn(...args);
 }
 
@@ -37,6 +42,7 @@ export function error(...args: unknown[]): void {
     return;
   }
 
+  pushAutomateBotLog("error", ...args);
   console.error(...args);
 }
 
@@ -45,5 +51,6 @@ export function debug(...args: unknown[]): void {
     return;
   }
 
+  pushAutomateBotLog("debug", ...args);
   console.debug(...args);
 }

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import type { IpcRenderer } from "electron";
 import ClickerTabs from "./clicker-tabs";
 import AutomateBot from "./automate-bot";
+import { CHANNELS } from "../main/ipcChannels";
 
 declare global {
   interface Window {
@@ -158,7 +159,7 @@ export default function App() {
     },
   ]);
   const [expandedTaskNodeIds, setExpandedTaskNodeIds] = useState<Set<string>>(new Set());
-  const [screenshotNotice, setScreenshotNotice] = useState<{ text: string; tone: "success" | "error" } | null>(null);
+  const [automateBotLogLines, setAutomateBotLogLines] = useState<string[]>([]);
 
   const handleToggleTaskNodeExpand = useCallback((id: string) => {
     setExpandedTaskNodeIds((prev) => {
@@ -228,32 +229,65 @@ export default function App() {
       setIsSelectedTaskRunning(Boolean(payload.isRunning));
       setCurrentStepId(payload.currentStepId ?? null);
     };
+    const onAutomateBotLogsState = (_: unknown, payload: unknown) => {
+      if (!Array.isArray(payload)) {
+        return;
+      }
 
-    ipcRenderer.on("recording-state", onRecordingState);
-    ipcRenderer.on("replaying-state", onReplayingState);
-    ipcRenderer.on("replay-repeat-state", onReplayRepeatState);
-    ipcRenderer.on("replay-delay-state", onReplayDelayState);
-    ipcRenderer.on("replay-row-state", onReplayRowState);
-    ipcRenderer.on("marker-color-state", onMarkerColorState);
-    ipcRenderer.on("automate-bot-state", onAutomateBotState);
-    ipcRenderer.on("output-folder-state", onFolderState);
+      setAutomateBotLogLines(payload.map((line) => String(line)).slice(-500));
+    };
+    const onAutomateBotLog = (_: unknown, payload: unknown) => {
+      setAutomateBotLogLines((current) => {
+        const next = [...current, String(payload)];
+        if (next.length > 500) {
+          return next.slice(next.length - 500);
+        }
+        return next;
+      });
+    };
+    const onAutomateBotError = (_: unknown, payload: { message?: string } | undefined) => {
+      const message = payload?.message ? String(payload.message) : "Unknown automate bot error.";
+      setAutomateBotLogLines((current) => {
+        const timestamp = new Date().toLocaleTimeString("en-GB", { hour12: false });
+        const next = [...current, `[${timestamp}] [ERROR] ${message}`];
+        if (next.length > 500) {
+          return next.slice(next.length - 500);
+        }
+        return next;
+      });
+    };
+
+    ipcRenderer.on(CHANNELS.RECORDING_STATE, onRecordingState);
+    ipcRenderer.on(CHANNELS.REPLAYING_STATE, onReplayingState);
+    ipcRenderer.on(CHANNELS.REPLAY_REPEAT_STATE, onReplayRepeatState);
+    ipcRenderer.on(CHANNELS.REPLAY_DELAY_STATE, onReplayDelayState);
+    ipcRenderer.on(CHANNELS.REPLAY_ROW_STATE, onReplayRowState);
+    ipcRenderer.on(CHANNELS.MARKER_COLOR_STATE, onMarkerColorState);
+    ipcRenderer.on(CHANNELS.AUTOMATE_BOT_STATE, onAutomateBotState);
+    ipcRenderer.on(CHANNELS.AUTOMATE_BOT_LOGS_STATE, onAutomateBotLogsState);
+    ipcRenderer.on(CHANNELS.AUTOMATE_BOT_LOG, onAutomateBotLog);
+    ipcRenderer.on(CHANNELS.AUTOMATE_BOT_ERROR, onAutomateBotError);
+    ipcRenderer.on(CHANNELS.OUTPUT_FOLDER_STATE, onFolderState);
     const onCursorPos = (
       _: unknown,
       pos: { x: number; y: number; runLiteWindow?: { x: number; y: number; width: number; height: number } | null },
     ) => setCursorPos(pos);
-    ipcRenderer.on("cursor-pos", onCursorPos);
-    ipcRenderer.send("ui-ready");
+    ipcRenderer.on(CHANNELS.CURSOR_POS, onCursorPos);
+    ipcRenderer.send(CHANNELS.UI_READY);
 
     return () => {
-      ipcRenderer.removeListener("recording-state", onRecordingState);
-      ipcRenderer.removeListener("replaying-state", onReplayingState);
-      ipcRenderer.removeListener("replay-repeat-state", onReplayRepeatState);
-      ipcRenderer.removeListener("replay-delay-state", onReplayDelayState);
-      ipcRenderer.removeListener("replay-row-state", onReplayRowState);
-      ipcRenderer.removeListener("marker-color-state", onMarkerColorState);
-      ipcRenderer.removeListener("automate-bot-state", onAutomateBotState);
-      ipcRenderer.removeListener("output-folder-state", onFolderState);
-      ipcRenderer.removeListener("cursor-pos", onCursorPos);
+      ipcRenderer.removeListener(CHANNELS.RECORDING_STATE, onRecordingState);
+      ipcRenderer.removeListener(CHANNELS.REPLAYING_STATE, onReplayingState);
+      ipcRenderer.removeListener(CHANNELS.REPLAY_REPEAT_STATE, onReplayRepeatState);
+      ipcRenderer.removeListener(CHANNELS.REPLAY_DELAY_STATE, onReplayDelayState);
+      ipcRenderer.removeListener(CHANNELS.REPLAY_ROW_STATE, onReplayRowState);
+      ipcRenderer.removeListener(CHANNELS.MARKER_COLOR_STATE, onMarkerColorState);
+      ipcRenderer.removeListener(CHANNELS.AUTOMATE_BOT_STATE, onAutomateBotState);
+      ipcRenderer.removeListener(CHANNELS.AUTOMATE_BOT_LOGS_STATE, onAutomateBotLogsState);
+      ipcRenderer.removeListener(CHANNELS.AUTOMATE_BOT_LOG, onAutomateBotLog);
+      ipcRenderer.removeListener(CHANNELS.AUTOMATE_BOT_ERROR, onAutomateBotError);
+      ipcRenderer.removeListener(CHANNELS.OUTPUT_FOLDER_STATE, onFolderState);
+      ipcRenderer.removeListener(CHANNELS.CURSOR_POS, onCursorPos);
     };
   }, []);
 
@@ -273,18 +307,18 @@ export default function App() {
 
   useEffect(() => {
     window.localStorage.setItem(ACTIVE_VIEW_STORAGE_KEY, activeView);
-    ipcRenderer.send("set-active-view", activeView);
+    ipcRenderer.send(CHANNELS.SET_ACTIVE_VIEW, activeView);
   }, [activeView]);
 
   useEffect(() => {
-    ipcRenderer.send("set-selected-automate-bot", selectedTaskNodeId);
+    ipcRenderer.send(CHANNELS.SET_SELECTED_AUTOMATE_BOT, selectedTaskNodeId);
   }, [selectedTaskNodeId]);
 
-  const handleToggleRecording = () => ipcRenderer.send("toggle-recording");
+  const handleToggleRecording = () => ipcRenderer.send(CHANNELS.TOGGLE_RECORDING);
 
   const handleReplayCsv = async () => {
     try {
-      const result = await ipcRenderer.invoke("replay-active-csv", { fromUi: true });
+      const result = await ipcRenderer.invoke(CHANNELS.REPLAY_ACTIVE_CSV, { fromUi: true });
       if (!result?.ok) {
         window.alert(result?.error || "Unable to replay CSV.");
       }
@@ -296,7 +330,7 @@ export default function App() {
 
   const handleToggleSelectedTaskRun = useCallback(async () => {
     try {
-      const result = await ipcRenderer.invoke("toggle-selected-automate-bot");
+      const result = await ipcRenderer.invoke(CHANNELS.TOGGLE_SELECTED_AUTOMATE_BOT);
       if (!result?.ok) {
         window.alert(result?.error || "Unable to toggle Automate Bot.");
       }
@@ -305,60 +339,6 @@ export default function App() {
       window.alert(`Unable to toggle Automate Bot: ${message}`);
     }
   }, []);
-
-  const handleRunCoordinateDetector = useCallback(async () => {
-    try {
-      const result = await ipcRenderer.invoke("run-coordinate-detector");
-      if (!result?.ok) {
-        window.alert(result?.error || "Unable to run coordinate detector.");
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      window.alert(`Unable to run coordinate detector: ${message}`);
-    }
-  }, []);
-
-  const handleRunScreenshotCapture = useCallback(async () => {
-    try {
-      const result = await ipcRenderer.invoke("run-screenshot-capture");
-      if (!result?.ok) {
-        setScreenshotNotice({
-          text: result?.error || "Unable to capture screenshot.",
-          tone: "error",
-        });
-        return;
-      }
-
-      if (result.filePath) {
-        const normalizedPath = String(result.filePath).replace(/\\/g, "/");
-        const fileName = normalizedPath.split("/").pop() ?? normalizedPath;
-        setScreenshotNotice({
-          text: `Saved ${fileName}`,
-          tone: "success",
-        });
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setScreenshotNotice({
-        text: `Unable to capture screenshot: ${message}`,
-        tone: "error",
-      });
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!screenshotNotice) {
-      return;
-    }
-
-    const timer = window.setTimeout(() => {
-      setScreenshotNotice(null);
-    }, 3000);
-
-    return () => {
-      window.clearTimeout(timer);
-    };
-  }, [screenshotNotice]);
 
   const handleStepContextMenu = useCallback((e: React.MouseEvent, stepId: string, stepName: string) => {
     e.preventDefault();
@@ -372,7 +352,7 @@ export default function App() {
     if (!stepContextMenu) return;
     hideStepContextMenu();
     try {
-      const result = await ipcRenderer.invoke("start-automate-bot-from-step", stepContextMenu.stepId);
+      const result = await ipcRenderer.invoke(CHANNELS.START_AUTOMATE_BOT_FROM_STEP, stepContextMenu.stepId);
       if (!result?.ok) {
         window.alert(result?.error || "Unable to resume from step.");
       }
@@ -383,12 +363,12 @@ export default function App() {
   }, [stepContextMenu, hideStepContextMenu]);
 
   const handleStopReplay = () => {
-    ipcRenderer.send("stop-replay");
+    ipcRenderer.send(CHANNELS.STOP_REPLAY);
   };
 
   const handleTestColorDetection = async () => {
     try {
-      const result = await ipcRenderer.invoke("test-color-detection");
+      const result = await ipcRenderer.invoke(CHANNELS.TEST_COLOR_DETECTION);
       if (!result?.ok) {
         window.alert(result?.error || "Color detection test failed.");
       }
@@ -400,14 +380,14 @@ export default function App() {
 
   const handleReplayRepeatChange = (enabled: boolean) => {
     setIsReplayRepeatEnabled(enabled);
-    ipcRenderer.send("set-replay-repeat", enabled);
+    ipcRenderer.send(CHANNELS.SET_REPLAY_REPEAT, enabled);
   };
 
   const handleReplayClickDelayChange = (value: string) => {
     const nextValue = Number(value);
     const safeDelay = Number.isFinite(nextValue) ? Math.max(0, Math.round(nextValue)) : 0;
     setReplayClickDelayMs(safeDelay);
-    ipcRenderer.send("set-replay-click-delay-ms", safeDelay);
+    ipcRenderer.send(CHANNELS.SET_REPLAY_CLICK_DELAY_MS, safeDelay);
   };
 
   const handleNewFile = async () => {
@@ -415,14 +395,14 @@ export default function App() {
 
     try {
       console.log(`[ui] create-file requested: ${trimmedName}`);
-      const result = await ipcRenderer.invoke("create-file", trimmedName);
+      const result = await ipcRenderer.invoke(CHANNELS.CREATE_FILE, trimmedName);
       if (!result?.ok) {
         window.alert(result?.error || "Unable to create file.");
         return;
       }
 
       // Request a state sync in case the main process update event was missed.
-      ipcRenderer.send("ui-ready");
+      ipcRenderer.send(CHANNELS.UI_READY);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       window.alert(`Unable to create file: ${message}`);
@@ -468,7 +448,7 @@ export default function App() {
       return;
     }
 
-    await ipcRenderer.invoke("rename-file", {
+    await ipcRenderer.invoke(CHANNELS.RENAME_FILE, {
       relativePath: editingRelativePath,
       newName: nextName,
     });
@@ -483,9 +463,7 @@ export default function App() {
 
   const handleDelete = async () => {
     if (!contextMenu) return;
-    const selectedTargets = selectedFilePaths.includes(contextMenu.relativePath)
-      ? selectedFilePaths
-      : [contextMenu.relativePath];
+    const selectedTargets = selectedFilePaths.includes(contextMenu.relativePath) ? selectedFilePaths : [contextMenu.relativePath];
     const isMassDelete = selectedTargets.length > 1;
     const label = isMassDelete
       ? `${selectedTargets.length} selected files`
@@ -495,7 +473,7 @@ export default function App() {
     if (!confirmed) return;
 
     for (const relativePath of selectedTargets) {
-      await ipcRenderer.invoke("delete-file", relativePath);
+      await ipcRenderer.invoke(CHANNELS.DELETE_FILE, relativePath);
     }
 
     setSelectedFilePaths((current) => current.filter((path) => !selectedTargets.includes(path)));
@@ -517,7 +495,7 @@ export default function App() {
     const trimmed = editingStepName.trim();
     cancelCsvRowRename();
     if (!trimmed) return;
-    const result = await ipcRenderer.invoke("rename-active-csv-row-step", {
+    const result = await ipcRenderer.invoke(CHANNELS.RENAME_ACTIVE_CSV_ROW_STEP, {
       rowIndex: editingCsvRowIndex,
       stepName: trimmed,
     });
@@ -536,7 +514,7 @@ export default function App() {
   const handlePlayCsvRow = useCallback(async () => {
     if (csvRowContextMenu === null) return;
     hideCsvRowContextMenu();
-    const result = await ipcRenderer.invoke("play-csv-row", csvRowContextMenu.rowIndex);
+    const result = await ipcRenderer.invoke(CHANNELS.PLAY_CSV_ROW, csvRowContextMenu.rowIndex);
     if (!result?.ok) {
       window.alert(result?.error || "Unable to play row.");
     }
@@ -545,7 +523,9 @@ export default function App() {
   const handleResumeCsvRow = useCallback(async () => {
     if (csvRowContextMenu === null) return;
     hideCsvRowContextMenu();
-    const result = await ipcRenderer.invoke("replay-active-csv-from-row", { rowIndex: csvRowContextMenu.rowIndex });
+    const result = await ipcRenderer.invoke(CHANNELS.REPLAY_ACTIVE_CSV_FROM_ROW, {
+      rowIndex: csvRowContextMenu.rowIndex,
+    });
     if (!result?.ok) {
       window.alert(result?.error || "Unable to resume from row.");
     }
@@ -557,7 +537,7 @@ export default function App() {
     const confirmed = window.confirm(`Delete row ${rowNumber}? This cannot be undone.`);
     hideCsvRowContextMenu();
     if (!confirmed) return;
-    const result = await ipcRenderer.invoke("delete-active-csv-row", csvRowContextMenu.rowIndex);
+    const result = await ipcRenderer.invoke(CHANNELS.DELETE_ACTIVE_CSV_ROW, csvRowContextMenu.rowIndex);
     if (!result?.ok) {
       window.alert(result?.error || "Unable to delete row.");
     }
@@ -566,7 +546,7 @@ export default function App() {
   const handleInsertStepAbove = useCallback(async () => {
     if (csvRowContextMenu === null) return;
     hideCsvRowContextMenu();
-    const result = await ipcRenderer.invoke("insert-active-csv-row-above", csvRowContextMenu.rowIndex);
+    const result = await ipcRenderer.invoke(CHANNELS.INSERT_ACTIVE_CSV_ROW_ABOVE, csvRowContextMenu.rowIndex);
     if (!result?.ok) {
       window.alert(result?.error || "Unable to insert step above.");
     }
@@ -575,7 +555,7 @@ export default function App() {
   const handleInsertStepBelow = useCallback(async () => {
     if (csvRowContextMenu === null) return;
     hideCsvRowContextMenu();
-    const result = await ipcRenderer.invoke("insert-active-csv-row-below", csvRowContextMenu.rowIndex);
+    const result = await ipcRenderer.invoke(CHANNELS.INSERT_ACTIVE_CSV_ROW_BELOW, csvRowContextMenu.rowIndex);
     if (!result?.ok) {
       window.alert(result?.error || "Unable to insert step below.");
     }
@@ -598,7 +578,7 @@ export default function App() {
       }
 
       setSelectedFilePaths([relativePath]);
-      ipcRenderer.send("set-active-file", relativePath);
+      ipcRenderer.send(CHANNELS.SET_ACTIVE_FILE, relativePath);
     },
     [cancelRename, hideContextMenu],
   );
@@ -611,9 +591,7 @@ export default function App() {
   const canRenameContextTarget = contextMenuSelectedTargets.length === 1;
 
   const selectedCsvRow =
-    selectedCsvRowIndex === null
-      ? null
-      : (folderState.activeFileRows.find((row) => row.index === selectedCsvRowIndex) ?? null);
+    selectedCsvRowIndex === null ? null : (folderState.activeFileRows.find((row) => row.index === selectedCsvRowIndex) ?? null);
 
   const mouseLocationText = cursorPos ? `X: ${cursorPos.x} Y: ${cursorPos.y}` : "X: -- Y: --";
 
@@ -687,17 +665,14 @@ export default function App() {
       return;
     }
 
-    if (
-      (elapsedMin !== null && !Number.isFinite(elapsedMin)) ||
-      (elapsedMax !== null && !Number.isFinite(elapsedMax))
-    ) {
+    if ((elapsedMin !== null && !Number.isFinite(elapsedMin)) || (elapsedMax !== null && !Number.isFinite(elapsedMax))) {
       window.alert("Elapsed range values must be numeric or empty.");
       return;
     }
 
     setIsSavingRow(true);
     try {
-      const result = await ipcRenderer.invoke("update-active-csv-row", {
+      const result = await ipcRenderer.invoke(CHANNELS.UPDATE_ACTIVE_CSV_ROW, {
         rowIndex: selectedCsvRow.index,
         action: rowForm.action.trim(),
         stepName: selectedCsvRow.stepName,
@@ -755,16 +730,10 @@ export default function App() {
     <>
       <div className="panel">
         <div className="view-navigation">
-          <button
-            className={`nav-tab ${activeView === "clicker" ? "active" : ""}`}
-            onClick={() => setActiveView("clicker")}
-          >
+          <button className={`nav-tab ${activeView === "clicker" ? "active" : ""}`} onClick={() => setActiveView("clicker")}>
             Clicker
           </button>
-          <button
-            className={`nav-tab ${activeView === "automateBot" ? "active" : ""}`}
-            onClick={() => setActiveView("automateBot")}
-          >
+          <button className={`nav-tab ${activeView === "automateBot" ? "active" : ""}`} onClick={() => setActiveView("automateBot")}>
             Automate Bot
           </button>
           <div className="nav-mouse-pos" title="Current mouse location">
@@ -818,51 +787,35 @@ export default function App() {
             selectedTaskNodeId={selectedTaskNodeId}
             isSelectedTaskRunning={isSelectedTaskRunning}
             currentStepId={currentStepId}
+            logLines={automateBotLogLines}
             onToggleTaskNodeExpand={handleToggleTaskNodeExpand}
             onSelectTaskNode={setSelectedTaskNodeId}
             onToggleSelectedTaskRun={() => void handleToggleSelectedTaskRun()}
-            onRunCoordinateDetector={() => void handleRunCoordinateDetector()}
-            onRunScreenshotCapture={() => void handleRunScreenshotCapture()}
-            screenshotNotice={screenshotNotice}
             onStepContextMenu={handleStepContextMenu}
           />
         )}
       </div>
       {contextMenu && (
-        <div
-          className="context-menu"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
-          onClick={(e) => e.stopPropagation()}
-        >
+        <div className="context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(e) => e.stopPropagation()}>
           {canRenameContextTarget && (
             <div className="context-item" onClick={() => void handleRename()}>
               Rename
             </div>
           )}
           <div className="context-item context-item--danger" onClick={() => void handleDelete()}>
-            {contextMenuSelectedTargets.length > 1
-              ? `Delete Selected (${contextMenuSelectedTargets.length})`
-              : "Delete"}
+            {contextMenuSelectedTargets.length > 1 ? `Delete Selected (${contextMenuSelectedTargets.length})` : "Delete"}
           </div>
         </div>
       )}
       {stepContextMenu && (
-        <div
-          className="context-menu"
-          style={{ left: stepContextMenu.x, top: stepContextMenu.y }}
-          onClick={(e) => e.stopPropagation()}
-        >
+        <div className="context-menu" style={{ left: stepContextMenu.x, top: stepContextMenu.y }} onClick={(e) => e.stopPropagation()}>
           <div className="context-item" onClick={() => void handleResumeFromStep()}>
             Resume from {stepContextMenu.stepName}
           </div>
         </div>
       )}
       {csvRowContextMenu && (
-        <div
-          className="context-menu"
-          style={{ left: csvRowContextMenu.x, top: csvRowContextMenu.y }}
-          onClick={(e) => e.stopPropagation()}
-        >
+        <div className="context-menu" style={{ left: csvRowContextMenu.x, top: csvRowContextMenu.y }} onClick={(e) => e.stopPropagation()}>
           <div className="context-item" onClick={() => void handlePlayCsvRow()}>
             Play (row)
           </div>

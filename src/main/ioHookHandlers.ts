@@ -5,6 +5,7 @@ import { requestReplayStop, replayActiveCsv } from "./replayManager";
 import { UIOHOOK_KEY_TO_ROBOTJS, MODIFIER_KEYCODES } from "./constants";
 import { toggleSelectedAutomateBot } from "./automateBotManager";
 import { findRuneLiteWindow, ensureRuneLiteWindowBoundsForAutomation, RuneLiteWindowInfo } from "./runeLiteWindow";
+import { CHANNELS } from "./ipcChannels";
 
 export { ensureRuneLiteWindowBoundsForAutomation };
 
@@ -75,14 +76,14 @@ export function setupIoHookHandlers() {
         if (now - lastSent < 50) return;
         lastSent = now;
         const runLiteWindow = getRunLiteWindowInfo();
-        AppState.mainWindow?.webContents.send("cursor-pos", { x: e.x, y: e.y, runLiteWindow });
+        AppState.mainWindow?.webContents.send(CHANNELS.CURSOR_POS, { x: e.x, y: e.y, runLiteWindow });
       };
     })(),
   );
 
   uIOhook.on("mousedown", (e) => {
     const runLiteWindow = getRunLiteWindowInfo();
-    AppState.mainWindow?.webContents.send("cursor-pos", { x: e.x, y: e.y, runLiteWindow });
+    AppState.mainWindow?.webContents.send(CHANNELS.CURSOR_POS, { x: e.x, y: e.y, runLiteWindow });
     if (!AppState.recording) return;
     if (e.button === 1 || e.button === 2) {
       recordMouseClick(e.button as 1 | 2, e.x, e.y);

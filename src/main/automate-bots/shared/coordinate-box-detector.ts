@@ -456,14 +456,7 @@ export function detectOverlayBoxInScreenshot(bitmap: RobotBitmap): OverlayBox | 
     // ── 9. Expand around the matched band cluster → full overlay box ─────────
     // deriveOverlayBoxFromBandCluster expects anchorY in original (non-scaled) pixels.
     const anchorYOrig = Math.round((band.startY + band.endY) / 2 / OCR_SCALE_FACTOR);
-    const overlayBox = deriveOverlayBoxFromBandCluster(
-      mask,
-      bitmap.width,
-      bitmap.height,
-      leftStripWidthOrig,
-      anchorYOrig,
-      maxGapScaled,
-    );
+    const overlayBox = deriveOverlayBoxFromBandCluster(mask, bitmap.width, bitmap.height, leftStripWidthOrig, anchorYOrig, maxGapScaled);
     if (!overlayBox) {
       continue;
     }
@@ -479,20 +472,12 @@ export function detectOverlayBoxInScreenshot(bitmap: RobotBitmap): OverlayBox | 
       const neighbor = bands[j];
       const gapBelow = neighbor.startY - band.endY;
       const gapAbove = band.startY - neighbor.endY;
-      const isNearby =
-        (gapBelow >= 0 && gapBelow <= maxGapScaled * 2) || (gapAbove >= 0 && gapAbove <= maxGapScaled * 2);
+      const isNearby = (gapBelow >= 0 && gapBelow <= maxGapScaled * 2) || (gapAbove >= 0 && gapAbove <= maxGapScaled * 2);
       if (!isNearby) {
         continue;
       }
 
-      const neighborLine = readNumericLine(
-        stripMask,
-        leftStripWidthOrig,
-        bitmap.height,
-        neighbor.startY,
-        neighbor.endY,
-        0,
-      );
+      const neighborLine = readNumericLine(stripMask, leftStripWidthOrig, bitmap.height, neighbor.startY, neighbor.endY, 0);
       const digitCount = (neighborLine.match(/\d/g) ?? []).length;
       if (digitCount >= 5) {
         contextScore += 10;

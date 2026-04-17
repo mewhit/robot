@@ -1,8 +1,14 @@
 @import "tailwindcss";
 
 @layer base {
+  html,
+  body,
+  #root {
+    @apply h-screen overflow-hidden;
+  }
+
   body {
-    @apply p-[18px] min-h-screen flex font-sans bg-gradient-to-b from-blue-100 to-slate-100 text-gray-900;
+    @apply p-[18px] flex font-sans bg-gradient-to-b from-blue-100 to-slate-100 text-gray-900;
   }
 
   #root {
@@ -20,7 +26,7 @@
   }
 
   .automatebot-view {
-    @apply flex flex-row gap-3 min-h-0;
+    @apply w-full flex flex-row gap-3 min-h-0 overflow-hidden;
   }
 
   .view-navigation {
@@ -127,26 +133,6 @@
     @apply border-red-700 text-red-700 hover:bg-red-50;
   }
 
-  .task-detector-btn {
-    @apply w-auto m-0 px-2 py-1 text-xs rounded-md bg-red-700 text-white border-0 cursor-pointer hover:bg-red-800 transition-colors;
-  }
-
-  .task-actions {
-    @apply flex items-center gap-2;
-  }
-
-  .task-screenshot-btn {
-    @apply w-auto m-0 px-2 py-1 text-xs rounded-md bg-slate-700 text-white border-0 cursor-pointer hover:bg-slate-800 transition-colors;
-  }
-
-  .task-feedback {
-    @apply m-0 px-1 text-xs text-emerald-700 truncate;
-  }
-
-  .task-feedback-error {
-    @apply text-red-700;
-  }
-
   .expand-icon {
     @apply inline-block w-4 text-center transition-transform duration-200 select-none;
   }
@@ -161,6 +147,38 @@
 
   .main {
     @apply flex-1 min-w-0 flex flex-col;
+  }
+
+  .automatebot-sidebar {
+    @apply w-64 min-w-[16rem] h-full min-h-0;
+  }
+
+  .automatebot-main {
+    @apply flex-1 min-w-0 h-full min-h-0 overflow-auto rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm text-slate-600;
+  }
+
+  .automatebot-log-panel {
+    @apply flex-1 min-w-0 flex flex-col border border-gray-200 rounded-lg bg-slate-950 text-slate-100 overflow-hidden;
+  }
+
+  .automatebot-log-head {
+    @apply flex items-center justify-between px-3 py-2 border-b border-slate-700 bg-slate-900;
+  }
+
+  .automatebot-log-count {
+    @apply px-2 py-0.5 text-[11px] rounded bg-slate-800 text-slate-300 tabular-nums;
+  }
+
+  .automatebot-log-list {
+    @apply flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-2 font-mono text-xs leading-5;
+  }
+
+  .automatebot-log-empty {
+    @apply m-0 text-slate-400;
+  }
+
+  .automatebot-log-line {
+    @apply m-0 break-words text-slate-200;
   }
 
   .title {
@@ -327,22 +345,20 @@
     @apply text-red-700 hover:bg-red-50;
   }
 
-  .automatebot-view {
-    @apply w-full flex flex-col items-center justify-center p-10 text-gray-500;
-  }
-
-  .automatebot-view h1 {
-    @apply m-0 mb-3 text-gray-900 text-3xl font-bold;
-  }
-
-  .automatebot-view p {
-    @apply m-0 text-sm;
-  }
 }
 
 @media (max-width: 860px) {
   .clicker-layout {
     @apply flex-col;
+  }
+
+  .automatebot-view {
+    @apply h-auto max-h-none flex-col overflow-visible;
+  }
+
+  .automatebot-sidebar,
+  .automatebot-log-panel {
+    @apply w-full max-w-none min-w-0;
   }
 
   .sidebar,

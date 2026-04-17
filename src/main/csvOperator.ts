@@ -5,6 +5,7 @@ import { AppState } from "./global-state";
 import { ensureOutputFolder, resolveInsideOutputFolder, toCsvFileName, listOutputFolderFiles, buildExplorerTree } from "./fileManager";
 import { readActiveFileRows, listDataLineIndexes, formatCsvRow } from "./csvOperations";
 import { DEFAULT_OUTPUT_FILE_NAME, DEFAULT_ELAPSED_RANGE } from "./constants";
+import { CHANNELS } from "./ipcChannels";
 
 const WINDOW_CONFIG_FILE_NAME = "window-config.json";
 const DEFAULT_WINDOW_WIDTH = 1280;
@@ -141,7 +142,7 @@ export function sendOutputFolderState() {
   ensureOutputFolder();
   const tree = buildExplorerTree(AppState.outputFolderPath);
   const activeFileRows = readActiveFileRows();
-  AppState.mainWindow?.webContents.send("output-folder-state", {
+  AppState.mainWindow?.webContents.send(CHANNELS.OUTPUT_FOLDER_STATE, {
     folderPath: AppState.outputFolderPath,
     activeFile: path.basename(AppState.outputFilePath),
     activeRelativePath: path.relative(AppState.outputFolderPath, AppState.outputFilePath),

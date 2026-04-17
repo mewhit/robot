@@ -6,7 +6,7 @@
 import fs from "fs";
 import path from "path";
 import { PNG } from "pngjs";
-import { detectOverlayBoxInScreenshot, saveBitmapWithBox } from "./coordinate-detector";
+import { detectOverlayBoxInScreenshot, saveBitmapWithBox } from "./coordinate-box-detector";
 
 export type RobotBitmap = {
   width: number;
