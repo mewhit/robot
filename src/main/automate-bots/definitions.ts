@@ -1,11 +1,13 @@
 export const AGILITY_BOT_ID = "agility";
 export const ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID = "attack-zamorak-warrior-safe-spot";
+export const COMBAT_AUTO_BOT_ID = "combat-auto";
 
-export type AutomateBotId = typeof AGILITY_BOT_ID | typeof ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID;
+export type AutomateBotId = typeof AGILITY_BOT_ID | typeof ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID | typeof COMBAT_AUTO_BOT_ID;
 
 export type AutomateBotDefinition = {
   id: AutomateBotId;
   name: string;
+  group?: string;
 };
 
 export const AUTOMATE_BOTS: AutomateBotDefinition[] = [
@@ -14,8 +16,14 @@ export const AUTOMATE_BOTS: AutomateBotDefinition[] = [
     name: "Agility",
   },
   {
+    id: COMBAT_AUTO_BOT_ID,
+    name: "Auto",
+    group: "Combat",
+  },
+  {
     id: ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID,
-    name: "Attack Zamorak Warrior SafeSpot",
+    name: "Zamorak Warrior SafeSpot (unfinished)",
+    group: "Combat",
   },
 ];
 

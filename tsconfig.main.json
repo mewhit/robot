@@ -9,11 +9,8 @@
     "rootDir": "src/main",
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "types": [
-      "node"
-    ]
+    "types": ["node"]
   },
-  "include": [
-    "src/main"
-  ]
+  "include": ["src/main"],
+  "exclude": ["ocr-debug", "automate-bot-logs", "saved-clicks"]
 }

@@ -1,25 +1,21 @@
-import { keyTap, mouseClick, moveMouse, screen } from "robotjs";
+import { mouseClick, moveMouse, screen } from "robotjs";
 import { Window } from "node-window-manager";
-import { setAutomateBotCurrentStep, stopAutomateBot } from "../automateBotManager";
-import { AppState } from "../global-state";
-import { CHANNELS } from "../ipcChannels";
-import * as logger from "../logger";
-import { getRuneLite } from "../runeLiteWindow";
-import { ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID } from "./definitions";
-import { NpcBox, detectBestNpcBoxInScreenshot } from "./shared/npc-box-detector";
-import { AttackBox, detectBestAttackBoxInScreenshot } from "./shared/attack-box-detector";
-import { saveBitmap } from "./shared/save-bitmap";
+import { setAutomateBotCurrentStep, stopAutomateBot } from "../../automateBotManager";
+import { AppState } from "../../global-state";
+import { CHANNELS } from "../../ipcChannels";
+import * as logger from "../../logger";
+import { getRuneLite } from "../../runeLiteWindow";
+import { COMBAT_AUTO_BOT_ID } from "../definitions";
+import { NpcBox, detectBestNpcBoxInScreenshot } from "../shared/npc-box-detector";
+import { saveBitmap } from "../shared/save-bitmap";
 import path from "path";
 
-const BOT_NAME = "Attack Zamorak Warrior SafeSpot";
+const BOT_NAME = "Combat Auto";
 const LOOP_INTERVAL_MS = 450;
 const MIN_CLICK_INTERVAL_MS = 2400;
 const CLICK_DELAY_MIN_MS = 80;
 const CLICK_DELAY_MAX_MS = 180;
 const POST_FOCUS_SETTLE_MS = 200;
-const CONTEXT_MENU_SETTLE_MS = 220;
-const ATTACK_BOX_DETECT_RETRIES = 4;
-const ATTACK_BOX_RETRY_INTERVAL_MS = 80;
 const DEBUG_MODE = true;
 const DEBUG_DIR = "ocr-debug";
 
@@ -44,6 +40,8 @@ const initialLoopState: LoopState = {
 
 let isLoopRunning = false;
 let startedAtMs: number | null = null;
+let debugCaptureIndex = 0;
+let lastConsumedCombatAutoTriggerCount = 0;
 
 function formatElapsedSinceStart(): string {
   if (startedAtMs === null) {
@@ -125,8 +123,6 @@ function getSceneBounds(bounds: Bounds): Bounds {
   };
 }
 
-let debugCaptureIndex = 0;
-
 function nextDebugIndex(): number {
   debugCaptureIndex += 1;
   return debugCaptureIndex;
@@ -139,15 +135,6 @@ function detectNpcBoxInScene(sceneBounds: Bounds): NpcBox | null {
     saveBitmap(sceneBitmap, path.join(DEBUG_DIR, `${idx}-npc-scene.png`));
   }
   return detectBestNpcBoxInScreenshot(sceneBitmap);
-}
-
-function detectAttackBoxFullScreen(playableBounds: Bounds): AttackBox | null {
-  const bitmap = screen.capture(playableBounds.x, playableBounds.y, playableBounds.width, playableBounds.height);
-  if (DEBUG_MODE) {
-    const idx = nextDebugIndex();
-    saveBitmap(bitmap, path.join(DEBUG_DIR, `${idx}-attack-full.png`));
-  }
-  return detectBestAttackBoxInScreenshot(bitmap);
 }
 
 function getNpcClickPoint(sceneBounds: Bounds, npcBox: NpcBox): { x: number; y: number } {
@@ -178,6 +165,19 @@ function clickCooldownRemainingMs(lastClickAtMs: number | null, now: number): nu
   return Math.max(0, MIN_CLICK_INTERVAL_MS - (now - lastClickAtMs));
 }
 
+async function waitForCombatAutoTrigger(): Promise<boolean> {
+  while (AppState.automateBotRunning) {
+    if (AppState.combatAutoTriggerCount > lastConsumedCombatAutoTriggerCount) {
+      lastConsumedCombatAutoTriggerCount = AppState.combatAutoTriggerCount;
+      return true;
+    }
+
+    await sleepWithAbort(50);
+  }
+
+  return false;
+}
+
 async function runLoop(window: Window): Promise<void> {
   if (isLoopRunning) {
     logWithDelta(`Automate Bot (${BOT_NAME}): loop already running.`);
@@ -185,35 +185,8 @@ async function runLoop(window: Window): Promise<void> {
   }
 
   isLoopRunning = true;
-  setAutomateBotCurrentStep(ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID);
-
+  setAutomateBotCurrentStep(COMBAT_AUTO_BOT_ID);
   try {
-    const startupBounds = getPlayableBounds(window);
-    if (!startupBounds) {
-      const message = `${BOT_NAME} startup failed: invalid RuneLite window bounds.`;
-      errorWithDelta(`Automate Bot (${BOT_NAME}): ${message}`);
-      notifyUserAndStop(message);
-      return;
-    }
-
-    await sleepWithAbort(POST_FOCUS_SETTLE_MS);
-    if (!AppState.automateBotRunning) {
-      return;
-    }
-
-    const startupSceneBounds = getSceneBounds(startupBounds);
-    const startupNpcBox = detectNpcBoxInScene(startupSceneBounds);
-    if (!startupNpcBox) {
-      const message = `${BOT_NAME} startup check failed. Missing the cyan NPC outline. Fix: enable RuneLite NPC Indicators, tag Zamorak Warrior, and keep one visible on screen.`;
-      errorWithDelta(`Automate Bot (${BOT_NAME}): ${message}`);
-      notifyUserAndStop(message);
-      return;
-    }
-
-    logWithDelta(
-      `Automate Bot (${BOT_NAME}): startup check passed - cyan outline at x=${startupNpcBox.x}, y=${startupNpcBox.y}, size=${startupNpcBox.width}x${startupNpcBox.height}.`,
-    );
-
     let state = initialLoopState;
 
     while (AppState.automateBotRunning) {
@@ -270,74 +243,20 @@ async function runLoop(window: Window): Promise<void> {
           break;
         }
 
-        const freshNpcBox = detectNpcBoxInScene(sceneBounds);
-        if (!freshNpcBox) {
-          logWithDelta(`Automate Bot (${BOT_NAME}): loop #${loopIndex} - target disappeared before click.`);
-          state = {
-            ...state,
-            hadTargetLastTick: false,
-          };
-          continue;
-        }
-
-        const clickPoint = getNpcClickPoint(sceneBounds, freshNpcBox);
-        logWithDelta(`Automate Bot (${BOT_NAME}): loop #${loopIndex} - right-clicking target at (${clickPoint.x}, ${clickPoint.y}).`);
+        const clickPoint = getNpcClickPoint(sceneBounds, npcBox);
+        logWithDelta(`Automate Bot (${BOT_NAME}): loop #${loopIndex} - left-clicking target at (${clickPoint.x}, ${clickPoint.y}).`);
         moveMouse(clickPoint.x, clickPoint.y);
-        mouseClick("right", false);
-
-        // Wait for context menu to appear
-        await sleepWithAbort(CONTEXT_MENU_SETTLE_MS);
-        if (!AppState.automateBotRunning) {
-          break;
-        }
-
-        // Detect the Attack context menu and click the Attack option
-        let attackBox: AttackBox | null = null;
-        for (let attempt = 0; attempt < ATTACK_BOX_DETECT_RETRIES; attempt++) {
-          const freshBounds = getPlayableBounds(window);
-          if (freshBounds) {
-            attackBox = detectAttackBoxFullScreen(freshBounds);
-          }
-          if (attackBox?.attackOption) {
-            break;
-          }
-          await sleepWithAbort(ATTACK_BOX_RETRY_INTERVAL_MS);
-          if (!AppState.automateBotRunning) {
-            break;
-          }
-        }
-
-        if (!AppState.automateBotRunning) {
-          break;
-        }
-
-        if (!attackBox?.attackOption) {
-          warnWithDelta(`Automate Bot (${BOT_NAME}): loop #${loopIndex} - attack context menu not found after right-click.`);
-          // Dismiss the menu with Escape
-          keyTap("escape");
-          state = {
-            ...state,
-            hadTargetLastTick: false,
-          };
-          continue;
-        }
-
-        const currentBounds = getPlayableBounds(window);
-        if (!currentBounds) {
-          continue;
-        }
-
-        const option = attackBox.attackOption;
-        const attackClickX = currentBounds.x + option.centerX;
-        const attackClickY = currentBounds.y + option.centerY;
-        logWithDelta(`Automate Bot (${BOT_NAME}): loop #${loopIndex} - clicking Attack option at (${attackClickX}, ${attackClickY}).`);
-        moveMouse(attackClickX, attackClickY);
         mouseClick("left", false);
 
         state = {
           ...state,
           lastClickAtMs: Date.now(),
         };
+
+        const hasTrigger = await waitForCombatAutoTrigger();
+        if (!hasTrigger) {
+          break;
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         errorWithDelta(`Automate Bot (${BOT_NAME}): loop #${loopIndex} failed - ${message}`);
@@ -355,14 +274,14 @@ async function runLoop(window: Window): Promise<void> {
   }
 }
 
-export function onAttackZamorakWarriorSafeSpotBotStart(): void {
+export function onCombatAutoBotStart(): void {
   if (!isLoopRunning) {
     startedAtMs = Date.now();
     debugCaptureIndex = 0;
+    lastConsumedCombatAutoTriggerCount = AppState.combatAutoTriggerCount;
   }
 
   logWithDelta(`Automate Bot STARTED (${BOT_NAME}).`);
-
   const window = getRuneLite();
   if (!window) {
     const message = `${BOT_NAME} could not start because the RuneLite window was not found.`;
@@ -376,5 +295,6 @@ export function onAttackZamorakWarriorSafeSpotBotStart(): void {
   }
 
   window.bringToTop();
+
   void runLoop(window);
 }

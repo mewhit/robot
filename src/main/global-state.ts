@@ -10,6 +10,7 @@ export class AppState {
   static selectedAutomateBotId: string | null = DEFAULT_AUTOMATE_BOT_ID;
   static automateBotRunning = false;
   static automateBotCurrentStepId: string | null = null;
+  static combatAutoTriggerCount = 0;
 
   static recording = false;
   static replaying = false;

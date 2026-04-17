@@ -14,6 +14,11 @@ export { ensureRuneLiteWindowBoundsForAutomation };
 export function setupIoHookHandlers() {
   uIOhook.on("keydown", (e) => {
     if (e.keycode === UiohookKey.F3) {
+      if (AppState.activeView === "automateBot" || AppState.automateBotRunning) {
+        AppState.combatAutoTriggerCount += 1;
+        return;
+      }
+
       if (!AppState.recording) {
         ensureRuneLiteWindowBoundsForAutomation();
       }

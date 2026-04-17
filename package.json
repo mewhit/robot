@@ -10,7 +10,15 @@
     "test:screenshot:coordinate": "ts-node src/main/automate-bots/shared/coordinate-box-detector.spec.ts test-images/coordinate-box/tile-*.png",
     "test:screenshot:agility": "ts-node src/main/automate-bots/shared/agility-box-detector.spec.ts test-images/agility-box/*.png",
     "test:screenshot:tile-location": "ts-node src/main/automate-bots/shared/tile-location-detection.spec.ts test-images/tile-location-box/*.png",
-    "test:screenshot:npc": "ts-node src/main/automate-bots/shared/npc-box-detector.spec.ts test-images/npc-box/*.png"
+    "test:screenshot:npc": "ts-node src/main/automate-bots/shared/npc-box-detector.spec.ts test-images/npc-box/*.png",
+    "test:screenshot:attack": "ts-node src/main/automate-bots/shared/attack-box-detector.spec.ts test-images/attack-box/*.png"
+  },
+  "electronmon": {
+    "patterns": [
+      "!ocr-debug/**",
+      "!automate-bot-logs/**",
+      "!saved-clicks/**"
+    ]
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.2.2",

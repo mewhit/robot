@@ -94,6 +94,8 @@ type MarkerColorState = {
 
 type ActiveView = "clicker" | "automateBot" | "debug";
 const ACTIVE_VIEW_STORAGE_KEY = "robot.activeView";
+const SELECTED_AUTOMATE_BOT_STORAGE_KEY = "robot.selectedAutomateBotId";
+const EXPANDED_TASK_NODE_IDS_STORAGE_KEY = "robot.expandedTaskNodeIds";
 
 function getInitialActiveView(): ActiveView {
   const savedView = window.localStorage.getItem(ACTIVE_VIEW_STORAGE_KEY);
@@ -104,6 +106,33 @@ function getInitialActiveView(): ActiveView {
     return "debug";
   }
   return "clicker";
+}
+
+function getInitialSelectedTaskNodeId(): string | null {
+  const savedId = window.localStorage.getItem(SELECTED_AUTOMATE_BOT_STORAGE_KEY);
+  if (typeof savedId !== "string") {
+    return DEFAULT_AUTOMATE_BOT_ID;
+  }
+
+  const normalized = savedId.trim();
+  return normalized.length > 0 ? normalized : DEFAULT_AUTOMATE_BOT_ID;
+}
+
+function getInitialExpandedTaskNodeIds(): Set<string> {
+  const raw = window.localStorage.getItem(EXPANDED_TASK_NODE_IDS_STORAGE_KEY);
+  if (!raw) {
+    return new Set();
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return new Set();
+    }
+    return new Set(parsed.map((value) => String(value)));
+  } catch {
+    return new Set();
+  }
 }
 
 export default function App() {
@@ -156,16 +185,46 @@ export default function App() {
     confidence: 0,
     point: null,
   });
-  const [selectedTaskNodeId, setSelectedTaskNodeId] = useState<string | null>(DEFAULT_AUTOMATE_BOT_ID);
+  const [selectedTaskNodeId, setSelectedTaskNodeId] = useState<string | null>(() => getInitialSelectedTaskNodeId());
   const [isSelectedTaskRunning, setIsSelectedTaskRunning] = useState(false);
   const [currentStepId, setCurrentStepId] = useState<string | null>(null);
-  const [expandedTaskNodeIds, setExpandedTaskNodeIds] = useState<Set<string>>(new Set());
+  const [expandedTaskNodeIds, setExpandedTaskNodeIds] = useState<Set<string>>(() => getInitialExpandedTaskNodeIds());
   const [automateBotLogLines, setAutomateBotLogLines] = useState<string[]>([]);
   const [debugNotice, setDebugNotice] = useState<{ text: string; tone: "success" | "error" } | null>(null);
   const [screenshotSavePath, setScreenshotSavePath] = useState("");
   const [screenshotNameSuffix, setScreenshotNameSuffix] = useState("");
-  const taskTree = useMemo<TaskNode[]>(() => AUTOMATE_BOTS.map((bot) => ({ id: bot.id, name: bot.name })), []);
+  const taskTree = useMemo<TaskNode[]>(() => {
+    const groups = new Map<string, TaskNode>();
+    const result: TaskNode[] = [];
+
+    for (const bot of AUTOMATE_BOTS) {
+      const leaf: TaskNode = { id: bot.id, name: bot.name };
+
+      if (bot.group) {
+        let parent = groups.get(bot.group);
+        if (!parent) {
+          parent = { id: `group-${bot.group}`, name: bot.group, children: [] };
+          groups.set(bot.group, parent);
+          result.push(parent);
+        }
+        parent.children!.push(leaf);
+      } else {
+        result.push(leaf);
+      }
+    }
+
+    return result;
+  }, []);
   const selectableTaskIds = useMemo(() => new Set(AUTOMATE_BOTS.map((bot) => bot.id)), []);
+  const groupNodeIdByBotId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const bot of AUTOMATE_BOTS) {
+      if (bot.group) {
+        map.set(bot.id, `group-${bot.group}`);
+      }
+    }
+    return map;
+  }, []);
 
   const handleToggleTaskNodeExpand = useCallback((id: string) => {
     setExpandedTaskNodeIds((prev) => {
@@ -178,6 +237,27 @@ export default function App() {
       return next;
     });
   }, []);
+
+  useEffect(() => {
+    if (!selectedTaskNodeId) {
+      return;
+    }
+
+    const parentGroupId = groupNodeIdByBotId.get(selectedTaskNodeId);
+    if (!parentGroupId) {
+      return;
+    }
+
+    setExpandedTaskNodeIds((prev) => {
+      if (prev.has(parentGroupId)) {
+        return prev;
+      }
+
+      const next = new Set(prev);
+      next.add(parentGroupId);
+      return next;
+    });
+  }, [groupNodeIdByBotId, selectedTaskNodeId]);
 
   const hideContextMenu = useCallback(() => setContextMenu(null), []);
   const hideCsvRowContextMenu = useCallback(() => setCsvRowContextMenu(null), []);
@@ -329,6 +409,20 @@ export default function App() {
     window.localStorage.setItem(ACTIVE_VIEW_STORAGE_KEY, activeView);
     ipcRenderer.send(CHANNELS.SET_ACTIVE_VIEW, activeView);
   }, [activeView]);
+
+  useEffect(() => {
+    const saved = selectedTaskNodeId?.trim() ?? "";
+    if (saved.length > 0) {
+      window.localStorage.setItem(SELECTED_AUTOMATE_BOT_STORAGE_KEY, saved);
+      return;
+    }
+
+    window.localStorage.removeItem(SELECTED_AUTOMATE_BOT_STORAGE_KEY);
+  }, [selectedTaskNodeId]);
+
+  useEffect(() => {
+    window.localStorage.setItem(EXPANDED_TASK_NODE_IDS_STORAGE_KEY, JSON.stringify(Array.from(expandedTaskNodeIds)));
+  }, [expandedTaskNodeIds]);
 
   useEffect(() => {
     ipcRenderer.send(CHANNELS.SET_SELECTED_AUTOMATE_BOT, selectedTaskNodeId);

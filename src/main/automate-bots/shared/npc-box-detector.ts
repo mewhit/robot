@@ -27,9 +27,13 @@ type BoxCandidate = {
 const MIN_PIXEL_COUNT = 150;
 const MIN_BOX_WIDTH_PX = 16;
 const MIN_BOX_HEIGHT_PX = 24;
-const MIN_FILL_RATIO = 0.08;
+// Hollow UI shapes can merge with a nearby NPC ring and create an oversized false target.
+// A slightly denser minimum still accepts real NPC outlines in the screenshot set.
+const MIN_FILL_RATIO = 0.18;
 const MAX_FILL_RATIO = 0.82;
-const MIN_ASPECT_RATIO = 1.15;
+// NPC indicators vary by model. Humanoids often look tall, while spiders and similar
+// mobs produce near-square cyan rings, so the detector cannot require a portrait shape.
+const MIN_ASPECT_RATIO = 0.7;
 const MAX_ASPECT_RATIO = 5.5;
 const MERGE_GAP_X_PX = 4;
 const MERGE_GAP_Y_PX = 4;

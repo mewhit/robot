@@ -5,6 +5,7 @@ import { hideOverlay } from "./overlay";
 import { setupIpcHandlers } from "./ipcHandlers";
 import { setupIoHookHandlers } from "./ioHookHandlers";
 import { createWindow, buildAppMenu, createNewOutputFile } from "./csvOperator";
+import { loadSavedAutomateBotSelection } from "./automateBotManager";
 
 // Setup error handling
 process.on("SIGINT", () => {
@@ -17,6 +18,7 @@ process.on("SIGINT", () => {
 app.whenReady().then(() => {
   buildAppMenu();
   createNewOutputFile();
+  loadSavedAutomateBotSelection();
   createWindow();
   setupIpcHandlers();
   setupIoHookHandlers();
@@ -29,4 +31,3 @@ app.on("window-all-closed", () => {
   uIOhook.stop();
   app.quit();
 });
-

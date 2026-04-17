@@ -21,6 +21,7 @@ type WindowConfig = {
   isMaximized: boolean;
   screenshotSavePath?: string;
   screenshotNameSuffix?: string;
+  selectedAutomateBotId?: string;
 };
 
 function isFiniteNumber(value: unknown): value is number {
@@ -41,6 +42,15 @@ function normalizeScreenshotSavePath(value: unknown): string | undefined {
 }
 
 function normalizeScreenshotNameSuffix(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function normalizeSelectedAutomateBotId(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;
   }
@@ -76,6 +86,7 @@ function toValidWindowConfig(raw: unknown): WindowConfig | null {
     isMaximized: Boolean(candidate.isMaximized),
     screenshotSavePath: normalizeScreenshotSavePath(candidate.screenshotSavePath),
     screenshotNameSuffix: normalizeScreenshotNameSuffix(candidate.screenshotNameSuffix),
+    selectedAutomateBotId: normalizeSelectedAutomateBotId(candidate.selectedAutomateBotId),
   };
 }
 
@@ -157,6 +168,7 @@ function writeWindowConfig(window: BrowserWindow) {
     isMaximized: window.isMaximized(),
     screenshotSavePath: currentConfig?.screenshotSavePath,
     screenshotNameSuffix: currentConfig?.screenshotNameSuffix,
+    selectedAutomateBotId: currentConfig?.selectedAutomateBotId,
   };
 
   const configPath = getWindowConfigPath();
@@ -193,6 +205,10 @@ export function getSavedScreenshotNameSuffix(): string {
   return readWindowConfig()?.screenshotNameSuffix ?? "";
 }
 
+export function getSavedSelectedAutomateBotId(): string {
+  return readWindowConfig()?.selectedAutomateBotId ?? "";
+}
+
 export function setSavedScreenshotSavePath(nextPath: string) {
   const existing = readWindowConfig() ?? getWindowConfigFallback();
   const normalized = normalizeScreenshotSavePath(nextPath);
@@ -221,6 +237,23 @@ export function setSavedScreenshotNameSuffix(nextSuffix: string) {
     payload.screenshotNameSuffix = normalized;
   } else {
     delete payload.screenshotNameSuffix;
+  }
+
+  const configPath = getWindowConfigPath();
+  fs.writeFileSync(configPath, JSON.stringify(payload, null, 2), "utf8");
+}
+
+export function setSavedSelectedAutomateBotId(nextBotId: string) {
+  const existing = readWindowConfig() ?? getWindowConfigFallback();
+  const normalized = normalizeSelectedAutomateBotId(nextBotId);
+  const payload: WindowConfig = {
+    ...existing,
+  };
+
+  if (normalized) {
+    payload.selectedAutomateBotId = normalized;
+  } else {
+    delete payload.selectedAutomateBotId;
   }
 
   const configPath = getWindowConfigPath();
