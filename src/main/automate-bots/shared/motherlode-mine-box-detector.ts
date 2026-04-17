@@ -18,6 +18,7 @@ export type MotherlodeMineBox = {
   avgBlue: number;
   greenDominance: number;
   score: number;
+  color: "green" | "yellow";
 };
 
 type BoxCandidate = {
@@ -45,6 +46,23 @@ const MIN_GREEN_DOMINANCE = 105;
 
 function isMotherlodeGreenPixel(r: number, g: number, b: number): boolean {
   return g >= 132 && g - r >= 55 && g - b >= 28 && r <= 190 && b <= 190;
+}
+
+function isMotherlodeYellowPixel(r: number, g: number, b: number): boolean {
+  // Yellow node at (255, 180, 0)
+  // Allow some tolerance around the exact color
+  const redTolerance = 20;
+  const greenTolerance = 20;
+  const blueTolerance = 30;
+
+  return (
+    r >= 255 - redTolerance &&
+    g >= 180 - greenTolerance &&
+    g <= 180 + greenTolerance &&
+    b <= blueTolerance &&
+    r > g &&
+    r > b
+  );
 }
 
 function drawRectangleOnPng(
@@ -99,7 +117,10 @@ function drawRectangleOnPng(
   }
 }
 
-function buildMotherlodeMask(bitmap: RobotBitmap): Uint8Array {
+function buildMotherlodeMask(
+  bitmap: RobotBitmap,
+  pixelDetector: (r: number, g: number, b: number) => boolean,
+): Uint8Array {
   const mask = new Uint8Array(bitmap.width * bitmap.height);
 
   for (let y = 0; y < bitmap.height; y += 1) {
@@ -108,7 +129,7 @@ function buildMotherlodeMask(bitmap: RobotBitmap): Uint8Array {
       const b = bitmap.image[offset];
       const g = bitmap.image[offset + 1];
       const r = bitmap.image[offset + 2];
-      if (!isMotherlodeGreenPixel(r, g, b)) {
+      if (!pixelDetector(r, g, b)) {
         continue;
       }
 
@@ -117,6 +138,14 @@ function buildMotherlodeMask(bitmap: RobotBitmap): Uint8Array {
   }
 
   return mask;
+}
+
+function buildMotherlodeGreenMask(bitmap: RobotBitmap): Uint8Array {
+  return buildMotherlodeMask(bitmap, isMotherlodeGreenPixel);
+}
+
+function buildMotherlodeYellowMask(bitmap: RobotBitmap): Uint8Array {
+  return buildMotherlodeMask(bitmap, isMotherlodeYellowPixel);
 }
 
 function collectConnectedComponents(mask: Uint8Array, bitmap: RobotBitmap): BoxCandidate[] {
@@ -200,7 +229,12 @@ function collectConnectedComponents(mask: Uint8Array, bitmap: RobotBitmap): BoxC
   return components;
 }
 
-function toMotherlodeMineBox(candidate: BoxCandidate, sourceWidth: number, sourceHeight: number): MotherlodeMineBox | null {
+function toMotherlodeMineBox(
+  candidate: BoxCandidate,
+  sourceWidth: number,
+  sourceHeight: number,
+  color: "green" | "yellow",
+): MotherlodeMineBox | null {
   const width = candidate.maxX - candidate.minX + 1;
   const height = candidate.maxY - candidate.minY + 1;
   const fillRatio = candidate.pixelCount / (width * height);
@@ -231,12 +265,24 @@ function toMotherlodeMineBox(candidate: BoxCandidate, sourceWidth: number, sourc
   const avgBlue = candidate.blueSum / candidate.pixelCount;
   const greenDominance = avgGreen - (avgRed + avgBlue) / 2;
 
-  if (avgGreen < MIN_AVG_GREEN) {
-    return null;
-  }
+  // Validation depends on color type
+  if (color === "green") {
+    if (avgGreen < MIN_AVG_GREEN) {
+      return null;
+    }
 
-  if (greenDominance < MIN_GREEN_DOMINANCE) {
-    return null;
+    if (greenDominance < MIN_GREEN_DOMINANCE) {
+      return null;
+    }
+  } else if (color === "yellow") {
+    // For yellow nodes, check that red is dominant
+    if (avgRed < 200) {
+      return null;
+    }
+    const redDominance = avgRed - (avgGreen + avgBlue) / 2;
+    if (redDominance < 60) {
+      return null;
+    }
   }
 
   const centerX = Math.round(candidate.minX + width / 2);
@@ -247,7 +293,9 @@ function toMotherlodeMineBox(candidate: BoxCandidate, sourceWidth: number, sourc
   const maxDistance = Math.sqrt((sourceWidth / 2) ** 2 + (sourceHeight / 2) ** 2);
   const normalizedDistance = maxDistance > 0 ? distanceFromCenter / maxDistance : 0;
 
-  const score = candidate.pixelCount + fillRatio * 350 + greenDominance * 9 - Math.abs(aspectRatio - 1) * 140 - normalizedDistance * 170;
+  const dominance = color === "green" ? greenDominance : avgRed - (avgGreen + avgBlue) / 2;
+  const score =
+    candidate.pixelCount + fillRatio * 350 + dominance * 9 - Math.abs(aspectRatio - 1) * 140 - normalizedDistance * 170;
 
   return {
     x: candidate.minX,
@@ -264,6 +312,7 @@ function toMotherlodeMineBox(candidate: BoxCandidate, sourceWidth: number, sourc
     avgBlue,
     greenDominance,
     score,
+    color,
   };
 }
 
@@ -286,20 +335,58 @@ function sortBoxes(boxes: MotherlodeMineBox[]): MotherlodeMineBox[] {
 }
 
 export function detectMotherlodeMineBoxesInScreenshot(bitmap: RobotBitmap): MotherlodeMineBox[] {
-  const mask = buildMotherlodeMask(bitmap);
-  const components = collectConnectedComponents(mask, bitmap).filter((candidate) => candidate.pixelCount >= 8);
-  const boxes = components
-    .map((candidate) => toMotherlodeMineBox(candidate, bitmap.width, bitmap.height))
+  // Detect green nodes
+  const greenMask = buildMotherlodeGreenMask(bitmap);
+  const greenComponents = collectConnectedComponents(greenMask, bitmap).filter(
+    (candidate) => candidate.pixelCount >= 8,
+  );
+  const greenBoxes = greenComponents
+    .map((candidate) => toMotherlodeMineBox(candidate, bitmap.width, bitmap.height, "green"))
     .filter((box): box is MotherlodeMineBox => box !== null);
 
-  return sortBoxes(boxes);
+  // Detect yellow nodes
+  const yellowMask = buildMotherlodeYellowMask(bitmap);
+  const yellowComponents = collectConnectedComponents(yellowMask, bitmap).filter(
+    (candidate) => candidate.pixelCount >= 8,
+  );
+  const yellowBoxes = yellowComponents
+    .map((candidate) => toMotherlodeMineBox(candidate, bitmap.width, bitmap.height, "yellow"))
+    .filter((box): box is MotherlodeMineBox => box !== null);
+
+  // Combine and sort all boxes
+  const allBoxes = [...greenBoxes, ...yellowBoxes];
+  return sortBoxes(allBoxes);
 }
 
 export function detectBestMotherlodeMineBoxInScreenshot(bitmap: RobotBitmap): MotherlodeMineBox | null {
   return detectMotherlodeMineBoxesInScreenshot(bitmap)[0] ?? null;
 }
 
-export function saveBitmapWithMotherlodeMineBoxes(bitmap: RobotBitmap, boxes: MotherlodeMineBox[], filename: string): void {
+export function detectBestGreenMotherlodeMineBoxInScreenshot(bitmap: RobotBitmap): MotherlodeMineBox | null {
+  const mask = buildMotherlodeGreenMask(bitmap);
+  const components = collectConnectedComponents(mask, bitmap).filter((candidate) => candidate.pixelCount >= 8);
+  const boxes = components
+    .map((candidate) => toMotherlodeMineBox(candidate, bitmap.width, bitmap.height, "green"))
+    .filter((box): box is MotherlodeMineBox => box !== null);
+
+  return sortBoxes(boxes)[0] ?? null;
+}
+
+export function detectBestYellowMotherlodeMineBoxInScreenshot(bitmap: RobotBitmap): MotherlodeMineBox | null {
+  const mask = buildMotherlodeYellowMask(bitmap);
+  const components = collectConnectedComponents(mask, bitmap).filter((candidate) => candidate.pixelCount >= 8);
+  const boxes = components
+    .map((candidate) => toMotherlodeMineBox(candidate, bitmap.width, bitmap.height, "yellow"))
+    .filter((box): box is MotherlodeMineBox => box !== null);
+
+  return sortBoxes(boxes)[0] ?? null;
+}
+
+export function saveBitmapWithMotherlodeMineBoxes(
+  bitmap: RobotBitmap,
+  boxes: MotherlodeMineBox[],
+  filename: string,
+): void {
   const png = new PNG({
     width: bitmap.width,
     height: bitmap.height,

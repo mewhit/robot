@@ -2,11 +2,13 @@ import { AppState } from "./global-state";
 import { onAgilityBotStart } from "./automate-bots/agility-bot";
 import { onAttackZamorakWarriorSafeSpotBotStart } from "./automate-bots/attack-zamorak-warrior-safe-spot-bot";
 import { onCombatAutoBotStart } from "./automate-bots/combat/auto-bot";
+import { onMotherlodeMineBotStart } from "./automate-bots/motherlode-mine-bot";
 import {
   AGILITY_BOT_ID,
   ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID,
   COMBAT_AUTO_BOT_ID,
   DEFAULT_AUTOMATE_BOT_ID,
+  MINING_MOTHERLODE_MINE_BOT_ID,
   isAutomateBotId,
 } from "./automate-bots/definitions";
 import { flushOcrDebugDirectory } from "./automate-bots/shared/ocr-engine";
@@ -18,6 +20,7 @@ const botStartHandlers = new Map<string, () => void>([
   [AGILITY_BOT_ID, onAgilityBotStart],
   [ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID, onAttackZamorakWarriorSafeSpotBotStart],
   [COMBAT_AUTO_BOT_ID, onCombatAutoBotStart],
+  [MINING_MOTHERLODE_MINE_BOT_ID, onMotherlodeMineBotStart],
 ]);
 
 const botStartFromStepHandlers = new Map<string, (stepId: string) => void>();
