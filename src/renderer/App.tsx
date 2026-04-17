@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import type { IpcRenderer } from "electron";
 import ClickerTabs from "./clicker-tabs";
 import AutomateBot from "./automate-bot";
+import { AUTOMATE_BOTS, DEFAULT_AUTOMATE_BOT_ID } from "../main/automate-bots/definitions";
 import { CHANNELS } from "../main/ipcChannels";
 
 declare global {
@@ -155,20 +156,16 @@ export default function App() {
     confidence: 0,
     point: null,
   });
-  const [selectedTaskNodeId, setSelectedTaskNodeId] = useState<string | null>("agility");
+  const [selectedTaskNodeId, setSelectedTaskNodeId] = useState<string | null>(DEFAULT_AUTOMATE_BOT_ID);
   const [isSelectedTaskRunning, setIsSelectedTaskRunning] = useState(false);
   const [currentStepId, setCurrentStepId] = useState<string | null>(null);
-  const [taskTree, setTaskTree] = useState<TaskNode[]>([
-    {
-      id: "agility",
-      name: "Agility",
-    },
-  ]);
   const [expandedTaskNodeIds, setExpandedTaskNodeIds] = useState<Set<string>>(new Set());
   const [automateBotLogLines, setAutomateBotLogLines] = useState<string[]>([]);
   const [debugNotice, setDebugNotice] = useState<{ text: string; tone: "success" | "error" } | null>(null);
   const [screenshotSavePath, setScreenshotSavePath] = useState("");
   const [screenshotNameSuffix, setScreenshotNameSuffix] = useState("");
+  const taskTree = useMemo<TaskNode[]>(() => AUTOMATE_BOTS.map((bot) => ({ id: bot.id, name: bot.name })), []);
+  const selectableTaskIds = useMemo(() => new Set(AUTOMATE_BOTS.map((bot) => bot.id)), []);
 
   const handleToggleTaskNodeExpand = useCallback((id: string) => {
     setExpandedTaskNodeIds((prev) => {
@@ -234,7 +231,7 @@ export default function App() {
       _: unknown,
       payload: { selectedBotId: string | null; isRunning: boolean; currentStepId?: string | null },
     ) => {
-      setSelectedTaskNodeId(payload.selectedBotId ?? "falador-rooftop-v2");
+      setSelectedTaskNodeId(payload.selectedBotId ?? DEFAULT_AUTOMATE_BOT_ID);
       setIsSelectedTaskRunning(Boolean(payload.isRunning));
       setCurrentStepId(payload.currentStepId ?? null);
     };
@@ -897,6 +894,7 @@ export default function App() {
         ) : activeView === "automateBot" ? (
           <AutomateBot
             taskTree={taskTree}
+            selectableTaskIds={selectableTaskIds}
             expandedTaskNodeIds={expandedTaskNodeIds}
             selectedTaskNodeId={selectedTaskNodeId}
             isSelectedTaskRunning={isSelectedTaskRunning}

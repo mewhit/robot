@@ -8,6 +8,7 @@ type TaskNode = {
 
 type AutomateBotProps = {
   taskTree: TaskNode[];
+  selectableTaskIds: Set<string>;
   expandedTaskNodeIds: Set<string>;
   selectedTaskNodeId: string | null;
   isSelectedTaskRunning: boolean;
@@ -21,6 +22,7 @@ type AutomateBotProps = {
 
 function TaskNodeComponent({
   node,
+  selectableTaskIds,
   expandedNodeIds,
   selectedNodeId,
   isSelectedTaskRunning,
@@ -31,6 +33,7 @@ function TaskNodeComponent({
   onStepContextMenu,
 }: {
   node: TaskNode;
+  selectableTaskIds: Set<string>;
   expandedNodeIds: Set<string>;
   selectedNodeId: string | null;
   isSelectedTaskRunning: boolean;
@@ -42,7 +45,7 @@ function TaskNodeComponent({
 }) {
   const isExpanded = expandedNodeIds.has(node.id);
   const hasChildren = (node.children ?? []).length > 0;
-  const isSelectableTask = node.id === "agility";
+  const isSelectableTask = selectableTaskIds.has(node.id);
   const isSelected = isSelectableTask && selectedNodeId === node.id;
   const isActiveStep = node.id === activeStepId;
   const isStep = !hasChildren && node.id.includes("-step-");
@@ -97,6 +100,7 @@ function TaskNodeComponent({
             <TaskNodeComponent
               key={child.id}
               node={child}
+              selectableTaskIds={selectableTaskIds}
               expandedNodeIds={expandedNodeIds}
               selectedNodeId={selectedNodeId}
               isSelectedTaskRunning={isSelectedTaskRunning}
@@ -116,6 +120,7 @@ function TaskNodeComponent({
 export default function AutomateBot(props: AutomateBotProps) {
   const {
     taskTree,
+    selectableTaskIds,
     expandedTaskNodeIds,
     selectedTaskNodeId,
     isSelectedTaskRunning,
@@ -152,6 +157,7 @@ export default function AutomateBot(props: AutomateBotProps) {
               <TaskNodeComponent
                 key={node.id}
                 node={node}
+                selectableTaskIds={selectableTaskIds}
                 expandedNodeIds={expandedTaskNodeIds}
                 selectedNodeId={selectedTaskNodeId}
                 isSelectedTaskRunning={isSelectedTaskRunning}

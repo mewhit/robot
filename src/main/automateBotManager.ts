@@ -1,10 +1,20 @@
 import { AppState } from "./global-state";
-import { AGILITY_BOT_ID, onAgilityBotStart } from "./automate-bots/agility-bot";
+import { onAgilityBotStart } from "./automate-bots/agility-bot";
+import { onAttackZamorakWarriorSafeSpotBotStart } from "./automate-bots/attack-zamorak-warrior-safe-spot-bot";
+import {
+  AGILITY_BOT_ID,
+  ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID,
+  DEFAULT_AUTOMATE_BOT_ID,
+  isAutomateBotId,
+} from "./automate-bots/definitions";
 import { flushOcrDebugDirectory } from "./automate-bots/shared/ocr-engine";
 import { startAutomateBotLogSession, stopAutomateBotLogSession } from "./automateBotLogs";
 import { CHANNELS } from "./ipcChannels";
 
-const botStartHandlers = new Map<string, () => void>([[AGILITY_BOT_ID, onAgilityBotStart]]);
+const botStartHandlers = new Map<string, () => void>([
+  [AGILITY_BOT_ID, onAgilityBotStart],
+  [ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID, onAttackZamorakWarriorSafeSpotBotStart],
+]);
 
 const botStartFromStepHandlers = new Map<string, (stepId: string) => void>();
 
@@ -27,11 +37,7 @@ export function setActiveView(view: "clicker" | "automateBot" | "debug") {
 
 export function setSelectedAutomateBotId(botId: string | null) {
   const normalized = typeof botId === "string" ? botId.trim() : "";
-  if (normalized === AGILITY_BOT_ID || normalized.length === 0) {
-    AppState.selectedAutomateBotId = AGILITY_BOT_ID;
-  } else {
-    AppState.selectedAutomateBotId = AGILITY_BOT_ID;
-  }
+  AppState.selectedAutomateBotId = isAutomateBotId(normalized) ? normalized : DEFAULT_AUTOMATE_BOT_ID;
 
   if (AppState.automateBotRunning && AppState.selectedAutomateBotId === null) {
     AppState.automateBotRunning = false;
@@ -57,7 +63,7 @@ export function startSelectedAutomateBot(source: "f2" | "ui") {
     return;
   }
 
-  const selectedBotId = AppState.selectedAutomateBotId;
+  const selectedBotId = AppState.selectedAutomateBotId ?? DEFAULT_AUTOMATE_BOT_ID;
   if (!selectedBotId) {
     throw new Error("No Automate Bot is selected.");
   }

@@ -2,11 +2,12 @@ import * as path from "path";
 import * as child_process from "child_process";
 import { BrowserWindow } from "electron";
 import { DEFAULT_OUTPUT_DIR, DEFAULT_OUTPUT_FILE_NAME } from "./constants";
+import { DEFAULT_AUTOMATE_BOT_ID } from "./automate-bots/definitions";
 
 // Shared state for recording/replay
 export class AppState {
   static activeView: "clicker" | "automateBot" | "debug" = "clicker";
-  static selectedAutomateBotId: string | null = null;
+  static selectedAutomateBotId: string | null = DEFAULT_AUTOMATE_BOT_ID;
   static automateBotRunning = false;
   static automateBotCurrentStepId: string | null = null;
 
