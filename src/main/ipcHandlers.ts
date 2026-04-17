@@ -34,7 +34,6 @@ import {
 } from "./recordingManager";
 import { testColorDetectionOnce } from "./colorWatcher";
 import { DEFAULT_OUTPUT_FILE_NAME } from "./constants";
-import { ensureRuneLiteWindowBoundsForAutomation } from "./ioHookHandlers";
 import {
   sendAutomateBotState,
   setActiveView,
@@ -69,9 +68,6 @@ export function setupIpcHandlers() {
   };
 
   ipcMain.on(CHANNELS.TOGGLE_RECORDING, () => {
-    if (!AppState.recording) {
-      ensureRuneLiteWindowBoundsForAutomation();
-    }
     toggleRecording("ui");
   });
 
@@ -125,27 +121,24 @@ export function setupIpcHandlers() {
     }
   });
 
-  ipcMain.handle(
-    CHANNELS.RUN_SCREENSHOT_CAPTURE,
-    async (_event, payload?: { filePath?: string; fileNameSuffix?: string }) => {
-      try {
-        const requestedPath = payload?.filePath?.trim() || undefined;
-        const requestedSuffix = payload?.fileNameSuffix?.trim() || undefined;
-        const result = runAgilityScreenshotCapture({
-          targetFilePath: requestedPath,
-          fileNameSuffix: requestedSuffix,
-        });
-        if (!result.ok) {
-          return { ok: false, error: result.error ?? "Screenshot capture failed." };
-        }
-        return { ok: true, filePath: result.filePath };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(`Could not capture screenshot: ${message}`);
-        return { ok: false, error: message };
+  ipcMain.handle(CHANNELS.RUN_SCREENSHOT_CAPTURE, async (_event, payload?: { filePath?: string; fileNameSuffix?: string }) => {
+    try {
+      const requestedPath = payload?.filePath?.trim() || undefined;
+      const requestedSuffix = payload?.fileNameSuffix?.trim() || undefined;
+      const result = runAgilityScreenshotCapture({
+        targetFilePath: requestedPath,
+        fileNameSuffix: requestedSuffix,
+      });
+      if (!result.ok) {
+        return { ok: false, error: result.error ?? "Screenshot capture failed." };
       }
-    },
-  );
+      return { ok: true, filePath: result.filePath };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Could not capture screenshot: ${message}`);
+      return { ok: false, error: message };
+    }
+  });
 
   ipcMain.handle(CHANNELS.PICK_SCREENSHOT_SAVE_PATH, async () => {
     try {

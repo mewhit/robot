@@ -4,12 +4,10 @@ import { toggleRecording, recordMouseClick, recordKeyPress } from "./recordingMa
 import { requestReplayStop, replayActiveCsv } from "./replayManager";
 import { UIOHOOK_KEY_TO_ROBOTJS, MODIFIER_KEYCODES } from "./constants";
 import { toggleSelectedAutomateBot } from "./automateBotManager";
-import { findRuneLiteWindow, ensureRuneLiteWindowBoundsForAutomation, RuneLiteWindowInfo } from "./runeLiteWindow";
+import { findRuneLiteWindow, RuneLiteWindowInfo } from "./runeLiteWindow";
 import { CHANNELS } from "./ipcChannels";
 import { runAgilityScreenshotCapture } from "./automate-bots/shared/screenshot-capture";
 import { getSavedScreenshotNameSuffix, getSavedScreenshotSavePath } from "./csvOperator";
-
-export { ensureRuneLiteWindowBoundsForAutomation };
 
 export function setupIoHookHandlers() {
   uIOhook.on("keydown", (e) => {
@@ -19,9 +17,6 @@ export function setupIoHookHandlers() {
         return;
       }
 
-      if (!AppState.recording) {
-        ensureRuneLiteWindowBoundsForAutomation();
-      }
       toggleRecording("f3");
       return;
     }

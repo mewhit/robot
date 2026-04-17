@@ -11,7 +11,8 @@
     "test:screenshot:agility": "ts-node src/main/automate-bots/shared/agility-box-detector.spec.ts test-images/agility-box/*.png",
     "test:screenshot:tile-location": "ts-node src/main/automate-bots/shared/tile-location-detection.spec.ts test-images/tile-location-box/*.png",
     "test:screenshot:npc": "ts-node src/main/automate-bots/shared/npc-box-detector.spec.ts test-images/npc-box/*.png",
-    "test:screenshot:attack": "ts-node src/main/automate-bots/shared/attack-box-detector.spec.ts test-images/attack-box/*.png"
+    "test:screenshot:attack": "ts-node src/main/automate-bots/shared/attack-box-detector.spec.ts test-images/attack-box/*.png",
+    "test:screenshot:motherlode-mine": "ts-node src/main/automate-bots/shared/motherlode-mine-box-detector.spec.ts test-images/motherlode-mine-box/*.png"
   },
   "electronmon": {
     "patterns": [

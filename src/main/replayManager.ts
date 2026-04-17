@@ -7,9 +7,6 @@ import { readActiveFileRows, normalizeReplayKey } from "./csvOperations";
 import { sendReplayState, sendReplayRowState } from "./recordingManager";
 import { REPLAY_KEY_PRESS_MS, REPLAY_FOCUS_DELAY_MS } from "./constants";
 
-type RuneLiteWindowBounds = { x: number; y: number; width: number; height: number };
-const DEFAULT_REPLAY_RUNELITE_BOUNDS: RuneLiteWindowBounds = { x: 0, y: 0, width: 1280, height: 720 };
-
 export function requestReplayStop(source: "f2" | "ui") {
   if (!AppState.replaying) {
     return;
@@ -109,30 +106,6 @@ function getReplayDelaySeconds(row: CsvRow): number {
   return resolvedDelay + Math.random() * extraDelaySeconds;
 }
 
-function getReplayRuneLiteBounds(): RuneLiteWindowBounds {
-  const raw = process.env.RUNELITE_FORCE_BOUNDS?.trim();
-  if (!raw) {
-    return DEFAULT_REPLAY_RUNELITE_BOUNDS;
-  }
-
-  const values = raw.split(",").map((part) => Number(part.trim()));
-  if (values.length !== 4 || values.some((value) => !Number.isFinite(value))) {
-    return DEFAULT_REPLAY_RUNELITE_BOUNDS;
-  }
-
-  const [x, y, width, height] = values;
-  if (width <= 0 || height <= 0) {
-    return DEFAULT_REPLAY_RUNELITE_BOUNDS;
-  }
-
-  return {
-    x: Math.round(x),
-    y: Math.round(y),
-    width: Math.round(width),
-    height: Math.round(height),
-  };
-}
-
 function findRuneLiteWindowForReplay(): Window | null {
   const windows = windowManager.getWindows();
   let bestMatch: { window: Window; score: number } | null = null;
@@ -177,37 +150,9 @@ function ensureRuneLiteWindowForReplay() {
     return;
   }
 
-  const targetBounds = getReplayRuneLiteBounds();
   const runeLiteWindow = findRuneLiteWindowForReplay();
   if (!runeLiteWindow) {
     throw new Error("RuneLite window was not found.");
-  }
-
-  try {
-    runeLiteWindow.setBounds(targetBounds);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Could not set RuneLite bounds: ${message}`);
-  }
-
-  const actualBounds = runeLiteWindow.getBounds();
-  const actual = {
-    x: Math.round(Number(actualBounds.x)),
-    y: Math.round(Number(actualBounds.y)),
-    width: Math.round(Number(actualBounds.width)),
-    height: Math.round(Number(actualBounds.height)),
-  };
-
-  const isMatch =
-    actual.x === targetBounds.x &&
-    actual.y === targetBounds.y &&
-    actual.width === targetBounds.width &&
-    actual.height === targetBounds.height;
-
-  if (!isMatch) {
-    throw new Error(
-      `RuneLite bounds check failed. Expected ${targetBounds.x},${targetBounds.y},${targetBounds.width},${targetBounds.height} but got ${actual.x},${actual.y},${actual.width},${actual.height}.`,
-    );
   }
 }
 
