@@ -1,19 +1,36 @@
+import path from "path";
+import { mouseClick, moveMouse, screen } from "robotjs";
 import { setAutomateBotCurrentStep, stopAutomateBot } from "../automateBotManager";
 import { AppState } from "../global-state";
 import { CHANNELS } from "../ipcChannels";
 import * as logger from "../logger";
 import { getRuneLite } from "../runeLiteWindow";
 import { MINING_MOTHERLODE_MINE_BOT_ID } from "./definitions";
-import { screen } from "robotjs";
-import { detectBestPlayerBoxInScreenshot } from "./shared/player-box-detector";
 import {
-  detectBestMotherlodeMineBoxInScreenshot,
-  detectBestGreenMotherlodeMineBoxInScreenshot,
-  detectBestYellowMotherlodeMineBoxInScreenshot,
+  MotherlodeMineBox,
+  detectMotherlodeMineBoxesInScreenshot,
+  saveBitmapWithMotherlodeMineBoxes,
 } from "./shared/motherlode-mine-box-detector";
 import { screen as electronScreen } from "electron";
+import { detectTileLocationBoxInScreenshot } from "./shared/tile-location-detection";
+import type { RobotBitmap } from "./shared/ocr-engine";
 
 const BOT_NAME = "Motherlode Mine";
+const DEBUG_DIR = "ocr-debug";
+
+// How long to wait after moving the mouse before reading the tile tooltip (ms).
+const TOOLTIP_SETTLE_MS = 400;
+// How often to poll the active node during mining (ms).
+const POLL_INTERVAL_MS = 900;
+// How long to wait after clicking a node before starting to poll (ms).
+const POST_CLICK_SETTLE_MS = 1500;
+// Pixel radius around the clicked node center to match the same rock later.
+const ACTIVE_NODE_MATCH_RADIUS_PX = 34;
+// Allow brief detection dropouts (e.g. low-opacity transition) before re-searching.
+const ACTIVE_NODE_MISSING_GRACE_POLLS = 3;
+// Tooltip search area around cursor, to avoid reading unrelated coordinates elsewhere.
+const TOOLTIP_SEARCH_HALF_WIDTH_PX = 120;
+const TOOLTIP_SEARCH_HALF_HEIGHT_PX = 60;
 
 interface ScreenCaptureBounds {
   x: number;
@@ -22,27 +39,61 @@ interface ScreenCaptureBounds {
   height: number;
 }
 
-function getWindowsDisplayMeta(bounds: ScreenCaptureBounds): {
-  scaleFactor: number;
-} {
+interface TileCoord {
+  x: number;
+  y: number;
+  z: number;
+}
+
+type BotPhase = "searching" | "mining";
+
+interface BotState {
+  phase: BotPhase;
+  activeTile: TileCoord | null;
+  activeScreen: { x: number; y: number } | null;
+  missingActivePolls: number;
+  loopIndex: number;
+}
+
+let isLoopRunning = false;
+let startedAtMs: number | null = null;
+let debugCaptureIndex = 0;
+
+function formatElapsedSinceStart(): string {
+  if (startedAtMs === null) return "+0ms";
+  const elapsedMs = Math.max(0, Date.now() - startedAtMs);
+  const totalSeconds = Math.floor(elapsedMs / 1000);
+  const mm = String(Math.floor(totalSeconds / 60)).padStart(2, "0");
+  const ss = String(totalSeconds % 60).padStart(2, "0");
+  const ms = String(elapsedMs % 1000).padStart(3, "0");
+  return `+${mm}:${ss}.${ms}`;
+}
+
+function log(message: string): void {
+  logger.log(`[${formatElapsedSinceStart()}] ${message}`);
+}
+
+function warn(message: string): void {
+  logger.warn(`[${formatElapsedSinceStart()}] ${message}`);
+}
+
+function getWindowsDisplayScaleFactor(bounds: ScreenCaptureBounds): number {
   const display = electronScreen.getDisplayMatching({
     x: bounds.x,
     y: bounds.y,
     width: Math.max(1, bounds.width),
     height: Math.max(1, bounds.height),
   });
-
-  const scaleFactor = Number.isFinite(display.scaleFactor) && display.scaleFactor > 0 ? display.scaleFactor : 1;
-  return { scaleFactor };
+  return Number.isFinite(display.scaleFactor) && display.scaleFactor > 0 ? display.scaleFactor : 1;
 }
 
-function toPhysicalCaptureBounds(bounds: ScreenCaptureBounds, scaleFactor: number): ScreenCaptureBounds {
-  const safeScale = Number.isFinite(scaleFactor) && scaleFactor > 0 ? scaleFactor : 1;
+function toPhysicalBounds(bounds: ScreenCaptureBounds, scaleFactor: number): ScreenCaptureBounds {
+  const s = Number.isFinite(scaleFactor) && scaleFactor > 0 ? scaleFactor : 1;
   return {
-    x: Math.round(bounds.x * safeScale),
-    y: Math.round(bounds.y * safeScale),
-    width: Math.max(1, Math.round(bounds.width * safeScale)),
-    height: Math.max(1, Math.round(bounds.height * safeScale)),
+    x: Math.round(bounds.x * s),
+    y: Math.round(bounds.y * s),
+    width: Math.max(1, Math.round(bounds.width * s)),
+    height: Math.max(1, Math.round(bounds.height * s)),
   };
 }
 
@@ -52,18 +103,318 @@ function notifyUserAndStop(errorMessage: string): void {
       message: errorMessage,
     });
   }
-
   stopAutomateBot("bot");
 }
 
-export function onMotherlodeMineBotStart(): void {
-  logger.log(`Automate Bot STARTED (${BOT_NAME}).`);
+function sleepWithAbort(ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const tick = 50;
+    let elapsed = 0;
+    const timer = setInterval(() => {
+      elapsed += tick;
+      if (!AppState.automateBotRunning || elapsed >= ms) {
+        clearInterval(timer);
+        resolve();
+      }
+    }, tick);
+  });
+}
+
+function parseTileCoord(matchedLine: string): TileCoord | null {
+  const parts = matchedLine.split(",");
+  if (parts.length < 3) return null;
+  const x = Number(parts[0]);
+  const y = Number(parts[1]);
+  const z = Number(parts[2]);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
+  return { x, y, z };
+}
+
+function cropBitmap(
+  bitmap: RobotBitmap,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+): RobotBitmap {
+  const crop: RobotBitmap = {
+    width,
+    height,
+    byteWidth: width * bitmap.bytesPerPixel,
+    bytesPerPixel: bitmap.bytesPerPixel,
+    image: Buffer.alloc(width * height * bitmap.bytesPerPixel),
+  };
+
+  for (let row = 0; row < height; row += 1) {
+    const sourceStart = (y + row) * bitmap.byteWidth + x * bitmap.bytesPerPixel;
+    const sourceEnd = sourceStart + width * bitmap.bytesPerPixel;
+    const targetStart = row * crop.byteWidth;
+    bitmap.image.copy(crop.image, targetStart, sourceStart, sourceEnd);
+  }
+
+  return crop;
+}
+
+function readTileNearCursor(
+  bitmap: RobotBitmap,
+  captureBounds: ScreenCaptureBounds,
+  screenX: number,
+  screenY: number,
+): TileCoord | null {
+  const cursorX = Math.round(screenX - captureBounds.x);
+  const cursorY = Math.round(screenY - captureBounds.y);
+
+  const x0 = Math.max(0, cursorX - TOOLTIP_SEARCH_HALF_WIDTH_PX);
+  const y0 = Math.max(0, cursorY - TOOLTIP_SEARCH_HALF_HEIGHT_PX);
+  const x1 = Math.min(bitmap.width - 1, cursorX + TOOLTIP_SEARCH_HALF_WIDTH_PX);
+  const y1 = Math.min(bitmap.height - 1, cursorY + TOOLTIP_SEARCH_HALF_HEIGHT_PX);
+
+  const width = x1 - x0 + 1;
+  const height = y1 - y0 + 1;
+  if (width <= 0 || height <= 0) {
+    return null;
+  }
+
+  const cropped = cropBitmap(bitmap, x0, y0, width, height);
+  const localTileBox = detectTileLocationBoxInScreenshot(cropped);
+  if (!localTileBox) {
+    return null;
+  }
+
+  return parseTileCoord(localTileBox.matchedLine);
+}
+
+function findNodeNearActiveScreen(
+  boxes: MotherlodeMineBox[],
+  activeScreen: { x: number; y: number },
+  captureBounds: ScreenCaptureBounds,
+): MotherlodeMineBox | null {
+  const activeX = activeScreen.x - captureBounds.x;
+  const activeY = activeScreen.y - captureBounds.y;
+
+  let best: MotherlodeMineBox | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  for (const box of boxes) {
+    const dx = box.centerX - activeX;
+    const dy = box.centerY - activeY;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+
+    if (distance > ACTIVE_NODE_MATCH_RADIUS_PX) {
+      continue;
+    }
+
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = box;
+    }
+  }
+
+  return best;
+}
+
+interface CaptureResult {
+  boxes: MotherlodeMineBox[];
+  greenBoxes: MotherlodeMineBox[];
+}
+
+/** Captures one frame, detects all mine nodes, saves a debug image, and returns the boxes. */
+function captureAndDetect(
+  captureBounds: ScreenCaptureBounds,
+  label: string,
+  activeTargetScreen?: { x: number; y: number } | null,
+): CaptureResult {
+  const bitmap = screen.capture(captureBounds.x, captureBounds.y, captureBounds.width, captureBounds.height);
+  const boxes = detectMotherlodeMineBoxesInScreenshot(bitmap);
+  const greenBoxes = boxes.filter((b) => b.color === "green");
+
+  debugCaptureIndex += 1;
+  const filename = path.join(DEBUG_DIR, `${debugCaptureIndex}-motherlode-${label}.png`);
+  const activeTargetInCapture =
+    activeTargetScreen !== undefined && activeTargetScreen !== null
+      ? {
+          x: activeTargetScreen.x - captureBounds.x,
+          y: activeTargetScreen.y - captureBounds.y,
+        }
+      : null;
+  saveBitmapWithMotherlodeMineBoxes(bitmap, boxes, filename, activeTargetInCapture);
+
+  return { boxes, greenBoxes };
+}
+
+function clickNode(): void {
+  // Mouse is already positioned over the node from the preceding hover; just click.
+  mouseClick("left", false);
+}
+
+/**
+ * Moves the mouse to the given screen position, waits for the RuneLite tile tooltip
+ * to appear, then returns the tile coordinate shown in the tooltip.
+ */
+async function hoverAndReadTile(
+  captureBounds: ScreenCaptureBounds,
+  screenX: number,
+  screenY: number,
+): Promise<TileCoord | null> {
+  moveMouse(screenX, screenY);
+  await sleepWithAbort(TOOLTIP_SETTLE_MS);
+  if (!AppState.automateBotRunning) return null;
+
+  const bitmap = screen.capture(captureBounds.x, captureBounds.y, captureBounds.width, captureBounds.height) as RobotBitmap;
+  const nearCursorTile = readTileNearCursor(bitmap, captureBounds, screenX, screenY);
+  if (!nearCursorTile) {
+    warn(`Automate Bot (${BOT_NAME}): local tooltip tile not found near cursor.`);
+    return null;
+  }
+
+  return nearCursorTile;
+}
+
+async function runLoop(captureBounds: ScreenCaptureBounds): Promise<void> {
+  if (isLoopRunning) {
+    log(`Automate Bot (${BOT_NAME}): loop already running.`);
+    return;
+  }
+
+  isLoopRunning = true;
   setAutomateBotCurrentStep(MINING_MOTHERLODE_MINE_BOT_ID);
+
+  let state: BotState = {
+    phase: "searching",
+    activeTile: null,
+    activeScreen: null,
+    missingActivePolls: 0,
+    loopIndex: 0,
+  };
+
+  try {
+    while (AppState.automateBotRunning) {
+      const loopIndex = state.loopIndex + 1;
+      state = { ...state, loopIndex };
+
+      try {
+        if (state.phase === "searching") {
+          // --- SEARCHING: find a green node and click it ---
+          const { greenBoxes } = captureAndDetect(captureBounds, "search");
+          const greenNode = greenBoxes[0] ?? null;
+
+          if (!greenNode) {
+            warn(`Automate Bot (${BOT_NAME}): #${loopIndex} No green node found, retrying…`);
+            await sleepWithAbort(POLL_INTERVAL_MS);
+            continue;
+          }
+
+          // Hover over the node to read its world tile coordinate.
+          const nodeScreenX = captureBounds.x + greenNode.centerX;
+          const nodeScreenY = captureBounds.y + greenNode.centerY;
+          const activeTile = await hoverAndReadTile(captureBounds, nodeScreenX, nodeScreenY);
+
+          if (!activeTile) {
+            warn(`Automate Bot (${BOT_NAME}): #${loopIndex} Could not read tile for green node, retrying…`);
+            await sleepWithAbort(POLL_INTERVAL_MS);
+            continue;
+          }
+
+          log(
+            `Automate Bot (${BOT_NAME}): #${loopIndex} Green node at tile (${activeTile.x},${activeTile.y},${activeTile.z}). Clicking.`,
+          );
+
+          // Mouse is already over the node from the hover — just click.
+          clickNode();
+
+          state = {
+            ...state,
+            phase: "mining",
+            activeTile,
+            activeScreen: { x: nodeScreenX, y: nodeScreenY },
+            missingActivePolls: 0,
+          };
+
+          // Wait for player to walk to the node and start mining.
+          await sleepWithAbort(POST_CLICK_SETTLE_MS);
+        } else {
+          // --- MINING: only monitor around the originally clicked node position.
+          //     Do NOT move across other nodes during mining. ---
+          const { boxes, greenBoxes } = captureAndDetect(captureBounds, "mine", state.activeScreen);
+
+          if (!state.activeScreen) {
+            warn(`Automate Bot (${BOT_NAME}): #${loopIndex} Missing active screen anchor, re-searching.`);
+            state = {
+              ...state,
+              phase: "searching",
+              activeTile: null,
+              activeScreen: null,
+              missingActivePolls: 0,
+            };
+            await sleepWithAbort(POLL_INTERVAL_MS);
+            continue;
+          }
+
+          const nearbyGreen = findNodeNearActiveScreen(greenBoxes, state.activeScreen, captureBounds);
+          if (nearbyGreen) {
+            state = { ...state, missingActivePolls: 0 };
+            await sleepWithAbort(POLL_INTERVAL_MS);
+            continue;
+          }
+
+          const nearbyAny = findNodeNearActiveScreen(boxes, state.activeScreen, captureBounds);
+          if (nearbyAny && nearbyAny.color === "yellow") {
+            log(`Automate Bot (${BOT_NAME}): #${loopIndex} Active node is yellow now. Searching for a new green node.`);
+            state = {
+              ...state,
+              phase: "searching",
+              activeTile: null,
+              activeScreen: null,
+              missingActivePolls: 0,
+            };
+            await sleepWithAbort(POLL_INTERVAL_MS);
+            continue;
+          }
+
+          const missingActivePolls = state.missingActivePolls + 1;
+          if (missingActivePolls <= ACTIVE_NODE_MISSING_GRACE_POLLS) {
+            // Tolerate temporary detection drops (opacity transitions, animation frames).
+            state = { ...state, missingActivePolls };
+            await sleepWithAbort(POLL_INTERVAL_MS);
+            continue;
+          }
+
+          log(
+            `Automate Bot (${BOT_NAME}): #${loopIndex} Active node not detected after ${missingActivePolls} polls. Re-searching.`,
+          );
+          state = {
+            ...state,
+            phase: "searching",
+            activeTile: null,
+            activeScreen: null,
+            missingActivePolls: 0,
+          };
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error(`Automate Bot (${BOT_NAME}): #${loopIndex} tick error — ${message}`);
+        await sleepWithAbort(POLL_INTERVAL_MS);
+      }
+    }
+  } finally {
+    isLoopRunning = false;
+    startedAtMs = null;
+    setAutomateBotCurrentStep(null);
+  }
+}
+
+export function onMotherlodeMineBotStart(): void {
+  if (!isLoopRunning) {
+    startedAtMs = Date.now();
+    debugCaptureIndex = 0;
+  }
+
+  log(`Automate Bot STARTED (${BOT_NAME}).`);
 
   const window = getRuneLite();
   if (!window) {
     const message = `${BOT_NAME} could not start because the RuneLite window was not found.`;
-    logger.warn(`Automate Bot (${BOT_NAME}): ${message}`);
+    warn(`Automate Bot (${BOT_NAME}): ${message}`);
     notifyUserAndStop(message);
     return;
   }
@@ -74,100 +425,30 @@ export function onMotherlodeMineBotStart(): void {
 
   window.bringToTop();
 
-  // Get window bounds
   const windowBounds = window.getBounds();
-  const bounds: ScreenCaptureBounds = {
+  const logicalBounds: ScreenCaptureBounds = {
     x: Number(windowBounds.x),
     y: Number(windowBounds.y),
     width: Number(windowBounds.width),
     height: Number(windowBounds.height),
   };
 
-  // Validate bounds
-  if (![bounds.x, bounds.y, bounds.width, bounds.height].every((value) => Number.isFinite(value))) {
-    const message = "Cannot take screenshot due to invalid RuneLite bounds.";
-    logger.warn(`Automate Bot (${BOT_NAME}): ${message}`);
+  if (![logicalBounds.x, logicalBounds.y, logicalBounds.width, logicalBounds.height].every(Number.isFinite)) {
+    const message = "Cannot start — invalid RuneLite window bounds.";
+    warn(`Automate Bot (${BOT_NAME}): ${message}`);
     notifyUserAndStop(message);
     return;
   }
 
-  if (bounds.width <= 0 || bounds.height <= 0) {
-    const message = "Cannot take screenshot due to invalid RuneLite bounds.";
-    logger.warn(`Automate Bot (${BOT_NAME}): ${message}`);
+  if (logicalBounds.width <= 0 || logicalBounds.height <= 0) {
+    const message = "Cannot start — RuneLite window has zero size.";
+    warn(`Automate Bot (${BOT_NAME}): ${message}`);
     notifyUserAndStop(message);
     return;
   }
 
-  // Get display scale factor
-  const displayMeta = getWindowsDisplayMeta(bounds);
-  const captureBounds = toPhysicalCaptureBounds(bounds, displayMeta.scaleFactor);
+  const scaleFactor = getWindowsDisplayScaleFactor(logicalBounds);
+  const captureBounds = toPhysicalBounds(logicalBounds, scaleFactor);
 
-  // Capture screenshot
-  const bitmap = screen.capture(captureBounds.x, captureBounds.y, captureBounds.width, captureBounds.height);
-
-  // Detect player
-  const playerBox = detectBestPlayerBoxInScreenshot(bitmap);
-  if (!playerBox) {
-    const message = "Could not detect player position.";
-    logger.warn(`Automate Bot (${BOT_NAME}): ${message}`);
-    notifyUserAndStop(message);
-    return;
-  }
-
-  logger.log(`Automate Bot (${BOT_NAME}): Player detected at (${playerBox.centerX}, ${playerBox.centerY}).`);
-
-  // Detect motherlode mine nodes
-  const mineBox = detectBestMotherlodeMineBoxInScreenshot(bitmap);
-  if (!mineBox) {
-    const message = "Could not detect motherlode mine node.";
-    logger.warn(`Automate Bot (${BOT_NAME}): ${message}`);
-    notifyUserAndStop(message);
-    return;
-  }
-
-  logger.log(
-    `Automate Bot (${BOT_NAME}): Mine node detected at (${mineBox.centerX}, ${mineBox.centerY}) - Color: ${mineBox.color}.`,
-  );
-
-  // If the nearest node is yellow, check for a new green node
-  let targetNode = mineBox;
-  if (mineBox.color === "yellow") {
-    logger.log(`Automate Bot (${BOT_NAME}): Nearest node turned yellow, searching for a new green node.`);
-
-    const greenNode = detectBestGreenMotherlodeMineBoxInScreenshot(bitmap);
-    if (greenNode) {
-      logger.log(`Automate Bot (${BOT_NAME}): Found new green node at (${greenNode.centerX}, ${greenNode.centerY}).`);
-      targetNode = greenNode;
-    } else {
-      logger.warn(`Automate Bot (${BOT_NAME}): No green nodes found, will click on the yellow node.`);
-    }
-  }
-
-  // Calculate distance from player to mine
-  const dx = targetNode.centerX - playerBox.centerX;
-  const dy = targetNode.centerY - playerBox.centerY;
-  const distance = Math.sqrt(dx * dx + dy * dy);
-
-  logger.log(`Automate Bot (${BOT_NAME}): Distance from player to mine: ${distance.toFixed(2)} pixels.`);
-
-  // Click on the mine node
-  const clickX = captureBounds.x + targetNode.centerX;
-  const clickY = captureBounds.y + targetNode.centerY;
-
-  logger.log(`Automate Bot (${BOT_NAME}): Clicking mine node at screen coordinates (${clickX}, ${clickY}).`);
-
-  try {
-    const robot = require("robotjs");
-    robot.moveMouse(clickX, clickY);
-    robot.mouseClick("left");
-    logger.log(`Automate Bot (${BOT_NAME}): Successfully clicked mine node.`);
-  } catch (error) {
-    const message = `Failed to click mine node: ${error instanceof Error ? error.message : String(error)}`;
-    logger.error(`Automate Bot (${BOT_NAME}): ${message}`);
-    notifyUserAndStop(message);
-    return;
-  }
-
-  logger.log(`Automate Bot (${BOT_NAME}): Completed one mining action.`);
-  stopAutomateBot("bot");
+  void runLoop(captureBounds);
 }

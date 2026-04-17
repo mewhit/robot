@@ -386,6 +386,7 @@ export function saveBitmapWithMotherlodeMineBoxes(
   bitmap: RobotBitmap,
   boxes: MotherlodeMineBox[],
   filename: string,
+  activeTarget?: { x: number; y: number } | null,
 ): void {
   const png = new PNG({
     width: bitmap.width,
@@ -409,6 +410,20 @@ export function saveBitmapWithMotherlodeMineBoxes(
 
   for (const box of boxes) {
     drawRectangleOnPng(png, box.x, box.y, box.width, box.height, { r: 255, g: 64, b: 64 }, 3);
+  }
+
+  if (activeTarget) {
+    const markerSize = 16;
+    const markerHalf = Math.floor(markerSize / 2);
+    drawRectangleOnPng(
+      png,
+      activeTarget.x - markerHalf,
+      activeTarget.y - markerHalf,
+      markerSize,
+      markerSize,
+      { r: 64, g: 220, b: 255 },
+      2,
+    );
   }
 
   const dir = path.dirname(filename);

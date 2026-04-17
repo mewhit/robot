@@ -22,6 +22,16 @@ export function setupIoHookHandlers() {
     }
 
     if (e.keycode === UiohookKey.F2) {
+      if (AppState.activeView === "automateBot" || AppState.automateBotRunning) {
+        try {
+          toggleSelectedAutomateBot("f2");
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error(`Could not toggle automate bot: ${message}`);
+        }
+        return;
+      }
+
       if (AppState.activeView === "debug") {
         const result = runAgilityScreenshotCapture({
           targetFilePath: getSavedScreenshotSavePath() ?? undefined,
@@ -29,16 +39,6 @@ export function setupIoHookHandlers() {
         });
         if (!result.ok) {
           console.error(`Could not capture screenshot: ${result.error ?? "Screenshot capture failed."}`);
-        }
-        return;
-      }
-
-      if (AppState.activeView === "automateBot" || AppState.automateBotRunning) {
-        try {
-          toggleSelectedAutomateBot("f2");
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          console.error(`Could not toggle automate bot: ${message}`);
         }
         return;
       }
