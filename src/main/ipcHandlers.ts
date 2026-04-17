@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as robotModule from "robotjs";
-import { ipcMain } from "electron";
+import { app, dialog, ipcMain } from "electron";
 import { AppState } from "./global-state";
 import {
   createFileInOutputFolder,
@@ -14,6 +14,10 @@ import {
   setActiveFileFromRelativePath,
   sendOutputFolderState,
   ensureCsvFileInitialized,
+  getSavedScreenshotNameSuffix,
+  getSavedScreenshotSavePath,
+  setSavedScreenshotNameSuffix,
+  setSavedScreenshotSavePath,
 } from "./csvOperator";
 import { readActiveFileRows } from "./csvOperations";
 import { resolveInsideOutputFolder } from "./fileManager";
@@ -45,6 +49,25 @@ import { CHANNELS } from "./ipcChannels";
 const robot = ((robotModule as unknown as { default?: any }).default ?? robotModule) as any;
 
 export function setupIpcHandlers() {
+  const resolveScreenshotFolderStartPath = (): string => {
+    const savedPath = getSavedScreenshotSavePath();
+    if (!savedPath) {
+      return app.getPath("pictures");
+    }
+
+    const resolvedSavedPath = path.resolve(savedPath);
+    if (fs.existsSync(resolvedSavedPath) && fs.statSync(resolvedSavedPath).isDirectory()) {
+      return resolvedSavedPath;
+    }
+
+    const parentDir = path.dirname(resolvedSavedPath);
+    if (fs.existsSync(parentDir) && fs.statSync(parentDir).isDirectory()) {
+      return parentDir;
+    }
+
+    return app.getPath("pictures");
+  };
+
   ipcMain.on(CHANNELS.TOGGLE_RECORDING, () => {
     if (!AppState.recording) {
       ensureRuneLiteWindowBoundsForAutomation();
@@ -102,16 +125,84 @@ export function setupIpcHandlers() {
     }
   });
 
-  ipcMain.handle(CHANNELS.RUN_SCREENSHOT_CAPTURE, async () => {
-    try {
-      const result = runAgilityScreenshotCapture();
-      if (!result.ok) {
-        return { ok: false, error: result.error ?? "Screenshot capture failed." };
+  ipcMain.handle(
+    CHANNELS.RUN_SCREENSHOT_CAPTURE,
+    async (_event, payload?: { filePath?: string; fileNameSuffix?: string }) => {
+      try {
+        const requestedPath = payload?.filePath?.trim() || undefined;
+        const requestedSuffix = payload?.fileNameSuffix?.trim() || undefined;
+        const result = runAgilityScreenshotCapture({
+          targetFilePath: requestedPath,
+          fileNameSuffix: requestedSuffix,
+        });
+        if (!result.ok) {
+          return { ok: false, error: result.error ?? "Screenshot capture failed." };
+        }
+        return { ok: true, filePath: result.filePath };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`Could not capture screenshot: ${message}`);
+        return { ok: false, error: message };
       }
-      return { ok: true, filePath: result.filePath };
+    },
+  );
+
+  ipcMain.handle(CHANNELS.PICK_SCREENSHOT_SAVE_PATH, async () => {
+    try {
+      const openDialogOptions: Electron.OpenDialogOptions = {
+        title: "Choose Screenshot Folder",
+        defaultPath: resolveScreenshotFolderStartPath(),
+        properties: ["openDirectory", "createDirectory"],
+      };
+
+      const response = AppState.mainWindow
+        ? await dialog.showOpenDialog(AppState.mainWindow, openDialogOptions)
+        : await dialog.showOpenDialog(openDialogOptions);
+
+      if (response.canceled || response.filePaths.length === 0) {
+        return { ok: true, canceled: true };
+      }
+
+      return { ok: true, filePath: response.filePaths[0] };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`Could not capture screenshot: ${message}`);
+      console.error(`Could not pick screenshot save path: ${message}`);
+      return { ok: false, error: message };
+    }
+  });
+
+  ipcMain.handle(CHANNELS.GET_SCREENSHOT_SAVE_PATH, () => {
+    try {
+      return {
+        ok: true,
+        path: getSavedScreenshotSavePath(),
+        suffix: getSavedScreenshotNameSuffix(),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Could not get screenshot save path: ${message}`);
+      return { ok: false, error: message };
+    }
+  });
+
+  ipcMain.handle(CHANNELS.SET_SCREENSHOT_SAVE_PATH, (_event, screenshotPath: string) => {
+    try {
+      setSavedScreenshotSavePath(screenshotPath);
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Could not save screenshot save path: ${message}`);
+      return { ok: false, error: message };
+    }
+  });
+
+  ipcMain.handle(CHANNELS.SET_SCREENSHOT_NAME_SUFFIX, (_event, screenshotNameSuffix: string) => {
+    try {
+      setSavedScreenshotNameSuffix(screenshotNameSuffix);
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Could not save screenshot name suffix: ${message}`);
       return { ok: false, error: message };
     }
   });

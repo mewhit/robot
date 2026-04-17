@@ -167,6 +167,8 @@ export default function App() {
   const [expandedTaskNodeIds, setExpandedTaskNodeIds] = useState<Set<string>>(new Set());
   const [automateBotLogLines, setAutomateBotLogLines] = useState<string[]>([]);
   const [debugNotice, setDebugNotice] = useState<{ text: string; tone: "success" | "error" } | null>(null);
+  const [screenshotSavePath, setScreenshotSavePath] = useState("");
+  const [screenshotNameSuffix, setScreenshotNameSuffix] = useState("");
 
   const handleToggleTaskNodeExpand = useCallback((id: string) => {
     setExpandedTaskNodeIds((prev) => {
@@ -262,6 +264,7 @@ export default function App() {
         }
         return next;
       });
+      window.alert(message);
     };
 
     ipcRenderer.on(CHANNELS.RECORDING_STATE, onRecordingState);
@@ -281,6 +284,19 @@ export default function App() {
     ) => setCursorPos(pos);
     ipcRenderer.on(CHANNELS.CURSOR_POS, onCursorPos);
     ipcRenderer.send(CHANNELS.UI_READY);
+
+    void ipcRenderer
+      .invoke(CHANNELS.GET_SCREENSHOT_SAVE_PATH)
+      .then((result: { ok?: boolean; path?: string; suffix?: string }) => {
+        if (!result?.ok) {
+          return;
+        }
+        setScreenshotSavePath(typeof result.path === "string" ? result.path : "");
+        setScreenshotNameSuffix(typeof result.suffix === "string" ? result.suffix : "");
+      })
+      .catch(() => {
+        // Ignore non-critical config read failures.
+      });
 
     return () => {
       ipcRenderer.removeListener(CHANNELS.RECORDING_STATE, onRecordingState);
@@ -349,7 +365,10 @@ export default function App() {
 
   const handleRunScreenshotCapture = useCallback(async () => {
     try {
-      const result = await ipcRenderer.invoke(CHANNELS.RUN_SCREENSHOT_CAPTURE);
+      const result = await ipcRenderer.invoke(CHANNELS.RUN_SCREENSHOT_CAPTURE, {
+        filePath: screenshotSavePath.trim() || undefined,
+        fileNameSuffix: screenshotNameSuffix.trim() || undefined,
+      });
       if (!result?.ok) {
         setDebugNotice({
           text: result?.error || "Unable to capture screenshot.",
@@ -378,6 +397,44 @@ export default function App() {
         tone: "error",
       });
     }
+  }, [screenshotNameSuffix, screenshotSavePath]);
+
+  const handleChooseScreenshotSavePath = useCallback(async () => {
+    try {
+      const result = await ipcRenderer.invoke(CHANNELS.PICK_SCREENSHOT_SAVE_PATH);
+      if (!result?.ok) {
+        setDebugNotice({
+          text: result?.error || "Unable to choose screenshot path.",
+          tone: "error",
+        });
+        return;
+      }
+
+      if (result.canceled || !result.filePath) {
+        return;
+      }
+
+      const nextPath = String(result.filePath);
+      setScreenshotSavePath(nextPath);
+      await ipcRenderer.invoke(CHANNELS.SET_SCREENSHOT_SAVE_PATH, nextPath);
+      setDebugNotice({
+        text: "Screenshot path selected.",
+        tone: "success",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setDebugNotice({
+        text: `Unable to choose screenshot path: ${message}`,
+        tone: "error",
+      });
+    }
+  }, []);
+
+  const handleScreenshotNameSuffixChange = useCallback((value: string) => {
+    setScreenshotNameSuffix(value);
+    void ipcRenderer.invoke(CHANNELS.SET_SCREENSHOT_NAME_SUFFIX, value).catch(() => {
+      // Ignore non-critical config write failures.
+    });
   }, []);
 
   useEffect(() => {
@@ -852,9 +909,30 @@ export default function App() {
           />
         ) : (
           <div className="debug-view">
-            <button type="button" className="debug-action-btn" onClick={() => void handleRunScreenshotCapture()}>
-              Screenshot
-            </button>
+            <div className="debug-save-row">
+              <button type="button" className="debug-action-btn" onClick={() => void handleRunScreenshotCapture()}>
+                Screenshot (F2)
+              </button>
+              <button type="button" className="debug-action-btn" onClick={() => void handleChooseScreenshotSavePath()}>
+                Choose Path
+              </button>
+              <input
+                type="text"
+                className="debug-save-path"
+                value={screenshotSavePath}
+                readOnly
+                placeholder="Default path: ./test-images/[dimensions]-[resolution]-[scale]-[suffix].png"
+              />
+              <input
+                type="text"
+                className="debug-save-suffix"
+                value={screenshotNameSuffix}
+                onChange={(e) => handleScreenshotNameSuffixChange(e.target.value)}
+                placeholder="Suffix"
+                aria-label="Screenshot name suffix"
+                spellCheck={false}
+              />
+            </div>
             {debugNotice && (
               <p className={`debug-notice${debugNotice.tone === "error" ? " debug-notice-error" : ""}`}>{debugNotice.text}</p>
             )}

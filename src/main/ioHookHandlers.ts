@@ -6,6 +6,8 @@ import { UIOHOOK_KEY_TO_ROBOTJS, MODIFIER_KEYCODES } from "./constants";
 import { toggleSelectedAutomateBot } from "./automateBotManager";
 import { findRuneLiteWindow, ensureRuneLiteWindowBoundsForAutomation, RuneLiteWindowInfo } from "./runeLiteWindow";
 import { CHANNELS } from "./ipcChannels";
+import { runAgilityScreenshotCapture } from "./automate-bots/shared/screenshot-capture";
+import { getSavedScreenshotNameSuffix, getSavedScreenshotSavePath } from "./csvOperator";
 
 export { ensureRuneLiteWindowBoundsForAutomation };
 
@@ -20,6 +22,17 @@ export function setupIoHookHandlers() {
     }
 
     if (e.keycode === UiohookKey.F2) {
+      if (AppState.activeView === "debug") {
+        const result = runAgilityScreenshotCapture({
+          targetFilePath: getSavedScreenshotSavePath() ?? undefined,
+          fileNameSuffix: getSavedScreenshotNameSuffix() ?? undefined,
+        });
+        if (!result.ok) {
+          console.error(`Could not capture screenshot: ${result.error ?? "Screenshot capture failed."}`);
+        }
+        return;
+      }
+
       if (AppState.activeView === "automateBot" || AppState.automateBotRunning) {
         try {
           toggleSelectedAutomateBot("f2");

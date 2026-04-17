@@ -1,5 +1,7 @@
+import * as fs from "fs";
 import { screen as electronScreen } from "electron";
 import { screen } from "robotjs";
+import path from "path";
 import * as logger from "../../logger";
 import { getRuneLite } from "../../runeLiteWindow";
 import { saveBitmap } from "./save-bitmap";
@@ -69,7 +71,69 @@ function toPhysicalCaptureBounds(
   };
 }
 
-export function runAgilityScreenshotCapture(): { ok: boolean; filePath?: string; error?: string } {
+function ensurePngExtension(filePath: string): string {
+  if (path.extname(filePath).toLowerCase() === ".png") {
+    return filePath;
+  }
+
+  return `${filePath}.png`;
+}
+
+function normalizeScreenshotNameSuffix(fileNameSuffix: string | undefined): string {
+  if (!fileNameSuffix) {
+    return "";
+  }
+
+  return fileNameSuffix
+    .trim()
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, " ")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[.-]+|[.-]+$/g, "");
+}
+
+function appendSuffixToFilePath(filePath: string, fileNameSuffix: string | undefined): string {
+  const normalizedSuffix = normalizeScreenshotNameSuffix(fileNameSuffix);
+  if (!normalizedSuffix) {
+    return filePath;
+  }
+
+  const parsedPath = path.parse(filePath);
+  const extension = parsedPath.ext || ".png";
+  const baseName = parsedPath.ext ? parsedPath.name : parsedPath.base;
+  return path.join(parsedPath.dir, `${baseName}-${normalizedSuffix}${extension}`);
+}
+
+function buildDebugScreenshotFileName(gameResolution: string, tierLabel: string, scalePercent: string): string {
+  return `${gameResolution}-${tierLabel}-${scalePercent}.png`;
+}
+
+function resolveScreenshotFilePath(
+  targetPath: string | undefined,
+  fileNameSuffix: string | undefined,
+  gameResolution: string,
+  tierLabel: string,
+  scalePercent: string,
+): string {
+  const screenshotFileName = buildDebugScreenshotFileName(gameResolution, tierLabel, scalePercent);
+  const trimmedTargetPath = targetPath?.trim();
+
+  if (!trimmedTargetPath) {
+    return appendSuffixToFilePath(`./test-images/${screenshotFileName}`, fileNameSuffix);
+  }
+
+  const resolvedTargetPath = path.resolve(trimmedTargetPath);
+  if (fs.existsSync(resolvedTargetPath) && fs.statSync(resolvedTargetPath).isDirectory()) {
+    return appendSuffixToFilePath(path.join(trimmedTargetPath, screenshotFileName), fileNameSuffix);
+  }
+
+  return appendSuffixToFilePath(ensurePngExtension(trimmedTargetPath), fileNameSuffix);
+}
+
+export function runAgilityScreenshotCapture(options?: {
+  targetFilePath?: string;
+  fileNameSuffix?: string;
+}): { ok: boolean; filePath?: string; error?: string } {
   const window = getRuneLite();
   if (!window) {
     const message = "RuneLite window not found.";
@@ -107,7 +171,13 @@ export function runAgilityScreenshotCapture(): { ok: boolean; filePath?: string;
   const captureBounds = toPhysicalCaptureBounds(bounds, displayMeta.scaleFactor);
   const fullBitmap = screen.capture(captureBounds.x, captureBounds.y, captureBounds.width, captureBounds.height);
   const gameResolution = `${fullBitmap.width}x${fullBitmap.height}`;
-  const filePath = `./test-images/tile-${gameResolution}-${displayMeta.tierLabel}-${displayMeta.scalePercent}-quest.png`;
+  const filePath = resolveScreenshotFilePath(
+    options?.targetFilePath,
+    options?.fileNameSuffix,
+    gameResolution,
+    displayMeta.tierLabel,
+    displayMeta.scalePercent,
+  );
   saveBitmap(fullBitmap, filePath);
 
   logger.log(`Automate Bot (Agility): screenshot saved to ${filePath}.`);

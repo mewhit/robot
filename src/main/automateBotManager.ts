@@ -40,7 +40,7 @@ export function setSelectedAutomateBotId(botId: string | null) {
   sendAutomateBotState();
 }
 
-export function stopAutomateBot(source: "f2" | "ui") {
+export function stopAutomateBot(source: "f2" | "ui" | "bot") {
   if (!AppState.automateBotRunning) {
     return;
   }

@@ -19,6 +19,8 @@ type WindowConfig = {
   width: number;
   height: number;
   isMaximized: boolean;
+  screenshotSavePath?: string;
+  screenshotNameSuffix?: string;
 };
 
 function isFiniteNumber(value: unknown): value is number {
@@ -27,6 +29,24 @@ function isFiniteNumber(value: unknown): value is number {
 
 function getWindowConfigPath() {
   return path.join(app.getPath("userData"), WINDOW_CONFIG_FILE_NAME);
+}
+
+function normalizeScreenshotSavePath(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function normalizeScreenshotNameSuffix(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 function toValidWindowConfig(raw: unknown): WindowConfig | null {
@@ -54,6 +74,8 @@ function toValidWindowConfig(raw: unknown): WindowConfig | null {
     width,
     height,
     isMaximized: Boolean(candidate.isMaximized),
+    screenshotSavePath: normalizeScreenshotSavePath(candidate.screenshotSavePath),
+    screenshotNameSuffix: normalizeScreenshotNameSuffix(candidate.screenshotNameSuffix),
   };
 }
 
@@ -126,13 +148,80 @@ function getWindowOptionsFromConfig(savedConfig: WindowConfig | null): BrowserWi
 
 function writeWindowConfig(window: BrowserWindow) {
   const targetBounds = window.isMaximized() ? window.getNormalBounds() : window.getBounds();
+  const currentConfig = readWindowConfig();
   const payload: WindowConfig = {
     x: Math.round(targetBounds.x),
     y: Math.round(targetBounds.y),
     width: Math.max(MIN_WINDOW_WIDTH, Math.round(targetBounds.width)),
     height: Math.max(MIN_WINDOW_HEIGHT, Math.round(targetBounds.height)),
     isMaximized: window.isMaximized(),
+    screenshotSavePath: currentConfig?.screenshotSavePath,
+    screenshotNameSuffix: currentConfig?.screenshotNameSuffix,
   };
+
+  const configPath = getWindowConfigPath();
+  fs.writeFileSync(configPath, JSON.stringify(payload, null, 2), "utf8");
+}
+
+function getWindowConfigFallback(): WindowConfig {
+  const window = AppState.mainWindow;
+  if (!window || window.isDestroyed()) {
+    return {
+      x: 0,
+      y: 0,
+      width: DEFAULT_WINDOW_WIDTH,
+      height: DEFAULT_WINDOW_HEIGHT,
+      isMaximized: false,
+    };
+  }
+
+  const bounds = window.isMaximized() ? window.getNormalBounds() : window.getBounds();
+  return {
+    x: Math.round(bounds.x),
+    y: Math.round(bounds.y),
+    width: Math.max(MIN_WINDOW_WIDTH, Math.round(bounds.width)),
+    height: Math.max(MIN_WINDOW_HEIGHT, Math.round(bounds.height)),
+    isMaximized: window.isMaximized(),
+  };
+}
+
+export function getSavedScreenshotSavePath(): string {
+  return readWindowConfig()?.screenshotSavePath ?? "";
+}
+
+export function getSavedScreenshotNameSuffix(): string {
+  return readWindowConfig()?.screenshotNameSuffix ?? "";
+}
+
+export function setSavedScreenshotSavePath(nextPath: string) {
+  const existing = readWindowConfig() ?? getWindowConfigFallback();
+  const normalized = normalizeScreenshotSavePath(nextPath);
+  const payload: WindowConfig = {
+    ...existing,
+  };
+
+  if (normalized) {
+    payload.screenshotSavePath = normalized;
+  } else {
+    delete payload.screenshotSavePath;
+  }
+
+  const configPath = getWindowConfigPath();
+  fs.writeFileSync(configPath, JSON.stringify(payload, null, 2), "utf8");
+}
+
+export function setSavedScreenshotNameSuffix(nextSuffix: string) {
+  const existing = readWindowConfig() ?? getWindowConfigFallback();
+  const normalized = normalizeScreenshotNameSuffix(nextSuffix);
+  const payload: WindowConfig = {
+    ...existing,
+  };
+
+  if (normalized) {
+    payload.screenshotNameSuffix = normalized;
+  } else {
+    delete payload.screenshotNameSuffix;
+  }
 
   const configPath = getWindowConfigPath();
   fs.writeFileSync(configPath, JSON.stringify(payload, null, 2), "utf8");
