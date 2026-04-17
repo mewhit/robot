@@ -38,6 +38,7 @@ import {
   toggleSelectedAutomateBot,
   startAutomateBotFromStep,
 } from "./automateBotManager";
+import { runAgilityScreenshotCapture } from "./automate-bots/shared/screenshot-capture";
 import { sendAutomateBotLogs } from "./automateBotLogs";
 import { CHANNELS } from "./ipcChannels";
 
@@ -63,8 +64,16 @@ export function setupIpcHandlers() {
     sendOutputFolderState();
   });
 
-  ipcMain.on(CHANNELS.SET_ACTIVE_VIEW, (_event, view: "clicker" | "automateBot") => {
-    setActiveView(view === "automateBot" ? "automateBot" : "clicker");
+  ipcMain.on(CHANNELS.SET_ACTIVE_VIEW, (_event, view: "clicker" | "automateBot" | "debug") => {
+    if (view === "automateBot") {
+      setActiveView("automateBot");
+      return;
+    }
+    if (view === "debug") {
+      setActiveView("debug");
+      return;
+    }
+    setActiveView("clicker");
   });
 
   ipcMain.on(CHANNELS.SET_SELECTED_AUTOMATE_BOT, (_event, botId: string | null) => {
@@ -89,6 +98,20 @@ export function setupIpcHandlers() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`Could not start automate bot from step: ${message}`);
+      return { ok: false, error: message };
+    }
+  });
+
+  ipcMain.handle(CHANNELS.RUN_SCREENSHOT_CAPTURE, async () => {
+    try {
+      const result = runAgilityScreenshotCapture();
+      if (!result.ok) {
+        return { ok: false, error: result.error ?? "Screenshot capture failed." };
+      }
+      return { ok: true, filePath: result.filePath };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Could not capture screenshot: ${message}`);
       return { ok: false, error: message };
     }
   });

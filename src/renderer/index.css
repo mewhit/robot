@@ -181,6 +181,22 @@
     @apply m-0 break-words text-slate-200;
   }
 
+  .debug-view {
+    @apply w-full flex flex-col items-start gap-2 p-2;
+  }
+
+  .debug-action-btn {
+    @apply w-auto m-0 px-3 py-2 text-sm rounded-md bg-slate-800 text-white border-0 cursor-pointer hover:bg-slate-900 transition-colors;
+  }
+
+  .debug-notice {
+    @apply m-0 text-xs text-emerald-700;
+  }
+
+  .debug-notice-error {
+    @apply text-red-700;
+  }
+
   .title {
     @apply m-0 mb-1 text-sm font-bold tracking-wider;
   }

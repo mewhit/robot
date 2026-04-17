@@ -21,7 +21,7 @@ export function setAutomateBotCurrentStep(stepId: string | null) {
   sendAutomateBotState();
 }
 
-export function setActiveView(view: "clicker" | "automateBot") {
+export function setActiveView(view: "clicker" | "automateBot" | "debug") {
   AppState.activeView = view;
 }
 

@@ -91,12 +91,18 @@ type MarkerColorState = {
   point: { x: number; y: number } | null;
 };
 
-type ActiveView = "clicker" | "automateBot";
+type ActiveView = "clicker" | "automateBot" | "debug";
 const ACTIVE_VIEW_STORAGE_KEY = "robot.activeView";
 
 function getInitialActiveView(): ActiveView {
   const savedView = window.localStorage.getItem(ACTIVE_VIEW_STORAGE_KEY);
-  return savedView === "automateBot" ? "automateBot" : "clicker";
+  if (savedView === "automateBot") {
+    return "automateBot";
+  }
+  if (savedView === "debug") {
+    return "debug";
+  }
+  return "clicker";
 }
 
 export default function App() {
@@ -160,6 +166,7 @@ export default function App() {
   ]);
   const [expandedTaskNodeIds, setExpandedTaskNodeIds] = useState<Set<string>>(new Set());
   const [automateBotLogLines, setAutomateBotLogLines] = useState<string[]>([]);
+  const [debugNotice, setDebugNotice] = useState<{ text: string; tone: "success" | "error" } | null>(null);
 
   const handleToggleTaskNodeExpand = useCallback((id: string) => {
     setExpandedTaskNodeIds((prev) => {
@@ -339,6 +346,53 @@ export default function App() {
       window.alert(`Unable to toggle Automate Bot: ${message}`);
     }
   }, []);
+
+  const handleRunScreenshotCapture = useCallback(async () => {
+    try {
+      const result = await ipcRenderer.invoke(CHANNELS.RUN_SCREENSHOT_CAPTURE);
+      if (!result?.ok) {
+        setDebugNotice({
+          text: result?.error || "Unable to capture screenshot.",
+          tone: "error",
+        });
+        return;
+      }
+
+      if (result.filePath) {
+        const normalizedPath = String(result.filePath).replace(/\\/g, "/");
+        const fileName = normalizedPath.split("/").pop() ?? normalizedPath;
+        setDebugNotice({
+          text: `Saved ${fileName}`,
+          tone: "success",
+        });
+      } else {
+        setDebugNotice({
+          text: "Screenshot captured.",
+          tone: "success",
+        });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setDebugNotice({
+        text: `Unable to capture screenshot: ${message}`,
+        tone: "error",
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!debugNotice) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setDebugNotice(null);
+    }, 3000);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [debugNotice]);
 
   const handleStepContextMenu = useCallback((e: React.MouseEvent, stepId: string, stepName: string) => {
     e.preventDefault();
@@ -736,6 +790,9 @@ export default function App() {
           <button className={`nav-tab ${activeView === "automateBot" ? "active" : ""}`} onClick={() => setActiveView("automateBot")}>
             Automate Bot
           </button>
+          <button className={`nav-tab ${activeView === "debug" ? "active" : ""}`} onClick={() => setActiveView("debug")}>
+            Debug
+          </button>
           <div className="nav-mouse-pos" title="Current mouse location">
             Mouse: {mouseLocationText}
           </div>
@@ -780,7 +837,7 @@ export default function App() {
             onRowFormChange={handleRowFormChange}
             onSaveRow={() => void handleSaveRow()}
           />
-        ) : (
+        ) : activeView === "automateBot" ? (
           <AutomateBot
             taskTree={taskTree}
             expandedTaskNodeIds={expandedTaskNodeIds}
@@ -793,6 +850,15 @@ export default function App() {
             onToggleSelectedTaskRun={() => void handleToggleSelectedTaskRun()}
             onStepContextMenu={handleStepContextMenu}
           />
+        ) : (
+          <div className="debug-view">
+            <button type="button" className="debug-action-btn" onClick={() => void handleRunScreenshotCapture()}>
+              Screenshot
+            </button>
+            {debugNotice && (
+              <p className={`debug-notice${debugNotice.tone === "error" ? " debug-notice-error" : ""}`}>{debugNotice.text}</p>
+            )}
+          </div>
         )}
       </div>
       {contextMenu && (
