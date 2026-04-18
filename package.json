@@ -13,6 +13,7 @@
     "test:screenshot:npc": "ts-node src/main/automate-bots/shared/npc-box-detector.spec.ts test-images/npc-box/*.png",
     "test:screenshot:attack": "ts-node src/main/automate-bots/shared/attack-box-detector.spec.ts test-images/attack-box/*.png",
     "test:screenshot:motherlode-mine": "ts-node src/main/automate-bots/shared/motherlode-mine-box-detector.spec.ts test-images/motherlode-mine-box/*.png",
+    "test:screenshot:motherlode-bag-full": "ts-node src/main/automate-bots/shared/motherlode-bag-full-box-detector.spec.ts test-images/motherlode-bag-full-box/*.png",
     "test:screenshot:motherlode-targeting": "ts-node src/main/automate-bots/shared/motherlode-target-selection.spec.ts image-test/motherlode-nearest-anchor.png",
     "test:screenshot:player": "ts-node src/main/automate-bots/shared/player-box-detector.spec.ts test-images/player/*.png"
   },

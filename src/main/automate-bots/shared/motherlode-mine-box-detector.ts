@@ -514,6 +514,7 @@ export function saveBitmapWithMotherlodeMineBoxes(
   boxes: MotherlodeMineBox[],
   filename: string,
   activeTarget?: { x: number; y: number } | null,
+  playerBox?: { x: number; y: number; width: number; height: number } | null,
 ): void {
   const png = new PNG({
     width: bitmap.width,
@@ -549,6 +550,20 @@ export function saveBitmapWithMotherlodeMineBoxes(
       markerSize,
       markerSize,
       { r: 64, g: 220, b: 255 },
+      2,
+    );
+  }
+
+  if (playerBox) {
+    // Expand the player box slightly so the outline remains visible even when the raw marker is thin.
+    const padding = 3;
+    drawRectangleOnPng(
+      png,
+      playerBox.x - padding,
+      playerBox.y - padding,
+      playerBox.width + padding * 2,
+      playerBox.height + padding * 2,
+      { r: 0, g: 0, b: 0 },
       2,
     );
   }
