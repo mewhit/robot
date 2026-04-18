@@ -37,12 +37,25 @@ const MIN_BOX_WIDTH_PX = 24;
 const MIN_BOX_HEIGHT_PX = 24;
 const MAX_BOX_WIDTH_PX = 76;
 const MAX_BOX_HEIGHT_PX = 76;
-const MIN_FILL_RATIO = 0.34;
+const MIN_FILL_RATIO = 0.3;
 const MAX_FILL_RATIO = 0.92;
 const MIN_ASPECT_RATIO = 0.68;
 const MAX_ASPECT_RATIO = 1.45;
 const MIN_AVG_GREEN = 145;
 const MIN_GREEN_DOMINANCE = 105;
+const GREEN_RING_MIN_PIXEL_COUNT = 140;
+const GREEN_RING_MIN_SIDE_PX = 30;
+const GREEN_RING_MAX_SIDE_PX = 40;
+const GREEN_RING_MIN_FILL_RATIO = 0.12;
+const GREEN_RING_MAX_FILL_RATIO = 0.38;
+const GREEN_RING_MIN_ASPECT_RATIO = 0.85;
+const GREEN_RING_MAX_ASPECT_RATIO = 1.2;
+const GREEN_RING_MIN_AVG_GREEN = 150;
+const GREEN_RING_MIN_GREEN_DOMINANCE = 88;
+const COMPONENT_MERGE_GAP_PX = 5;
+const COMPONENT_MIN_OVERLAP_RATIO = 0.8;
+const MAX_MERGED_COMPONENT_WIDTH_PX = MAX_BOX_WIDTH_PX + 8;
+const MAX_MERGED_COMPONENT_HEIGHT_PX = MAX_BOX_HEIGHT_PX + 8;
 
 function isMotherlodeGreenPixel(r: number, g: number, b: number): boolean {
   return g >= 132 && g - r >= 55 && g - b >= 28 && r <= 190 && b <= 190;
@@ -229,6 +242,97 @@ function collectConnectedComponents(mask: Uint8Array, bitmap: RobotBitmap): BoxC
   return components;
 }
 
+function axisGap(minA: number, maxA: number, minB: number, maxB: number): number {
+  if (maxA < minB) {
+    return minB - maxA - 1;
+  }
+
+  if (maxB < minA) {
+    return minA - maxB - 1;
+  }
+
+  return 0;
+}
+
+function axisOverlap(minA: number, maxA: number, minB: number, maxB: number): number {
+  return Math.max(0, Math.min(maxA, maxB) - Math.max(minA, minB) + 1);
+}
+
+function axisOverlapRatio(minA: number, maxA: number, minB: number, maxB: number): number {
+  const overlap = axisOverlap(minA, maxA, minB, maxB);
+  if (overlap <= 0) {
+    return 0;
+  }
+
+  const lengthA = maxA - minA + 1;
+  const lengthB = maxB - minB + 1;
+  return overlap / Math.min(lengthA, lengthB);
+}
+
+function mergeComponent(a: BoxCandidate, b: BoxCandidate): BoxCandidate {
+  return {
+    minX: Math.min(a.minX, b.minX),
+    minY: Math.min(a.minY, b.minY),
+    maxX: Math.max(a.maxX, b.maxX),
+    maxY: Math.max(a.maxY, b.maxY),
+    pixelCount: a.pixelCount + b.pixelCount,
+    redSum: a.redSum + b.redSum,
+    greenSum: a.greenSum + b.greenSum,
+    blueSum: a.blueSum + b.blueSum,
+  };
+}
+
+function shouldMergeComponents(a: BoxCandidate, b: BoxCandidate): boolean {
+  const gapX = axisGap(a.minX, a.maxX, b.minX, b.maxX);
+  const gapY = axisGap(a.minY, a.maxY, b.minY, b.maxY);
+  if (gapX > COMPONENT_MERGE_GAP_PX || gapY > COMPONENT_MERGE_GAP_PX) {
+    return false;
+  }
+
+  const overlapXRatio = axisOverlapRatio(a.minX, a.maxX, b.minX, b.maxX);
+  const overlapYRatio = axisOverlapRatio(a.minY, a.maxY, b.minY, b.maxY);
+  if (overlapXRatio < COMPONENT_MIN_OVERLAP_RATIO && overlapYRatio < COMPONENT_MIN_OVERLAP_RATIO) {
+    return false;
+  }
+
+  const mergedWidth = Math.max(a.maxX, b.maxX) - Math.min(a.minX, b.minX) + 1;
+  const mergedHeight = Math.max(a.maxY, b.maxY) - Math.min(a.minY, b.minY) + 1;
+
+  return mergedWidth <= MAX_MERGED_COMPONENT_WIDTH_PX && mergedHeight <= MAX_MERGED_COMPONENT_HEIGHT_PX;
+}
+
+function mergeNearbyComponents(components: BoxCandidate[]): BoxCandidate[] {
+  if (components.length < 2) {
+    return components;
+  }
+
+  const merged = components.slice();
+
+  let didMerge = true;
+  while (didMerge) {
+    didMerge = false;
+
+    for (let i = 0; i < merged.length; i += 1) {
+      for (let j = i + 1; j < merged.length; j += 1) {
+        if (!shouldMergeComponents(merged[i], merged[j])) {
+          continue;
+        }
+
+        merged[i] = mergeComponent(merged[i], merged[j]);
+        merged.splice(j, 1);
+        didMerge = true;
+        break;
+      }
+
+      if (didMerge) {
+        break;
+      }
+    }
+  }
+
+  return merged;
+}
+
 function toMotherlodeMineBox(
   candidate: BoxCandidate,
   sourceWidth: number,
@@ -240,26 +344,6 @@ function toMotherlodeMineBox(
   const fillRatio = candidate.pixelCount / (width * height);
   const aspectRatio = width / height;
 
-  if (candidate.pixelCount < MIN_PIXEL_COUNT) {
-    return null;
-  }
-
-  if (width < MIN_BOX_WIDTH_PX || height < MIN_BOX_HEIGHT_PX) {
-    return null;
-  }
-
-  if (width > MAX_BOX_WIDTH_PX || height > MAX_BOX_HEIGHT_PX) {
-    return null;
-  }
-
-  if (fillRatio < MIN_FILL_RATIO || fillRatio > MAX_FILL_RATIO) {
-    return null;
-  }
-
-  if (aspectRatio < MIN_ASPECT_RATIO || aspectRatio > MAX_ASPECT_RATIO) {
-    return null;
-  }
-
   const avgRed = candidate.redSum / candidate.pixelCount;
   const avgGreen = candidate.greenSum / candidate.pixelCount;
   const avgBlue = candidate.blueSum / candidate.pixelCount;
@@ -267,14 +351,55 @@ function toMotherlodeMineBox(
 
   // Validation depends on color type
   if (color === "green") {
-    if (avgGreen < MIN_AVG_GREEN) {
-      return null;
-    }
+    const denseGreenGeometryOk =
+      candidate.pixelCount >= MIN_PIXEL_COUNT &&
+      width >= MIN_BOX_WIDTH_PX &&
+      height >= MIN_BOX_HEIGHT_PX &&
+      width <= MAX_BOX_WIDTH_PX &&
+      height <= MAX_BOX_HEIGHT_PX &&
+      fillRatio >= MIN_FILL_RATIO &&
+      fillRatio <= MAX_FILL_RATIO &&
+      aspectRatio >= MIN_ASPECT_RATIO &&
+      aspectRatio <= MAX_ASPECT_RATIO;
 
-    if (greenDominance < MIN_GREEN_DOMINANCE) {
+    const ringGreenGeometryOk =
+      candidate.pixelCount >= GREEN_RING_MIN_PIXEL_COUNT &&
+      width >= GREEN_RING_MIN_SIDE_PX &&
+      height >= GREEN_RING_MIN_SIDE_PX &&
+      width <= GREEN_RING_MAX_SIDE_PX &&
+      height <= GREEN_RING_MAX_SIDE_PX &&
+      fillRatio >= GREEN_RING_MIN_FILL_RATIO &&
+      fillRatio <= GREEN_RING_MAX_FILL_RATIO &&
+      aspectRatio >= GREEN_RING_MIN_ASPECT_RATIO &&
+      aspectRatio <= GREEN_RING_MAX_ASPECT_RATIO;
+
+    const denseGreenSignalOk = avgGreen >= MIN_AVG_GREEN && greenDominance >= MIN_GREEN_DOMINANCE;
+    const ringGreenSignalOk = avgGreen >= GREEN_RING_MIN_AVG_GREEN && greenDominance >= GREEN_RING_MIN_GREEN_DOMINANCE;
+
+    if (!(denseGreenGeometryOk && denseGreenSignalOk) && !(ringGreenGeometryOk && ringGreenSignalOk)) {
       return null;
     }
   } else if (color === "yellow") {
+    if (candidate.pixelCount < MIN_PIXEL_COUNT) {
+      return null;
+    }
+
+    if (width < MIN_BOX_WIDTH_PX || height < MIN_BOX_HEIGHT_PX) {
+      return null;
+    }
+
+    if (width > MAX_BOX_WIDTH_PX || height > MAX_BOX_HEIGHT_PX) {
+      return null;
+    }
+
+    if (fillRatio < MIN_FILL_RATIO || fillRatio > MAX_FILL_RATIO) {
+      return null;
+    }
+
+    if (aspectRatio < MIN_ASPECT_RATIO || aspectRatio > MAX_ASPECT_RATIO) {
+      return null;
+    }
+
     // For yellow nodes, check that red is dominant
     if (avgRed < 200) {
       return null;
@@ -337,8 +462,8 @@ function sortBoxes(boxes: MotherlodeMineBox[]): MotherlodeMineBox[] {
 export function detectMotherlodeMineBoxesInScreenshot(bitmap: RobotBitmap): MotherlodeMineBox[] {
   // Detect green nodes
   const greenMask = buildMotherlodeGreenMask(bitmap);
-  const greenComponents = collectConnectedComponents(greenMask, bitmap).filter(
-    (candidate) => candidate.pixelCount >= 8,
+  const greenComponents = mergeNearbyComponents(
+    collectConnectedComponents(greenMask, bitmap).filter((candidate) => candidate.pixelCount >= 8),
   );
   const greenBoxes = greenComponents
     .map((candidate) => toMotherlodeMineBox(candidate, bitmap.width, bitmap.height, "green"))
@@ -364,7 +489,9 @@ export function detectBestMotherlodeMineBoxInScreenshot(bitmap: RobotBitmap): Mo
 
 export function detectBestGreenMotherlodeMineBoxInScreenshot(bitmap: RobotBitmap): MotherlodeMineBox | null {
   const mask = buildMotherlodeGreenMask(bitmap);
-  const components = collectConnectedComponents(mask, bitmap).filter((candidate) => candidate.pixelCount >= 8);
+  const components = mergeNearbyComponents(
+    collectConnectedComponents(mask, bitmap).filter((candidate) => candidate.pixelCount >= 8),
+  );
   const boxes = components
     .map((candidate) => toMotherlodeMineBox(candidate, bitmap.width, bitmap.height, "green"))
     .filter((box): box is MotherlodeMineBox => box !== null);

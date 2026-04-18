@@ -372,7 +372,6 @@
   .context-item--danger {
     @apply text-red-700 hover:bg-red-50;
   }
-
 }
 
 @media (max-width: 860px) {
@@ -384,9 +383,12 @@
     @apply h-auto max-h-none flex-col overflow-visible;
   }
 
-  .automatebot-sidebar,
+  .automatebot-sidebar {
+    @apply w-full max-w-none min-w-0 h-auto min-h-48;
+  }
+
   .automatebot-log-panel {
-    @apply w-full max-w-none min-w-0;
+    @apply w-full max-w-none min-w-0 min-h-64;
   }
 
   .sidebar,

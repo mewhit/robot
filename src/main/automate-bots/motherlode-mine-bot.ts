@@ -11,15 +11,18 @@ import {
   detectMotherlodeMineBoxesInScreenshot,
   saveBitmapWithMotherlodeMineBoxes,
 } from "./shared/motherlode-mine-box-detector";
+import { detectBestPlayerBoxInScreenshot } from "./shared/player-box-detector";
+import { selectNearestGreenMotherlodeNode } from "./shared/motherlode-target-selection";
 import { screen as electronScreen } from "electron";
 import { detectTileLocationBoxInScreenshot } from "./shared/tile-location-detection";
-import type { RobotBitmap } from "./shared/ocr-engine";
 
 const BOT_NAME = "Motherlode Mine";
 const DEBUG_DIR = "ocr-debug";
 
 // How long to wait after moving the mouse before reading the tile tooltip (ms).
 const TOOLTIP_SETTLE_MS = 400;
+// Short pause between hover/decision logging and the click action.
+const PRE_CLICK_SETTLE_MS = 140;
 // How often to poll the active node during mining (ms).
 const POLL_INTERVAL_MS = 900;
 // How long to wait after clicking a node before starting to poll (ms).
@@ -28,9 +31,6 @@ const POST_CLICK_SETTLE_MS = 1500;
 const ACTIVE_NODE_MATCH_RADIUS_PX = 34;
 // Allow brief detection dropouts (e.g. low-opacity transition) before re-searching.
 const ACTIVE_NODE_MISSING_GRACE_POLLS = 3;
-// Tooltip search area around cursor, to avoid reading unrelated coordinates elsewhere.
-const TOOLTIP_SEARCH_HALF_WIDTH_PX = 120;
-const TOOLTIP_SEARCH_HALF_HEIGHT_PX = 60;
 
 interface ScreenCaptureBounds {
   x: number;
@@ -130,60 +130,6 @@ function parseTileCoord(matchedLine: string): TileCoord | null {
   return { x, y, z };
 }
 
-function cropBitmap(
-  bitmap: RobotBitmap,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-): RobotBitmap {
-  const crop: RobotBitmap = {
-    width,
-    height,
-    byteWidth: width * bitmap.bytesPerPixel,
-    bytesPerPixel: bitmap.bytesPerPixel,
-    image: Buffer.alloc(width * height * bitmap.bytesPerPixel),
-  };
-
-  for (let row = 0; row < height; row += 1) {
-    const sourceStart = (y + row) * bitmap.byteWidth + x * bitmap.bytesPerPixel;
-    const sourceEnd = sourceStart + width * bitmap.bytesPerPixel;
-    const targetStart = row * crop.byteWidth;
-    bitmap.image.copy(crop.image, targetStart, sourceStart, sourceEnd);
-  }
-
-  return crop;
-}
-
-function readTileNearCursor(
-  bitmap: RobotBitmap,
-  captureBounds: ScreenCaptureBounds,
-  screenX: number,
-  screenY: number,
-): TileCoord | null {
-  const cursorX = Math.round(screenX - captureBounds.x);
-  const cursorY = Math.round(screenY - captureBounds.y);
-
-  const x0 = Math.max(0, cursorX - TOOLTIP_SEARCH_HALF_WIDTH_PX);
-  const y0 = Math.max(0, cursorY - TOOLTIP_SEARCH_HALF_HEIGHT_PX);
-  const x1 = Math.min(bitmap.width - 1, cursorX + TOOLTIP_SEARCH_HALF_WIDTH_PX);
-  const y1 = Math.min(bitmap.height - 1, cursorY + TOOLTIP_SEARCH_HALF_HEIGHT_PX);
-
-  const width = x1 - x0 + 1;
-  const height = y1 - y0 + 1;
-  if (width <= 0 || height <= 0) {
-    return null;
-  }
-
-  const cropped = cropBitmap(bitmap, x0, y0, width, height);
-  const localTileBox = detectTileLocationBoxInScreenshot(cropped);
-  if (!localTileBox) {
-    return null;
-  }
-
-  return parseTileCoord(localTileBox.matchedLine);
-}
-
 function findNodeNearActiveScreen(
   boxes: MotherlodeMineBox[],
   activeScreen: { x: number; y: number },
@@ -216,6 +162,7 @@ function findNodeNearActiveScreen(
 interface CaptureResult {
   boxes: MotherlodeMineBox[];
   greenBoxes: MotherlodeMineBox[];
+  playerAnchorInCapture: { x: number; y: number } | null;
 }
 
 /** Captures one frame, detects all mine nodes, saves a debug image, and returns the boxes. */
@@ -227,6 +174,8 @@ function captureAndDetect(
   const bitmap = screen.capture(captureBounds.x, captureBounds.y, captureBounds.width, captureBounds.height);
   const boxes = detectMotherlodeMineBoxesInScreenshot(bitmap);
   const greenBoxes = boxes.filter((b) => b.color === "green");
+  const playerBox = detectBestPlayerBoxInScreenshot(bitmap);
+  const playerAnchorInCapture = playerBox ? { x: playerBox.centerX, y: playerBox.centerY } : null;
 
   debugCaptureIndex += 1;
   const filename = path.join(DEBUG_DIR, `${debugCaptureIndex}-motherlode-${label}.png`);
@@ -239,7 +188,7 @@ function captureAndDetect(
       : null;
   saveBitmapWithMotherlodeMineBoxes(bitmap, boxes, filename, activeTargetInCapture);
 
-  return { boxes, greenBoxes };
+  return { boxes, greenBoxes, playerAnchorInCapture };
 }
 
 function clickNode(): void {
@@ -260,14 +209,11 @@ async function hoverAndReadTile(
   await sleepWithAbort(TOOLTIP_SETTLE_MS);
   if (!AppState.automateBotRunning) return null;
 
-  const bitmap = screen.capture(captureBounds.x, captureBounds.y, captureBounds.width, captureBounds.height) as RobotBitmap;
-  const nearCursorTile = readTileNearCursor(bitmap, captureBounds, screenX, screenY);
-  if (!nearCursorTile) {
-    warn(`Automate Bot (${BOT_NAME}): local tooltip tile not found near cursor.`);
-    return null;
-  }
+  const bitmap = screen.capture(captureBounds.x, captureBounds.y, captureBounds.width, captureBounds.height);
+  const tileBox = detectTileLocationBoxInScreenshot(bitmap);
+  if (!tileBox) return null;
 
-  return nearCursorTile;
+  return parseTileCoord(tileBox.matchedLine);
 }
 
 async function runLoop(captureBounds: ScreenCaptureBounds): Promise<void> {
@@ -295,8 +241,8 @@ async function runLoop(captureBounds: ScreenCaptureBounds): Promise<void> {
       try {
         if (state.phase === "searching") {
           // --- SEARCHING: find a green node and click it ---
-          const { greenBoxes } = captureAndDetect(captureBounds, "search");
-          const greenNode = greenBoxes[0] ?? null;
+          const { greenBoxes, playerAnchorInCapture } = captureAndDetect(captureBounds, "search");
+          const greenNode = selectNearestGreenMotherlodeNode(greenBoxes, captureBounds, playerAnchorInCapture);
 
           if (!greenNode) {
             warn(`Automate Bot (${BOT_NAME}): #${loopIndex} No green node found, retrying…`);
@@ -309,15 +255,21 @@ async function runLoop(captureBounds: ScreenCaptureBounds): Promise<void> {
           const nodeScreenY = captureBounds.y + greenNode.centerY;
           const activeTile = await hoverAndReadTile(captureBounds, nodeScreenX, nodeScreenY);
 
-          if (!activeTile) {
-            warn(`Automate Bot (${BOT_NAME}): #${loopIndex} Could not read tile for green node, retrying…`);
-            await sleepWithAbort(POLL_INTERVAL_MS);
-            continue;
+          if (activeTile) {
+            log(
+              `Automate Bot (${BOT_NAME}): #${loopIndex} Nearest green node at tile (${activeTile.x},${activeTile.y},${activeTile.z}). Clicking.`,
+            );
+          } else {
+            warn(
+              `Automate Bot (${BOT_NAME}): #${loopIndex} Could not read tile for nearest green node. Clicking anyway.`,
+            );
           }
 
-          log(
-            `Automate Bot (${BOT_NAME}): #${loopIndex} Green node at tile (${activeTile.x},${activeTile.y},${activeTile.z}). Clicking.`,
-          );
+          // Give RuneLite one short frame to settle before clicking.
+          await sleepWithAbort(PRE_CLICK_SETTLE_MS);
+          if (!AppState.automateBotRunning) {
+            continue;
+          }
 
           // Mouse is already over the node from the hover — just click.
           clickNode();
@@ -352,6 +304,9 @@ async function runLoop(captureBounds: ScreenCaptureBounds): Promise<void> {
 
           const nearbyGreen = findNodeNearActiveScreen(greenBoxes, state.activeScreen, captureBounds);
           if (nearbyGreen) {
+            log(
+              `Automate Bot (${BOT_NAME}): #${loopIndex} Waiting for active node to become yellow (player is currently mining).`,
+            );
             state = { ...state, missingActivePolls: 0 };
             await sleepWithAbort(POLL_INTERVAL_MS);
             continue;
