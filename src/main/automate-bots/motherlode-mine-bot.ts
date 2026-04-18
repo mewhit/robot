@@ -1,4 +1,5 @@
 import path from "path";
+import { Effect, pipe } from "effect";
 import { mouseClick, moveMouse, screen } from "robotjs";
 import { setAutomateBotCurrentStep, stopAutomateBot } from "../automateBotManager";
 import { AppState } from "../global-state";
@@ -75,6 +76,10 @@ function log(message: string): void {
 
 function warn(message: string): void {
   logger.warn(`[${formatElapsedSinceStart()}] ${message}`);
+}
+
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 function getWindowsDisplayScaleFactor(bounds: ScreenCaptureBounds): number {
@@ -159,63 +164,6 @@ function findNodeNearActiveScreen(
   return best;
 }
 
-interface CaptureResult {
-  boxes: MotherlodeMineBox[];
-  greenBoxes: MotherlodeMineBox[];
-  playerAnchorInCapture: { x: number; y: number } | null;
-}
-
-/** Captures one frame, detects all mine nodes, saves a debug image, and returns the boxes. */
-function captureAndDetect(
-  captureBounds: ScreenCaptureBounds,
-  label: string,
-  activeTargetScreen?: { x: number; y: number } | null,
-): CaptureResult {
-  const bitmap = screen.capture(captureBounds.x, captureBounds.y, captureBounds.width, captureBounds.height);
-  const boxes = detectMotherlodeMineBoxesInScreenshot(bitmap);
-  const greenBoxes = boxes.filter((b) => b.color === "green");
-  const playerBox = detectBestPlayerBoxInScreenshot(bitmap);
-  const playerAnchorInCapture = playerBox ? { x: playerBox.centerX, y: playerBox.centerY } : null;
-
-  debugCaptureIndex += 1;
-  const filename = path.join(DEBUG_DIR, `${debugCaptureIndex}-motherlode-${label}.png`);
-  const activeTargetInCapture =
-    activeTargetScreen !== undefined && activeTargetScreen !== null
-      ? {
-          x: activeTargetScreen.x - captureBounds.x,
-          y: activeTargetScreen.y - captureBounds.y,
-        }
-      : null;
-  saveBitmapWithMotherlodeMineBoxes(bitmap, boxes, filename, activeTargetInCapture);
-
-  return { boxes, greenBoxes, playerAnchorInCapture };
-}
-
-function clickNode(): void {
-  // Mouse is already positioned over the node from the preceding hover; just click.
-  mouseClick("left", false);
-}
-
-/**
- * Moves the mouse to the given screen position, waits for the RuneLite tile tooltip
- * to appear, then returns the tile coordinate shown in the tooltip.
- */
-async function hoverAndReadTile(
-  captureBounds: ScreenCaptureBounds,
-  screenX: number,
-  screenY: number,
-): Promise<TileCoord | null> {
-  moveMouse(screenX, screenY);
-  await sleepWithAbort(TOOLTIP_SETTLE_MS);
-  if (!AppState.automateBotRunning) return null;
-
-  const bitmap = screen.capture(captureBounds.x, captureBounds.y, captureBounds.width, captureBounds.height);
-  const tileBox = detectTileLocationBoxInScreenshot(bitmap);
-  if (!tileBox) return null;
-
-  return parseTileCoord(tileBox.matchedLine);
-}
-
 async function runLoop(captureBounds: ScreenCaptureBounds): Promise<void> {
   if (isLoopRunning) {
     log(`Automate Bot (${BOT_NAME}): loop already running.`);
@@ -233,123 +181,253 @@ async function runLoop(captureBounds: ScreenCaptureBounds): Promise<void> {
     loopIndex: 0,
   };
 
+  // Keep loop logic self-contained so the phase flow can be read top-to-bottom as a story.
+  type CaptureResult = {
+    boxes: MotherlodeMineBox[];
+    greenBoxes: MotherlodeMineBox[];
+    playerAnchorInCapture: { x: number; y: number } | null;
+  };
+
+  const resetToSearchingState = (current: BotState): BotState => ({
+    ...current,
+    phase: "searching",
+    activeTile: null,
+    activeScreen: null,
+    missingActivePolls: 0,
+  });
+
+  const sleepEffect = (ms: number): Effect.Effect<void, Error> =>
+    Effect.tryPromise({
+      try: () => sleepWithAbort(ms),
+      catch: toError,
+    });
+
+  const captureAndDetectEffect = (
+    label: string,
+    activeTargetScreen?: { x: number; y: number } | null,
+  ): Effect.Effect<CaptureResult, Error> =>
+    Effect.try({
+      try: () => {
+        const bitmap = screen.capture(captureBounds.x, captureBounds.y, captureBounds.width, captureBounds.height);
+        const boxes = detectMotherlodeMineBoxesInScreenshot(bitmap);
+        const greenBoxes = boxes.filter((b) => b.color === "green");
+        const playerBox = detectBestPlayerBoxInScreenshot(bitmap);
+        const playerAnchorInCapture = playerBox ? { x: playerBox.centerX, y: playerBox.centerY } : null;
+
+        debugCaptureIndex += 1;
+        const filename = path.join(DEBUG_DIR, `${debugCaptureIndex}-motherlode-${label}.png`);
+        const activeTargetInCapture =
+          activeTargetScreen !== undefined && activeTargetScreen !== null
+            ? {
+                x: activeTargetScreen.x - captureBounds.x,
+                y: activeTargetScreen.y - captureBounds.y,
+              }
+            : null;
+        saveBitmapWithMotherlodeMineBoxes(bitmap, boxes, filename, activeTargetInCapture);
+
+        return { boxes, greenBoxes, playerAnchorInCapture };
+      },
+      catch: toError,
+    });
+
+  const hoverAndReadTileEffect = (screenX: number, screenY: number): Effect.Effect<TileCoord | null, Error> =>
+    Effect.tryPromise({
+      try: async () => {
+        moveMouse(screenX, screenY);
+        await sleepWithAbort(TOOLTIP_SETTLE_MS);
+        if (!AppState.automateBotRunning) return null;
+
+        const bitmap = screen.capture(captureBounds.x, captureBounds.y, captureBounds.width, captureBounds.height);
+        const tileBox = detectTileLocationBoxInScreenshot(bitmap);
+        if (!tileBox) return null;
+
+        return parseTileCoord(tileBox.matchedLine);
+      },
+      catch: toError,
+    });
+
+  const clickNodeEffect = (): Effect.Effect<void, Error> =>
+    Effect.try({
+      try: () => {
+        // Mouse is already positioned over the node from the preceding hover.
+        mouseClick("left", false);
+      },
+      catch: toError,
+    });
+
+  const logEffect = (message: string): Effect.Effect<void> =>
+    Effect.sync(() => {
+      log(message);
+    });
+
+  const warnEffect = (message: string): Effect.Effect<void> =>
+    Effect.sync(() => {
+      warn(message);
+    });
+
+  const whenSearching =
+    (story: (current: BotState) => Effect.Effect<BotState, Error>) =>
+    (source: Effect.Effect<BotState, Error>): Effect.Effect<BotState, Error> =>
+      pipe(
+        source,
+        Effect.flatMap((current) => (current.phase === "searching" ? story(current) : Effect.succeed(current))),
+      );
+
+  const whenMining =
+    (story: (current: BotState) => Effect.Effect<BotState, Error>) =>
+    (source: Effect.Effect<BotState, Error>): Effect.Effect<BotState, Error> =>
+      pipe(
+        source,
+        Effect.flatMap((current) => (current.phase === "mining" ? story(current) : Effect.succeed(current))),
+      );
+
+  type SearchNodeStep = {
+    current: BotState;
+    greenNode: MotherlodeMineBox | null;
+  };
+
+  const findMinableNode =
+    (story: (src: Effect.Effect<BotState, Error>) => Effect.Effect<SearchNodeStep, Error>) =>
+    (source: Effect.Effect<BotState, Error>): Effect.Effect<SearchNodeStep, Error> =>
+      story(source);
+
+  const clickStartMining =
+    (story: (src: Effect.Effect<SearchNodeStep, Error>) => Effect.Effect<BotState, Error>) =>
+    (source: Effect.Effect<SearchNodeStep, Error>): Effect.Effect<BotState, Error> =>
+      story(source);
+
   try {
     while (AppState.automateBotRunning) {
-      const loopIndex = state.loopIndex + 1;
-      state = { ...state, loopIndex };
+      const tickState: BotState = { ...state, loopIndex: state.loopIndex + 1 };
+      state = await Effect.runPromise(
+        pipe(
+          Effect.succeed(tickState),
+          whenSearching((current) =>
+            pipe(
+              Effect.succeed(current),
+              findMinableNode((src) =>
+                pipe(
+                  src,
+                  Effect.flatMap((current) =>
+                    pipe(
+                      captureAndDetectEffect("search"),
+                      Effect.map(({ greenBoxes, playerAnchorInCapture }) => ({
+                        current,
+                        greenNode: selectNearestGreenMotherlodeNode(greenBoxes, captureBounds, playerAnchorInCapture),
+                      })),
+                    ),
+                  ),
+                ),
+              ),
+              clickStartMining((src) =>
+                pipe(
+                  src,
+                  Effect.flatMap(({ current, greenNode }) => {
+                    if (!greenNode) {
+                      return pipe(
+                        warnEffect(`Automate Bot (${BOT_NAME}): #${current.loopIndex} No green node found, retrying…`),
+                        Effect.zipRight(sleepEffect(POLL_INTERVAL_MS)),
+                        Effect.as(current),
+                      );
+                    }
 
-      try {
-        if (state.phase === "searching") {
-          // --- SEARCHING: find a green node and click it ---
-          const { greenBoxes, playerAnchorInCapture } = captureAndDetect(captureBounds, "search");
-          const greenNode = selectNearestGreenMotherlodeNode(greenBoxes, captureBounds, playerAnchorInCapture);
+                    const nodeScreenX = captureBounds.x + greenNode.centerX;
+                    const nodeScreenY = captureBounds.y + greenNode.centerY;
 
-          if (!greenNode) {
-            warn(`Automate Bot (${BOT_NAME}): #${loopIndex} No green node found, retrying…`);
-            await sleepWithAbort(POLL_INTERVAL_MS);
-            continue;
-          }
+                    return pipe(
+                      hoverAndReadTileEffect(nodeScreenX, nodeScreenY),
+                      Effect.flatMap((activeTile) => {
+                        const nextState: BotState = {
+                          ...current,
+                          phase: "mining",
+                          activeTile,
+                          activeScreen: { x: nodeScreenX, y: nodeScreenY },
+                          missingActivePolls: 0,
+                        };
 
-          // Hover over the node to read its world tile coordinate.
-          const nodeScreenX = captureBounds.x + greenNode.centerX;
-          const nodeScreenY = captureBounds.y + greenNode.centerY;
-          const activeTile = await hoverAndReadTile(captureBounds, nodeScreenX, nodeScreenY);
+                        return pipe(
+                          activeTile
+                            ? logEffect(
+                                `Automate Bot (${BOT_NAME}): #${current.loopIndex} Nearest green node at tile (${activeTile.x},${activeTile.y},${activeTile.z}). Clicking.`,
+                              )
+                            : warnEffect(
+                                `Automate Bot (${BOT_NAME}): #${current.loopIndex} Could not read tile for nearest green node. Clicking anyway.`,
+                              ),
+                          Effect.zipRight(sleepEffect(PRE_CLICK_SETTLE_MS)),
+                          Effect.flatMap(() => (AppState.automateBotRunning ? clickNodeEffect() : Effect.void)),
+                          Effect.zipRight(sleepEffect(POST_CLICK_SETTLE_MS)),
+                          Effect.as(nextState),
+                        );
+                      }),
+                    );
+                  }),
+                ),
+              ),
+            ),
+          ),
+          whenMining((current) =>
+            pipe(
+              // MINING: keep monitoring the same target until it turns yellow, then go back to searching.
+              captureAndDetectEffect("mine", current.activeScreen),
+              Effect.flatMap(({ boxes, greenBoxes }) => {
+                if (!current.activeScreen) {
+                  return pipe(
+                    warnEffect(
+                      `Automate Bot (${BOT_NAME}): #${current.loopIndex} Missing active screen anchor, re-searching.`,
+                    ),
+                    Effect.zipRight(sleepEffect(POLL_INTERVAL_MS)),
+                    Effect.as(resetToSearchingState(current)),
+                  );
+                }
 
-          if (activeTile) {
-            log(
-              `Automate Bot (${BOT_NAME}): #${loopIndex} Nearest green node at tile (${activeTile.x},${activeTile.y},${activeTile.z}). Clicking.`,
+                const nearbyGreen = findNodeNearActiveScreen(greenBoxes, current.activeScreen, captureBounds);
+                if (nearbyGreen) {
+                  return pipe(
+                    logEffect(
+                      `Automate Bot (${BOT_NAME}): #${current.loopIndex} Waiting for active node to become yellow (player is currently mining).`,
+                    ),
+                    Effect.zipRight(sleepEffect(POLL_INTERVAL_MS)),
+                    Effect.as({ ...current, missingActivePolls: 0 }),
+                  );
+                }
+
+                const nearbyAny = findNodeNearActiveScreen(boxes, current.activeScreen, captureBounds);
+                if (nearbyAny && nearbyAny.color === "yellow") {
+                  return pipe(
+                    logEffect(
+                      `Automate Bot (${BOT_NAME}): #${current.loopIndex} Active node is yellow now. Searching for a new green node.`,
+                    ),
+                    Effect.zipRight(sleepEffect(POLL_INTERVAL_MS)),
+                    Effect.as(resetToSearchingState(current)),
+                  );
+                }
+
+                const missingActivePolls = current.missingActivePolls + 1;
+                if (missingActivePolls <= ACTIVE_NODE_MISSING_GRACE_POLLS) {
+                  return pipe(sleepEffect(POLL_INTERVAL_MS), Effect.as({ ...current, missingActivePolls }));
+                }
+
+                return pipe(
+                  logEffect(
+                    `Automate Bot (${BOT_NAME}): #${current.loopIndex} Active node not detected after ${missingActivePolls} polls. Re-searching.`,
+                  ),
+                  Effect.as(resetToSearchingState(current)),
+                );
+              }),
+            ),
+          ),
+          Effect.catchAll((error) => {
+            const typedError = toError(error);
+            return pipe(
+              Effect.sync(() => {
+                logger.error(`Automate Bot (${BOT_NAME}): #${tickState.loopIndex} tick error — ${typedError.message}`);
+              }),
+              Effect.zipRight(sleepEffect(POLL_INTERVAL_MS)),
+              Effect.as(tickState),
             );
-          } else {
-            warn(
-              `Automate Bot (${BOT_NAME}): #${loopIndex} Could not read tile for nearest green node. Clicking anyway.`,
-            );
-          }
-
-          // Give RuneLite one short frame to settle before clicking.
-          await sleepWithAbort(PRE_CLICK_SETTLE_MS);
-          if (!AppState.automateBotRunning) {
-            continue;
-          }
-
-          // Mouse is already over the node from the hover — just click.
-          clickNode();
-
-          state = {
-            ...state,
-            phase: "mining",
-            activeTile,
-            activeScreen: { x: nodeScreenX, y: nodeScreenY },
-            missingActivePolls: 0,
-          };
-
-          // Wait for player to walk to the node and start mining.
-          await sleepWithAbort(POST_CLICK_SETTLE_MS);
-        } else {
-          // --- MINING: only monitor around the originally clicked node position.
-          //     Do NOT move across other nodes during mining. ---
-          const { boxes, greenBoxes } = captureAndDetect(captureBounds, "mine", state.activeScreen);
-
-          if (!state.activeScreen) {
-            warn(`Automate Bot (${BOT_NAME}): #${loopIndex} Missing active screen anchor, re-searching.`);
-            state = {
-              ...state,
-              phase: "searching",
-              activeTile: null,
-              activeScreen: null,
-              missingActivePolls: 0,
-            };
-            await sleepWithAbort(POLL_INTERVAL_MS);
-            continue;
-          }
-
-          const nearbyGreen = findNodeNearActiveScreen(greenBoxes, state.activeScreen, captureBounds);
-          if (nearbyGreen) {
-            log(
-              `Automate Bot (${BOT_NAME}): #${loopIndex} Waiting for active node to become yellow (player is currently mining).`,
-            );
-            state = { ...state, missingActivePolls: 0 };
-            await sleepWithAbort(POLL_INTERVAL_MS);
-            continue;
-          }
-
-          const nearbyAny = findNodeNearActiveScreen(boxes, state.activeScreen, captureBounds);
-          if (nearbyAny && nearbyAny.color === "yellow") {
-            log(`Automate Bot (${BOT_NAME}): #${loopIndex} Active node is yellow now. Searching for a new green node.`);
-            state = {
-              ...state,
-              phase: "searching",
-              activeTile: null,
-              activeScreen: null,
-              missingActivePolls: 0,
-            };
-            await sleepWithAbort(POLL_INTERVAL_MS);
-            continue;
-          }
-
-          const missingActivePolls = state.missingActivePolls + 1;
-          if (missingActivePolls <= ACTIVE_NODE_MISSING_GRACE_POLLS) {
-            // Tolerate temporary detection drops (opacity transitions, animation frames).
-            state = { ...state, missingActivePolls };
-            await sleepWithAbort(POLL_INTERVAL_MS);
-            continue;
-          }
-
-          log(
-            `Automate Bot (${BOT_NAME}): #${loopIndex} Active node not detected after ${missingActivePolls} polls. Re-searching.`,
-          );
-          state = {
-            ...state,
-            phase: "searching",
-            activeTile: null,
-            activeScreen: null,
-            missingActivePolls: 0,
-          };
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        logger.error(`Automate Bot (${BOT_NAME}): #${loopIndex} tick error — ${message}`);
-        await sleepWithAbort(POLL_INTERVAL_MS);
-      }
+          }),
+        ),
+      );
     }
   } finally {
     isLoopRunning = false;
