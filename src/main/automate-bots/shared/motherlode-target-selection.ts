@@ -10,6 +10,28 @@ type AnchorPoint = {
   y: number;
 };
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function axisDistance(dx: number, dy: number): number {
+  return Math.max(Math.abs(dx), Math.abs(dy));
+}
+
+function distanceToBox(anchorX: number, anchorY: number, box: MotherlodeMineBox): { edge: number; center: number } {
+  const nearestX = clamp(anchorX, box.x, box.x + box.width - 1);
+  const nearestY = clamp(anchorY, box.y, box.y + box.height - 1);
+  const edgeDx = anchorX - nearestX;
+  const edgeDy = anchorY - nearestY;
+  const edgeDistance = axisDistance(edgeDx, edgeDy);
+
+  const centerDx = anchorX - box.centerX;
+  const centerDy = anchorY - box.centerY;
+  const centerDistance = axisDistance(centerDx, centerDy);
+
+  return { edge: edgeDistance, center: centerDistance };
+}
+
 export function selectNearestGreenMotherlodeNode(
   greenBoxes: MotherlodeMineBox[],
   captureSize: CaptureSize,
@@ -24,21 +46,32 @@ export function selectNearestGreenMotherlodeNode(
   const anchorY = playerAnchorInCapture?.y ?? captureSize.height / 2;
 
   let best: MotherlodeMineBox | null = null;
-  let bestDistance = Number.POSITIVE_INFINITY;
+  let bestEdgeDistance = Number.POSITIVE_INFINITY;
+  let bestCenterDistance = Number.POSITIVE_INFINITY;
 
   for (const box of greenBoxes) {
-    const dx = box.centerX - anchorX;
-    const dy = box.centerY - anchorY;
-    const distance = Math.sqrt(dx * dx + dy * dy);
+    const distance = distanceToBox(anchorX, anchorY, box);
 
-    if (distance < bestDistance) {
-      bestDistance = distance;
+    if (distance.edge < bestEdgeDistance) {
+      bestEdgeDistance = distance.edge;
+      bestCenterDistance = distance.center;
       best = box;
       continue;
     }
 
-    // Keep detector confidence as a tiebreaker when distances are effectively equal.
-    if (best && Math.abs(distance - bestDistance) < 0.5 && box.score > best.score) {
+    if (!best || Math.abs(distance.edge - bestEdgeDistance) >= 0.5) {
+      continue;
+    }
+
+    if (distance.center < bestCenterDistance) {
+      bestCenterDistance = distance.center;
+      best = box;
+      continue;
+    }
+
+    // Keep detector confidence as the final tiebreaker.
+    if (Math.abs(distance.center - bestCenterDistance) < 0.5 && box.score > best.score) {
+      bestCenterDistance = distance.center;
       best = box;
     }
   }

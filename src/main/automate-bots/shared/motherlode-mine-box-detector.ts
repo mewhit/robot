@@ -52,6 +52,17 @@ const GREEN_RING_MIN_ASPECT_RATIO = 0.85;
 const GREEN_RING_MAX_ASPECT_RATIO = 1.2;
 const GREEN_RING_MIN_AVG_GREEN = 150;
 const GREEN_RING_MIN_GREEN_DOMINANCE = 88;
+const MIN_AVG_YELLOW_RED = 165;
+const MIN_YELLOW_RED_DOMINANCE = 60;
+const YELLOW_RING_MIN_PIXEL_COUNT = 130;
+const YELLOW_RING_MIN_SIDE_PX = 22;
+const YELLOW_RING_MAX_SIDE_PX = 44;
+const YELLOW_RING_MIN_FILL_RATIO = 0.1;
+const YELLOW_RING_MAX_FILL_RATIO = 0.62;
+const YELLOW_RING_MIN_ASPECT_RATIO = 0.7;
+const YELLOW_RING_MAX_ASPECT_RATIO = 1.45;
+const YELLOW_RING_MIN_AVG_RED = 160;
+const YELLOW_RING_MIN_RED_DOMINANCE = 60;
 const COMPONENT_MERGE_GAP_PX = 5;
 const COMPONENT_MIN_OVERLAP_RATIO = 0.8;
 const MAX_MERGED_COMPONENT_WIDTH_PX = MAX_BOX_WIDTH_PX + 8;
@@ -62,20 +73,7 @@ function isMotherlodeGreenPixel(r: number, g: number, b: number): boolean {
 }
 
 function isMotherlodeYellowPixel(r: number, g: number, b: number): boolean {
-  // Yellow node at (255, 180, 0)
-  // Allow some tolerance around the exact color
-  const redTolerance = 20;
-  const greenTolerance = 20;
-  const blueTolerance = 30;
-
-  return (
-    r >= 255 - redTolerance &&
-    g >= 180 - greenTolerance &&
-    g <= 180 + greenTolerance &&
-    b <= blueTolerance &&
-    r > g &&
-    r > b
-  );
+  return r >= 155 && g >= 105 && b <= 105 && r + g >= 285 && r - b >= 85 && g - b >= 35;
 }
 
 function drawRectangleOnPng(
@@ -380,32 +378,34 @@ function toMotherlodeMineBox(
       return null;
     }
   } else if (color === "yellow") {
-    if (candidate.pixelCount < MIN_PIXEL_COUNT) {
-      return null;
-    }
-
-    if (width < MIN_BOX_WIDTH_PX || height < MIN_BOX_HEIGHT_PX) {
-      return null;
-    }
-
-    if (width > MAX_BOX_WIDTH_PX || height > MAX_BOX_HEIGHT_PX) {
-      return null;
-    }
-
-    if (fillRatio < MIN_FILL_RATIO || fillRatio > MAX_FILL_RATIO) {
-      return null;
-    }
-
-    if (aspectRatio < MIN_ASPECT_RATIO || aspectRatio > MAX_ASPECT_RATIO) {
-      return null;
-    }
-
-    // For yellow nodes, check that red is dominant
-    if (avgRed < 200) {
-      return null;
-    }
     const redDominance = avgRed - (avgGreen + avgBlue) / 2;
-    if (redDominance < 60) {
+
+    const denseYellowGeometryOk =
+      candidate.pixelCount >= MIN_PIXEL_COUNT &&
+      width >= MIN_BOX_WIDTH_PX &&
+      height >= MIN_BOX_HEIGHT_PX &&
+      width <= MAX_BOX_WIDTH_PX &&
+      height <= MAX_BOX_HEIGHT_PX &&
+      fillRatio >= MIN_FILL_RATIO &&
+      fillRatio <= MAX_FILL_RATIO &&
+      aspectRatio >= MIN_ASPECT_RATIO &&
+      aspectRatio <= MAX_ASPECT_RATIO;
+
+    const ringYellowGeometryOk =
+      candidate.pixelCount >= YELLOW_RING_MIN_PIXEL_COUNT &&
+      width >= YELLOW_RING_MIN_SIDE_PX &&
+      height >= YELLOW_RING_MIN_SIDE_PX &&
+      width <= YELLOW_RING_MAX_SIDE_PX &&
+      height <= YELLOW_RING_MAX_SIDE_PX &&
+      fillRatio >= YELLOW_RING_MIN_FILL_RATIO &&
+      fillRatio <= YELLOW_RING_MAX_FILL_RATIO &&
+      aspectRatio >= YELLOW_RING_MIN_ASPECT_RATIO &&
+      aspectRatio <= YELLOW_RING_MAX_ASPECT_RATIO;
+
+    const denseYellowSignalOk = avgRed >= MIN_AVG_YELLOW_RED && redDominance >= MIN_YELLOW_RED_DOMINANCE;
+    const ringYellowSignalOk = avgRed >= YELLOW_RING_MIN_AVG_RED && redDominance >= YELLOW_RING_MIN_RED_DOMINANCE;
+
+    if (!(denseYellowGeometryOk && denseYellowSignalOk) && !(ringYellowGeometryOk && ringYellowSignalOk)) {
       return null;
     }
   }
@@ -471,8 +471,8 @@ export function detectMotherlodeMineBoxesInScreenshot(bitmap: RobotBitmap): Moth
 
   // Detect yellow nodes
   const yellowMask = buildMotherlodeYellowMask(bitmap);
-  const yellowComponents = collectConnectedComponents(yellowMask, bitmap).filter(
-    (candidate) => candidate.pixelCount >= 8,
+  const yellowComponents = mergeNearbyComponents(
+    collectConnectedComponents(yellowMask, bitmap).filter((candidate) => candidate.pixelCount >= 8),
   );
   const yellowBoxes = yellowComponents
     .map((candidate) => toMotherlodeMineBox(candidate, bitmap.width, bitmap.height, "yellow"))
@@ -501,7 +501,9 @@ export function detectBestGreenMotherlodeMineBoxInScreenshot(bitmap: RobotBitmap
 
 export function detectBestYellowMotherlodeMineBoxInScreenshot(bitmap: RobotBitmap): MotherlodeMineBox | null {
   const mask = buildMotherlodeYellowMask(bitmap);
-  const components = collectConnectedComponents(mask, bitmap).filter((candidate) => candidate.pixelCount >= 8);
+  const components = mergeNearbyComponents(
+    collectConnectedComponents(mask, bitmap).filter((candidate) => candidate.pixelCount >= 8),
+  );
   const boxes = components
     .map((candidate) => toMotherlodeMineBox(candidate, bitmap.width, bitmap.height, "yellow"))
     .filter((box): box is MotherlodeMineBox => box !== null);

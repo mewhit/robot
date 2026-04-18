@@ -6,7 +6,7 @@ import { CHANNELS } from "../../ipcChannels";
 import * as logger from "../../logger";
 import { getRuneLite } from "../../runeLiteWindow";
 import { COMBAT_AUTO_BOT_ID } from "../definitions";
-import { NpcBox, detectBestNpcBoxInScreenshot } from "../shared/npc-box-detector";
+import { CyanBox, detectBestCyanBoxInScreenshot } from "../shared/cyan-box-detector";
 import { saveBitmap } from "../shared/save-bitmap";
 import path from "path";
 
@@ -128,22 +128,22 @@ function nextDebugIndex(): number {
   return debugCaptureIndex;
 }
 
-function detectNpcBoxInScene(sceneBounds: Bounds): NpcBox | null {
+function detectCyanBoxInScene(sceneBounds: Bounds): CyanBox | null {
   const sceneBitmap = screen.capture(sceneBounds.x, sceneBounds.y, sceneBounds.width, sceneBounds.height);
   if (DEBUG_MODE) {
     const idx = nextDebugIndex();
-    saveBitmap(sceneBitmap, path.join(DEBUG_DIR, `${idx}-npc-scene.png`));
+    saveBitmap(sceneBitmap, path.join(DEBUG_DIR, `${idx}-cyan-scene.png`));
   }
-  return detectBestNpcBoxInScreenshot(sceneBitmap);
+  return detectBestCyanBoxInScreenshot(sceneBitmap);
 }
 
-function getNpcClickPoint(sceneBounds: Bounds, npcBox: NpcBox): { x: number; y: number } {
-  const jitterX = Math.min(4, Math.max(1, Math.floor(npcBox.width * 0.08)));
-  const jitterY = Math.min(6, Math.max(1, Math.floor(npcBox.height * 0.08)));
+function getCyanClickPoint(sceneBounds: Bounds, cyanBox: CyanBox): { x: number; y: number } {
+  const jitterX = Math.min(4, Math.max(1, Math.floor(cyanBox.width * 0.08)));
+  const jitterY = Math.min(6, Math.max(1, Math.floor(cyanBox.height * 0.08)));
 
   return {
-    x: sceneBounds.x + npcBox.centerX + randomIntInclusive(-jitterX, jitterX),
-    y: sceneBounds.y + npcBox.centerY + randomIntInclusive(-jitterY, jitterY),
+    x: sceneBounds.x + cyanBox.centerX + randomIntInclusive(-jitterX, jitterX),
+    y: sceneBounds.y + cyanBox.centerY + randomIntInclusive(-jitterY, jitterY),
   };
 }
 
@@ -206,10 +206,12 @@ async function runLoop(window: Window): Promise<void> {
         }
 
         const sceneBounds = getSceneBounds(bounds);
-        const npcBox = detectNpcBoxInScene(sceneBounds);
-        if (!npcBox) {
+        const cyanBox = detectCyanBoxInScene(sceneBounds);
+        if (!cyanBox) {
           if (state.hadTargetLastTick) {
-            logWithDelta(`Automate Bot (${BOT_NAME}): loop #${loopIndex} - target lost, waiting for the cyan outline to return.`);
+            logWithDelta(
+              `Automate Bot (${BOT_NAME}): loop #${loopIndex} - target lost, waiting for the cyan outline to return.`,
+            );
           }
 
           state = {
@@ -222,7 +224,7 @@ async function runLoop(window: Window): Promise<void> {
 
         if (!state.hadTargetLastTick) {
           logWithDelta(
-            `Automate Bot (${BOT_NAME}): loop #${loopIndex} - target acquired at scene (${npcBox.centerX}, ${npcBox.centerY}) size=${npcBox.width}x${npcBox.height}.`,
+            `Automate Bot (${BOT_NAME}): loop #${loopIndex} - target acquired at scene (${cyanBox.centerX}, ${cyanBox.centerY}) size=${cyanBox.width}x${cyanBox.height}.`,
           );
         }
 
@@ -243,8 +245,10 @@ async function runLoop(window: Window): Promise<void> {
           break;
         }
 
-        const clickPoint = getNpcClickPoint(sceneBounds, npcBox);
-        logWithDelta(`Automate Bot (${BOT_NAME}): loop #${loopIndex} - left-clicking target at (${clickPoint.x}, ${clickPoint.y}).`);
+        const clickPoint = getCyanClickPoint(sceneBounds, cyanBox);
+        logWithDelta(
+          `Automate Bot (${BOT_NAME}): loop #${loopIndex} - left-clicking target at (${clickPoint.x}, ${clickPoint.y}).`,
+        );
         moveMouse(clickPoint.x, clickPoint.y);
         mouseClick("left", false);
 

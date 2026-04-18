@@ -10,10 +10,12 @@
     "test:screenshot:coordinate": "ts-node src/main/automate-bots/shared/coordinate-box-detector.spec.ts test-images/coordinate-box/tile-*.png",
     "test:screenshot:agility": "ts-node src/main/automate-bots/shared/agility-box-detector.spec.ts test-images/agility-box/*.png",
     "test:screenshot:tile-location": "ts-node src/main/automate-bots/shared/tile-location-detection.spec.ts test-images/tile-location-box/*.png",
-    "test:screenshot:npc": "ts-node src/main/automate-bots/shared/npc-box-detector.spec.ts test-images/npc-box/*.png",
+    "test:screenshot:cyan": "ts-node src/main/automate-bots/shared/cyan-box-detector.spec.ts test-images/npc-box/*.png",
     "test:screenshot:attack": "ts-node src/main/automate-bots/shared/attack-box-detector.spec.ts test-images/attack-box/*.png",
     "test:screenshot:motherlode-mine": "ts-node src/main/automate-bots/shared/motherlode-mine-box-detector.spec.ts test-images/motherlode-mine-box/*.png",
+    "test:screenshot:motherlode-deposit": "ts-node src/main/automate-bots/shared/motherlode-deposit-box-detector.spec.ts test-images/motherlode-mine-upstair-deposit/*.png",
     "test:screenshot:motherlode-bag-full": "ts-node src/main/automate-bots/shared/motherlode-bag-full-box-detector.spec.ts test-images/motherlode-bag-full-box/*.png",
+    "test:screenshot:motherlode-obstacle-red": "ts-node src/main/automate-bots/shared/motherlode-obstacle-red-detector.spec.ts test-images/motherload-obstacle/*.png",
     "test:screenshot:motherlode-targeting": "ts-node src/main/automate-bots/shared/motherlode-target-selection.spec.ts image-test/motherlode-nearest-anchor.png",
     "test:screenshot:player": "ts-node src/main/automate-bots/shared/player-box-detector.spec.ts test-images/player/*.png"
   },

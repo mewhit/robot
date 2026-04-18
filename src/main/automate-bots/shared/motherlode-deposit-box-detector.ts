@@ -3,7 +3,7 @@ import path from "path";
 import { PNG } from "pngjs";
 import { RobotBitmap } from "./ocr-engine";
 
-export type NpcBox = {
+export type MotherlodeDepositBox = {
   x: number;
   y: number;
   width: number;
@@ -13,6 +13,7 @@ export type NpcBox = {
   pixelCount: number;
   fillRatio: number;
   aspectRatio: number;
+  profile: "compact" | "flat";
   score: number;
 };
 
@@ -24,22 +25,58 @@ type BoxCandidate = {
   pixelCount: number;
 };
 
-const MIN_PIXEL_COUNT = 150;
-const MIN_BOX_WIDTH_PX = 16;
-const MIN_BOX_HEIGHT_PX = 24;
-// Hollow UI shapes can merge with a nearby NPC ring and create an oversized false target.
-// A slightly denser minimum still accepts real NPC outlines in the screenshot set.
-const MIN_FILL_RATIO = 0.18;
-const MAX_FILL_RATIO = 0.82;
-// NPC indicators vary by model. Humanoids often look tall, while spiders and similar
-// mobs produce near-square cyan rings, so the detector cannot require a portrait shape.
-const MIN_ASPECT_RATIO = 0.7;
-const MAX_ASPECT_RATIO = 5.5;
-const MERGE_GAP_X_PX = 4;
-const MERGE_GAP_Y_PX = 4;
+type SearchBounds = {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+};
 
-function isNpcCyanPixel(r: number, g: number, b: number): boolean {
+const SEARCH_LEFT_RATIO = 0.02;
+const SEARCH_RIGHT_RATIO = 0.82;
+const SEARCH_TOP_RATIO = 0.04;
+const SEARCH_BOTTOM_RATIO = 0.82;
+
+const COMPACT_MIN_PIXEL_COUNT = 120;
+const COMPACT_MIN_WIDTH_PX = 16;
+const COMPACT_MIN_HEIGHT_PX = 16;
+const COMPACT_MAX_WIDTH_PX = 90;
+const COMPACT_MAX_HEIGHT_PX = 90;
+const COMPACT_MIN_FILL_RATIO = 0.1;
+const COMPACT_MAX_FILL_RATIO = 0.88;
+const COMPACT_MIN_ASPECT_RATIO = 0.5;
+const COMPACT_MAX_ASPECT_RATIO = 3.2;
+
+const FLAT_MIN_PIXEL_COUNT = 180;
+const FLAT_MIN_WIDTH_PX = 44;
+const FLAT_MIN_HEIGHT_PX = 10;
+const FLAT_MAX_WIDTH_PX = 170;
+const FLAT_MAX_HEIGHT_PX = 70;
+const FLAT_MIN_FILL_RATIO = 0.08;
+const FLAT_MAX_FILL_RATIO = 0.82;
+const FLAT_MIN_ASPECT_RATIO = 0.1;
+const FLAT_MAX_ASPECT_RATIO = 0.58;
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function isMotherlodeDepositCyanPixel(r: number, g: number, b: number): boolean {
   return r <= 80 && g >= 145 && b >= 145 && g - r >= 70 && b - r >= 70 && Math.abs(g - b) <= 90;
+}
+
+function resolveSearchBounds(bitmap: RobotBitmap): SearchBounds {
+  const minX = clamp(Math.round(bitmap.width * SEARCH_LEFT_RATIO), 0, bitmap.width - 1);
+  const maxX = clamp(Math.round(bitmap.width * SEARCH_RIGHT_RATIO), 0, bitmap.width - 1);
+  const minY = clamp(Math.round(bitmap.height * SEARCH_TOP_RATIO), 0, bitmap.height - 1);
+  const maxY = clamp(Math.round(bitmap.height * SEARCH_BOTTOM_RATIO), 0, bitmap.height - 1);
+
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+  };
 }
 
 function drawRectangleOnPng(
@@ -94,16 +131,16 @@ function drawRectangleOnPng(
   }
 }
 
-function buildNpcMask(bitmap: RobotBitmap): Uint8Array {
+function buildDepositMask(bitmap: RobotBitmap, bounds: SearchBounds): Uint8Array {
   const mask = new Uint8Array(bitmap.width * bitmap.height);
 
-  for (let y = 0; y < bitmap.height; y += 1) {
-    for (let x = 0; x < bitmap.width; x += 1) {
+  for (let y = bounds.minY; y <= bounds.maxY; y += 1) {
+    for (let x = bounds.minX; x <= bounds.maxX; x += 1) {
       const offset = y * bitmap.byteWidth + x * bitmap.bytesPerPixel;
       const b = bitmap.image[offset];
       const g = bitmap.image[offset + 1];
       const r = bitmap.image[offset + 2];
-      if (!isNpcCyanPixel(r, g, b)) {
+      if (!isMotherlodeDepositCyanPixel(r, g, b)) {
         continue;
       }
 
@@ -182,76 +219,56 @@ function collectConnectedComponents(mask: Uint8Array, width: number, height: num
   return components;
 }
 
-function mergeNearbyComponents(components: BoxCandidate[], gapX: number, gapY: number): BoxCandidate[] {
-  const pending = components.slice();
-  const merged: BoxCandidate[] = [];
-
-  while (pending.length > 0) {
-    let current = pending.pop();
-    if (!current) {
-      break;
-    }
-
-    let mergedOne = true;
-    while (mergedOne) {
-      mergedOne = false;
-
-      for (let index = pending.length - 1; index >= 0; index -= 1) {
-        const next = pending[index];
-        const separated =
-          current.maxX + gapX < next.minX ||
-          next.maxX + gapX < current.minX ||
-          current.maxY + gapY < next.minY ||
-          next.maxY + gapY < current.minY;
-
-        if (separated) {
-          continue;
-        }
-
-        pending.splice(index, 1);
-        current = {
-          minX: Math.min(current.minX, next.minX),
-          minY: Math.min(current.minY, next.minY),
-          maxX: Math.max(current.maxX, next.maxX),
-          maxY: Math.max(current.maxY, next.maxY),
-          pixelCount: current.pixelCount + next.pixelCount,
-        };
-        mergedOne = true;
-      }
-    }
-
-    merged.push(current);
-  }
-
-  return merged;
-}
-
-function toNpcBox(candidate: BoxCandidate): NpcBox | null {
+function toDepositBox(candidate: BoxCandidate, sourceWidth: number, sourceHeight: number): MotherlodeDepositBox | null {
   const width = candidate.maxX - candidate.minX + 1;
   const height = candidate.maxY - candidate.minY + 1;
   const fillRatio = candidate.pixelCount / (width * height);
   const aspectRatio = height / width;
 
-  if (candidate.pixelCount < MIN_PIXEL_COUNT) {
+  const compactGeometryOk =
+    candidate.pixelCount >= COMPACT_MIN_PIXEL_COUNT &&
+    width >= COMPACT_MIN_WIDTH_PX &&
+    height >= COMPACT_MIN_HEIGHT_PX &&
+    width <= COMPACT_MAX_WIDTH_PX &&
+    height <= COMPACT_MAX_HEIGHT_PX &&
+    fillRatio >= COMPACT_MIN_FILL_RATIO &&
+    fillRatio <= COMPACT_MAX_FILL_RATIO &&
+    aspectRatio >= COMPACT_MIN_ASPECT_RATIO &&
+    aspectRatio <= COMPACT_MAX_ASPECT_RATIO;
+
+  const flatGeometryOk =
+    candidate.pixelCount >= FLAT_MIN_PIXEL_COUNT &&
+    width >= FLAT_MIN_WIDTH_PX &&
+    height >= FLAT_MIN_HEIGHT_PX &&
+    width <= FLAT_MAX_WIDTH_PX &&
+    height <= FLAT_MAX_HEIGHT_PX &&
+    fillRatio >= FLAT_MIN_FILL_RATIO &&
+    fillRatio <= FLAT_MAX_FILL_RATIO &&
+    aspectRatio >= FLAT_MIN_ASPECT_RATIO &&
+    aspectRatio <= FLAT_MAX_ASPECT_RATIO;
+
+  if (!compactGeometryOk && !flatGeometryOk) {
     return null;
   }
 
-  if (width < MIN_BOX_WIDTH_PX || height < MIN_BOX_HEIGHT_PX) {
-    return null;
-  }
-
-  if (fillRatio < MIN_FILL_RATIO || fillRatio > MAX_FILL_RATIO) {
-    return null;
-  }
-
-  if (aspectRatio < MIN_ASPECT_RATIO || aspectRatio > MAX_ASPECT_RATIO) {
-    return null;
-  }
-
+  const profile: "compact" | "flat" = flatGeometryOk && !compactGeometryOk ? "flat" : "compact";
   const centerX = Math.round(candidate.minX + width / 2);
   const centerY = Math.round(candidate.minY + height / 2);
+
+  const dx = centerX - sourceWidth / 2;
+  const dy = centerY - sourceHeight / 2;
+  const distanceFromCenter = Math.sqrt(dx * dx + dy * dy);
+  const maxDistance = Math.sqrt((sourceWidth / 2) ** 2 + (sourceHeight / 2) ** 2);
+  const normalizedDistance = maxDistance > 0 ? distanceFromCenter / maxDistance : 0;
+
+  const profileBias = profile === "flat" ? 120 : 80;
   const score =
-    candidate.pixelCount + height * 6 + width * 2 + fillRatio * 180 - Math.abs(aspectRatio - 2.1) * 35;
+    candidate.pixelCount +
+    width * 2.4 +
+    height * 1.8 +
+    fillRatio * 260 +
+    profileBias -
+    normalizedDistance * 120;
 
   return {
     x: candidate.minX,
@@ -263,11 +280,12 @@ function toNpcBox(candidate: BoxCandidate): NpcBox | null {
     pixelCount: candidate.pixelCount,
     fillRatio,
     aspectRatio,
+    profile,
     score,
   };
 }
 
-function sortBoxes(boxes: NpcBox[]): NpcBox[] {
+function sortBoxes(boxes: MotherlodeDepositBox[]): MotherlodeDepositBox[] {
   return boxes.sort((a, b) => {
     if (b.score !== a.score) {
       return b.score - a.score;
@@ -277,26 +295,27 @@ function sortBoxes(boxes: NpcBox[]): NpcBox[] {
       return b.pixelCount - a.pixelCount;
     }
 
-    if (b.height !== a.height) {
-      return b.height - a.height;
-    }
-
     return a.x - b.x;
   });
 }
 
-export function detectNpcBoxesInScreenshot(bitmap: RobotBitmap): NpcBox[] {
-  const mask = buildNpcMask(bitmap);
-  const components = collectConnectedComponents(mask, bitmap.width, bitmap.height).filter((component) => component.pixelCount >= 8);
-  const mergedComponents = mergeNearbyComponents(components, MERGE_GAP_X_PX, MERGE_GAP_Y_PX);
-  return sortBoxes(mergedComponents.map(toNpcBox).filter((box): box is NpcBox => box !== null));
+export function detectMotherlodeDepositBoxesInScreenshot(bitmap: RobotBitmap): MotherlodeDepositBox[] {
+  const bounds = resolveSearchBounds(bitmap);
+  const mask = buildDepositMask(bitmap, bounds);
+  const components = collectConnectedComponents(mask, bitmap.width, bitmap.height).filter((c) => c.pixelCount >= 8);
+  const boxes = components.map((candidate) => toDepositBox(candidate, bitmap.width, bitmap.height)).filter((box): box is MotherlodeDepositBox => box !== null);
+  return sortBoxes(boxes);
 }
 
-export function detectBestNpcBoxInScreenshot(bitmap: RobotBitmap): NpcBox | null {
-  return detectNpcBoxesInScreenshot(bitmap)[0] ?? null;
+export function detectBestMotherlodeDepositBoxInScreenshot(bitmap: RobotBitmap): MotherlodeDepositBox | null {
+  return detectMotherlodeDepositBoxesInScreenshot(bitmap)[0] ?? null;
 }
 
-export function saveBitmapWithNpcBoxes(bitmap: RobotBitmap, boxes: NpcBox[], filename: string): void {
+export function saveBitmapWithMotherlodeDepositBoxes(
+  bitmap: RobotBitmap,
+  boxes: MotherlodeDepositBox[],
+  filename: string,
+): void {
   const png = new PNG({
     width: bitmap.width,
     height: bitmap.height,

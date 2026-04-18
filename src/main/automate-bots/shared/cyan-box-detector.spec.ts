@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { PNG } from "pngjs";
-import { detectNpcBoxesInScreenshot, saveBitmapWithNpcBoxes } from "./npc-box-detector";
+import { detectCyanBoxesInScreenshot, saveBitmapWithCyanBoxes } from "./cyan-box-detector";
 
 type RobotBitmap = {
   width: number;
@@ -101,22 +101,22 @@ async function testDetection(screenshotPath: string): Promise<boolean> {
     return false;
   }
 
-  const boxes = detectNpcBoxesInScreenshot(bitmap);
+  const boxes = detectCyanBoxesInScreenshot(bitmap);
   if (boxes.length === 0) {
-    console.log("No NPC boxes detected.");
+    console.log("No cyan boxes detected.");
     return false;
   }
 
   for (const [index, box] of boxes.entries()) {
     console.log(
-      `#${index + 1} npc-box at (${box.x}, ${box.y}) ${box.width}x${box.height} center=(${box.centerX}, ${box.centerY}) pixels=${box.pixelCount} fill=${box.fillRatio.toFixed(3)} aspect=${box.aspectRatio.toFixed(2)}`,
+      `#${index + 1} cyan-box at (${box.x}, ${box.y}) ${box.width}x${box.height} center=(${box.centerX}, ${box.centerY}) pixels=${box.pixelCount} fill=${box.fillRatio.toFixed(3)} aspect=${box.aspectRatio.toFixed(2)}`,
     );
   }
 
   const debugOutputDir = "./ocr-debug";
   const basename = path.basename(screenshotPath, path.extname(screenshotPath));
-  const debugPath = path.join(debugOutputDir, `${basename}-npc-boxes.png`);
-  saveBitmapWithNpcBoxes(bitmap, boxes, debugPath);
+  const debugPath = path.join(debugOutputDir, `${basename}-cyan-boxes.png`);
+  saveBitmapWithCyanBoxes(bitmap, boxes, debugPath);
   console.log(`Debug image: ${debugPath}`);
 
   return true;
@@ -127,7 +127,7 @@ async function main(): Promise<void> {
   const screenshots = args.length > 0 ? args : ["test-images/npc-box/*.png"];
   const expandedScreenshots = expandScreenshotArgs(screenshots);
 
-  console.log(`\nNPC Box Detector Test Suite`);
+  console.log(`\nCyan Box Detector Test Suite`);
   console.log(`Testing ${expandedScreenshots.length} screenshot(s)...`);
 
   let successCount = 0;
