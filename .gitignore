@@ -28,3 +28,5 @@ clicks.txt
 
 # Local debug artifacts
 ocr-debug/
+orc-debug/
+test-image-debug/
