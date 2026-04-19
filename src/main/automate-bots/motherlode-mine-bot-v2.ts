@@ -58,12 +58,19 @@ const BANK_SOUTH_CLICK_LOCK_TICKS = 1;
 const BANK_YELLOW_TILE_CLICK_LOCK_TICKS = 2;
 const BANK_SOUTH_CLICK_OFFSET_PX = 120;
 const BANK_SOUTH_CLICK_RANDOM_RADIUS_PX = 14;
+const BANK_EXPECTED_LADDER_DOWN_X = 3755;
+const BANK_EXPECTED_LADDER_DOWN_Y = 5672;
+const BANK_SOUTH_CLICKS_BEFORE_YELLOW_CHECK = 6;
+const BANK_LADDER_RECHECK_MAX = 2;
+const BANK_LADDER_RECHECK_WAIT_MIN_TICKS = 2;
+const BANK_LADDER_RECHECK_WAIT_MAX_TICKS = 4;
 const BANK_MOVE_MARGIN_PX = 8;
 const DEPOSIT_NEAR_STABLE_TICKS = 2;
 const DEPOSIT_STUCK_RETRY_TICKS = 3;
 const DEPOSIT_PROGRESS_EPSILON_PX = 2;
 const ACTIVE_NODE_MISSING_GRACE_TICKS = 2;
-const ACTIVE_NODE_MAX_WAIT_TICKS = 80;
+const ACTIVE_NODE_MAX_WAIT_TICKS_MIN = 80;
+const ACTIVE_NODE_MAX_WAIT_TICKS_MAX = 100;
 const ACTIVE_NODE_MATCH_RADIUS_PX = 34;
 const BANK_ORANGE_TARGET_R = 255;
 const BANK_ORANGE_TARGET_G = 125;
@@ -105,6 +112,7 @@ type BotState = {
   activeScreen: { x: number; y: number } | null;
   missingActiveTicks: number;
   miningWaitTicks: number;
+  activeNodeMaxWaitTicks: number;
   bagFullState: MotherlodeBagFullState | null;
   depositTriggerStableTicks: number;
   depositNearStableTicks: number;
@@ -113,6 +121,8 @@ type BotState = {
   depositLastDistancePx: number | null;
   actionLockTicks: number;
   bankingStep: BankingStep;
+  bankSouthClicks: number;
+  bankLadderRecheckCount: number;
   loopIndex: number;
 };
 
@@ -123,6 +133,7 @@ type MineCaptureResult = {
   obstacleBox: MotherlodeObstacleRedBox | null;
   playerBoxInCapture: PlayerBox | null;
   playerAnchorInCapture: { x: number; y: number } | null;
+  playerTileFromOverlay: TileCoord | null;
   bagFullState: MotherlodeBagFullState;
 };
 
@@ -148,6 +159,7 @@ let isLoopRunning = false;
 let startedAtMs: number | null = null;
 let debugCaptureIndex = 0;
 let lastClickPoint: { x: number; y: number } | null = null;
+let currentWindowsScalePercent = 100;
 
 function formatElapsedSinceStart(): string {
   if (startedAtMs === null) return "+0ms";
@@ -246,6 +258,10 @@ function parseTileCoord(matchedLine: string): TileCoord | null {
   const z = Number(parts[2]);
   if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
   return { x, y, z };
+}
+
+function isAtBankLadderDownTile(tile: TileCoord | null): boolean {
+  return tile?.x === BANK_EXPECTED_LADDER_DOWN_X && tile?.y === BANK_EXPECTED_LADDER_DOWN_Y;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -468,13 +484,7 @@ function toDepositInteractionScreenPoint(
   depositBox: MotherlodeDepositBox,
   captureBounds: ScreenCaptureBounds,
 ): { x: number; y: number } {
-  return pickDistinctScreenPointInBox(
-    depositBox.x,
-    depositBox.y,
-    depositBox.width,
-    depositBox.height,
-    captureBounds,
-  );
+  return pickDistinctScreenPointInBox(depositBox.x, depositBox.y, depositBox.width, depositBox.height, captureBounds);
 }
 
 function toObstacleInteractionScreenPoint(
@@ -611,11 +621,14 @@ function resetToSearching(current: BotState): BotState {
     activeScreen: null,
     missingActiveTicks: 0,
     miningWaitTicks: 0,
+    activeNodeMaxWaitTicks: randomIntInclusive(ACTIVE_NODE_MAX_WAIT_TICKS_MIN, ACTIVE_NODE_MAX_WAIT_TICKS_MAX),
     depositNearStableTicks: 0,
     depositRetryTicks: 0,
     depositInFlight: false,
     depositLastDistancePx: null,
     bankingStep: "find-orange",
+    bankSouthClicks: 0,
+    bankLadderRecheckCount: 0,
   };
 }
 
@@ -627,11 +640,14 @@ function resetToDepositing(current: BotState): BotState {
     activeScreen: null,
     missingActiveTicks: 0,
     miningWaitTicks: 0,
+    activeNodeMaxWaitTicks: randomIntInclusive(ACTIVE_NODE_MAX_WAIT_TICKS_MIN, ACTIVE_NODE_MAX_WAIT_TICKS_MAX),
     depositNearStableTicks: 0,
     depositRetryTicks: 0,
     depositInFlight: false,
     depositLastDistancePx: null,
     bankingStep: "find-orange",
+    bankSouthClicks: 0,
+    bankLadderRecheckCount: 0,
   };
 }
 
@@ -643,11 +659,14 @@ function resetToBanking(current: BotState): BotState {
     activeScreen: null,
     missingActiveTicks: 0,
     miningWaitTicks: 0,
+    activeNodeMaxWaitTicks: randomIntInclusive(ACTIVE_NODE_MAX_WAIT_TICKS_MIN, ACTIVE_NODE_MAX_WAIT_TICKS_MAX),
     depositNearStableTicks: 0,
     depositRetryTicks: 0,
     depositInFlight: false,
     depositLastDistancePx: null,
     bankingStep: "find-orange",
+    bankSouthClicks: 0,
+    bankLadderRecheckCount: 0,
   };
 }
 
@@ -743,6 +762,8 @@ function captureMineState(
   const bagFullDetection = detectMotherlodeBagFullBoxInScreenshot(bitmap);
   const playerBox = detectBestPlayerBoxInScreenshot(bitmap);
   const playerAnchorInCapture = playerBox ? { x: playerBox.centerX, y: playerBox.centerY } : null;
+  const overlayBox = detectOverlayBoxInScreenshot(bitmap, currentWindowsScalePercent);
+  const playerTileFromOverlay = overlayBox ? parseTileCoord(overlayBox.matchedLine) : null;
 
   debugCaptureIndex += 1;
   const filename = path.join(DEBUG_DIR, `${debugCaptureIndex}-motherlode-v2-${label}.png`);
@@ -762,6 +783,7 @@ function captureMineState(
     obstacleBox,
     playerBoxInCapture: playerBox,
     playerAnchorInCapture,
+    playerTileFromOverlay,
     bagFullState: bagFullDetection.state,
   };
 }
@@ -816,7 +838,7 @@ async function hoverAndReadTile(
     }
   }
 
-  const overlayBox = detectOverlayBoxInScreenshot(bitmap);
+  const overlayBox = detectOverlayBoxInScreenshot(bitmap, currentWindowsScalePercent);
   if (!overlayBox) {
     return {
       tile: null,
@@ -900,12 +922,35 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
       return resetToSearching(current);
     }
 
-    if (!capture.depositBox) {
-      warn(`Automate Bot (${BOT_NAME}): #${current.loopIndex} Deposit phase active but cyan deposit not found.`);
+    if (current.actionLockTicks > 0) {
       return current;
     }
 
-    if (current.actionLockTicks > 0) {
+    if (
+      capture.obstacleBox &&
+      (shouldClearRedObstacle(capture.playerBoxInCapture, capture.obstacleBox) ||
+        (current.depositInFlight && current.depositRetryTicks >= 1))
+    ) {
+      const obstaclePoint = toObstacleInteractionScreenPoint(capture.obstacleBox, captureBounds);
+      const clearReason = shouldClearRedObstacle(capture.playerBoxInCapture, capture.obstacleBox)
+        ? "collision"
+        : `stalled-${current.depositRetryTicks}`;
+      warn(
+        `Automate Bot (${BOT_NAME}): #${current.loopIndex} Deposit red obstacle at (${obstaclePoint.x},${obstaclePoint.y}) detected (${clearReason}). Clearing immediately.`,
+      );
+      clickScreenPoint(obstaclePoint.x, obstaclePoint.y);
+      moveMouseAwayFromClickedNode(obstaclePoint.x, obstaclePoint.y, captureBounds);
+      return {
+        ...current,
+        depositInFlight: false,
+        depositRetryTicks: 0,
+        depositLastDistancePx: depositDistancePx,
+        actionLockTicks: OBSTACLE_CLICK_LOCK_TICKS,
+      };
+    }
+
+    if (!capture.depositBox) {
+      warn(`Automate Bot (${BOT_NAME}): #${current.loopIndex} Deposit phase active but cyan deposit not found.`);
       return current;
     }
 
@@ -925,24 +970,6 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
 
     if (current.depositRetryTicks < DEPOSIT_STUCK_RETRY_TICKS) {
       return current;
-    }
-
-    if (
-      current.depositRetryTicks >= DEPOSIT_STUCK_RETRY_TICKS &&
-      shouldClearRedObstacle(capture.playerBoxInCapture, capture.obstacleBox)
-    ) {
-      const obstaclePoint = toObstacleInteractionScreenPoint(capture.obstacleBox, captureBounds);
-      warn(
-        `Automate Bot (${BOT_NAME}): #${current.loopIndex} Deposit seems stuck (${current.depositRetryTicks} retries) with red collision at (${obstaclePoint.x},${obstaclePoint.y}). Clearing obstacle once.`,
-      );
-      clickScreenPoint(obstaclePoint.x, obstaclePoint.y);
-      moveMouseAwayFromClickedNode(obstaclePoint.x, obstaclePoint.y, captureBounds);
-      return {
-        ...current,
-        depositRetryTicks: 0,
-        depositLastDistancePx: depositDistancePx,
-        actionLockTicks: OBSTACLE_CLICK_LOCK_TICKS,
-      };
     }
 
     const point = toDepositInteractionScreenPoint(capture.depositBox, captureBounds);
@@ -995,14 +1022,59 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
       return resetToSearching(current);
     }
 
+    if (current.actionLockTicks === 0 && shouldClearRedObstacle(capture.playerBoxInCapture, capture.obstacleBox)) {
+      const point = toObstacleInteractionScreenPoint(capture.obstacleBox, captureBounds);
+      warn(
+        `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking collision with red obstacle at (${point.x},${point.y}). Clearing.`,
+      );
+      clickScreenPoint(point.x, point.y);
+      moveMouseAwayFromClickedNode(point.x, point.y, captureBounds);
+      return {
+        ...current,
+        actionLockTicks: OBSTACLE_CLICK_LOCK_TICKS,
+      };
+    }
+
     if (current.bankingStep === "wait-after-orange") {
       if (current.actionLockTicks > 0) {
         return current;
       }
+      const tileText = capture.playerTileFromOverlay
+        ? `${capture.playerTileFromOverlay.x},${capture.playerTileFromOverlay.y},${capture.playerTileFromOverlay.z}`
+        : "unavailable";
+      if (!isAtBankLadderDownTile(capture.playerTileFromOverlay)) {
+        const nextRecheckCount = current.bankLadderRecheckCount + 1;
+        if (nextRecheckCount <= BANK_LADDER_RECHECK_MAX) {
+          const waitTicks = randomIntInclusive(BANK_LADDER_RECHECK_WAIT_MIN_TICKS, BANK_LADDER_RECHECK_WAIT_MAX_TICKS);
+          warn(
+            `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking ladder descent not confirmed (tile=${tileText}, expected=${BANK_EXPECTED_LADDER_DOWN_X},${BANK_EXPECTED_LADDER_DOWN_Y},*). Waiting ${waitTicks} ticks before re-check (${nextRecheckCount}/${BANK_LADDER_RECHECK_MAX}).`,
+          );
+          return {
+            ...current,
+            bankLadderRecheckCount: nextRecheckCount,
+            actionLockTicks: waitTicks,
+          };
+        }
+
+        warn(
+          `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking ladder descent still not confirmed after ${current.bankLadderRecheckCount} re-checks (tile=${tileText}). Retrying ladder click.`,
+        );
+        return {
+          ...current,
+          bankingStep: "find-orange",
+          bankSouthClicks: 0,
+          bankLadderRecheckCount: 0,
+        };
+      }
       log(
-        `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking post-ladder wait finished; moving south until yellow tile appears.`,
+        `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking ladder descent confirmed at tile ${BANK_EXPECTED_LADDER_DOWN_X},${BANK_EXPECTED_LADDER_DOWN_Y}. Moving south until yellow tile appears.`,
       );
-      return { ...current, bankingStep: "move-south-until-yellow" };
+      return {
+        ...current,
+        bankingStep: "move-south-until-yellow",
+        bankSouthClicks: 0,
+        bankLadderRecheckCount: 0,
+      };
     }
 
     if (current.bankingStep === "yellow-clicked") {
@@ -1028,11 +1100,17 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
         return {
           ...current,
           bankingStep: "wait-after-orange",
+          bankSouthClicks: 0,
+          bankLadderRecheckCount: 0,
           actionLockTicks: Math.max(BANK_CLICK_LOCK_TICKS, BANK_POST_ORANGE_WAIT_TICKS),
         };
       }
 
-      const nearestYellowNodeForFallback = findNearestYellowNode(capture.boxes, captureBounds, capture.playerAnchorInCapture);
+      const nearestYellowNodeForFallback = findNearestYellowNode(
+        capture.boxes,
+        captureBounds,
+        capture.playerAnchorInCapture,
+      );
       if (!nearestYellowNodeForFallback) {
         warn(`Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking phase active but no orange/yellow box found.`);
         return current;
@@ -1047,23 +1125,46 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
       return {
         ...current,
         bankingStep: "wait-after-orange",
+        bankSouthClicks: 0,
+        bankLadderRecheckCount: 0,
         actionLockTicks: Math.max(BANK_CLICK_LOCK_TICKS, BANK_POST_ORANGE_WAIT_TICKS),
       };
     }
 
-    const nearestYellowNode = findNearestYellowNode(capture.boxes, captureBounds, capture.playerAnchorInCapture);
-    if (nearestYellowNode) {
-      const yellowPoint = toYellowInteractionScreenPoint(nearestYellowNode, captureBounds);
+    if (current.bankSouthClicks === 0) {
+      if (!capture.playerTileFromOverlay) {
+        warn(
+          `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking cannot verify start tile before first south click (overlay tile unavailable). Waiting.`,
+        );
+        return current;
+      }
+      if (!isAtBankLadderDownTile(capture.playerTileFromOverlay)) {
+        warn(
+          `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking start tile mismatch before first south click (tile=${capture.playerTileFromOverlay.x},${capture.playerTileFromOverlay.y},${capture.playerTileFromOverlay.z}). Returning to ladder.`,
+        );
+        return { ...current, bankingStep: "find-orange", bankSouthClicks: 0 };
+      }
+    }
+
+    if (current.bankSouthClicks >= BANK_SOUTH_CLICKS_BEFORE_YELLOW_CHECK) {
+      const nearestYellowNode = findNearestYellowNode(capture.boxes, captureBounds, capture.playerAnchorInCapture);
+      if (nearestYellowNode) {
+        const yellowPoint = toYellowInteractionScreenPoint(nearestYellowNode, captureBounds);
+        log(
+          `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking found yellow tile at (${yellowPoint.x},${yellowPoint.y}); clicking.`,
+        );
+        clickScreenPoint(yellowPoint.x, yellowPoint.y);
+        moveMouseAwayFromClickedNode(yellowPoint.x, yellowPoint.y, captureBounds);
+        return {
+          ...current,
+          bankingStep: "yellow-clicked",
+          actionLockTicks: BANK_YELLOW_TILE_CLICK_LOCK_TICKS,
+        };
+      }
+    } else {
       log(
-        `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking found yellow tile at (${yellowPoint.x},${yellowPoint.y}); clicking.`,
+        `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking south warmup ${current.bankSouthClicks}/${BANK_SOUTH_CLICKS_BEFORE_YELLOW_CHECK}; delaying yellow check.`,
       );
-      clickScreenPoint(yellowPoint.x, yellowPoint.y);
-      moveMouseAwayFromClickedNode(yellowPoint.x, yellowPoint.y, captureBounds);
-      return {
-        ...current,
-        bankingStep: "yellow-clicked",
-        actionLockTicks: BANK_YELLOW_TILE_CLICK_LOCK_TICKS,
-      };
     }
 
     const southPoint = toSouthMoveScreenPoint(captureBounds, capture.playerAnchorInCapture);
@@ -1075,6 +1176,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
     return {
       ...current,
       bankingStep: "move-south-until-yellow",
+      bankSouthClicks: current.bankSouthClicks + 1,
       actionLockTicks: BANK_SOUTH_CLICK_LOCK_TICKS,
     };
   }
@@ -1119,6 +1221,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
       activeScreen: { x: trackingPoint.x, y: trackingPoint.y },
       missingActiveTicks: 0,
       miningWaitTicks: 0,
+      activeNodeMaxWaitTicks: randomIntInclusive(ACTIVE_NODE_MAX_WAIT_TICKS_MIN, ACTIVE_NODE_MAX_WAIT_TICKS_MAX),
       actionLockTicks: NODE_CLICK_LOCK_TICKS,
     };
   }
@@ -1136,7 +1239,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
     }
 
     const miningWaitTicks = current.miningWaitTicks + 1;
-    if (miningWaitTicks >= ACTIVE_NODE_MAX_WAIT_TICKS) {
+    if (miningWaitTicks >= current.activeNodeMaxWaitTicks) {
       warn(
         `Automate Bot (${BOT_NAME}): #${current.loopIndex} Active node still ${nearbyAny.color} after ${miningWaitTicks} ticks. Re-searching.`,
       );
@@ -1144,7 +1247,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
     }
 
     log(
-      `Automate Bot (${BOT_NAME}): #${current.loopIndex} Waiting on active node (${nearbyAny.color}) tick=${miningWaitTicks}/${ACTIVE_NODE_MAX_WAIT_TICKS}.`,
+      `Automate Bot (${BOT_NAME}): #${current.loopIndex} Waiting on active node (${nearbyAny.color}) tick=${miningWaitTicks}/${current.activeNodeMaxWaitTicks}.`,
     );
     return { ...current, miningWaitTicks, missingActiveTicks: 0 };
   }
@@ -1176,6 +1279,7 @@ async function runLoop(captureBounds: ScreenCaptureBounds): Promise<void> {
     activeScreen: null,
     missingActiveTicks: 0,
     miningWaitTicks: 0,
+    activeNodeMaxWaitTicks: randomIntInclusive(ACTIVE_NODE_MAX_WAIT_TICKS_MIN, ACTIVE_NODE_MAX_WAIT_TICKS_MAX),
     bagFullState: null,
     depositTriggerStableTicks: 0,
     depositNearStableTicks: 0,
@@ -1184,6 +1288,8 @@ async function runLoop(captureBounds: ScreenCaptureBounds): Promise<void> {
     depositLastDistancePx: null,
     actionLockTicks: 0,
     bankingStep: "find-orange",
+    bankSouthClicks: 0,
+    bankLadderRecheckCount: 0,
     loopIndex: 0,
   };
 
@@ -1272,7 +1378,7 @@ export function onMotherlodeMineBotV2Start(): void {
 
   const scaleFactor = getWindowsDisplayScaleFactor(logicalBounds);
   const captureBounds = toPhysicalBounds(logicalBounds, scaleFactor);
+  currentWindowsScalePercent = Math.round(scaleFactor * 100);
 
   void runLoop(captureBounds);
 }
-

@@ -1,4 +1,5 @@
 import { mouseClick, moveMouse, screen } from "robotjs";
+import { screen as electronScreen } from "electron";
 import { Window } from "node-window-manager";
 import * as logger from "../../logger";
 import { getRuneLite } from "../../runeLiteWindow";
@@ -118,10 +119,19 @@ export async function initAgilityBotV2(): Promise<InitBotResult> {
   await sleep(POST_FOCUS_SETTLE_MS);
 
   const fullBitmap = screen.capture(bounds.x, bounds.y, bounds.width, bounds.height);
+  const display = electronScreen.getDisplayMatching({
+    x: bounds.x,
+    y: bounds.y,
+    width: Math.max(1, bounds.width),
+    height: Math.max(1, bounds.height),
+  });
+  const windowsScalePercent = Math.round(
+    (Number.isFinite(display.scaleFactor) && display.scaleFactor > 0 ? display.scaleFactor : 1) * 100,
+  );
   const detections: InitBotDetections = {
     agility: detectBestAgilityBoxInScreenshot(fullBitmap),
     tileLocation: detectTileLocationBoxInScreenshot(fullBitmap),
-    coordinateBox: detectOverlayBoxInScreenshot(fullBitmap),
+    coordinateBox: detectOverlayBoxInScreenshot(fullBitmap, windowsScalePercent),
   };
   const missingRequirements: MissingRequirement[] = [];
 

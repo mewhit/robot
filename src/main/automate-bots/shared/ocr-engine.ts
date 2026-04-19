@@ -226,6 +226,19 @@ const DIGIT_TEMPLATES = Object.entries(DIGIT_TEMPLATE_ROWS).map(([char, rows]) =
   bits: templateRowsToBits(rows),
 }));
 
+// RuneLite anti-aliased glyphs can collapse into alternate silhouettes after thresholding.
+// Add targeted variants so the classifier can disambiguate common 4/6 confusions.
+DIGIT_TEMPLATES.push(
+  {
+    char: "4",
+    bits: templateRowsToBits(["10000", "10000", "10000", "10110", "10110", "11111", "00110"]),
+  },
+  {
+    char: "6",
+    bits: templateRowsToBits(["01110", "10000", "10000", "11110", "10001", "10001", "01110"]),
+  },
+);
+
 // ============================================
 // Image Processing Functions
 // ============================================
@@ -493,6 +506,7 @@ export function readNumericLine(
   endY: number,
   startXRatio: number,
   strictMode: boolean = false,
+  maxMergeGap: number = Math.max(1, Math.floor(OCR_SCALE_FACTOR / 2)),
 ): string {
   const width = origWidth * OCR_SCALE_FACTOR;
   const height = origHeight * OCR_SCALE_FACTOR;
@@ -526,7 +540,7 @@ export function readNumericLine(
     segments.push({ startX: segmentStart, endX: x1 });
   }
 
-  const mergedSegments = mergeCloseSegments(segments, OCR_SCALE_FACTOR);
+  const mergedSegments = mergeCloseSegments(segments, Math.max(0, Math.floor(maxMergeGap)));
   let output = "";
   for (const segment of mergedSegments) {
     const char = classifySegment(mask, width, y0, y1, segment.startX, segment.endX, strictMode);
@@ -612,7 +626,7 @@ function normalizeGlyph(
       }
 
       const density = area > 0 ? white / area : 0;
-      bits.push(density >= 0.35 ? 1 : 0);
+      bits.push(density >= 0.3 ? 1 : 0);
     }
   }
 

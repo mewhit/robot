@@ -106,6 +106,7 @@ interface BotState {
 let isLoopRunning = false;
 let startedAtMs: number | null = null;
 let debugCaptureIndex = 0;
+let currentWindowsScalePercent = 100;
 
 function formatElapsedSinceStart(): string {
   if (startedAtMs === null) return "+0ms";
@@ -549,7 +550,7 @@ async function runLoop(captureBounds: ScreenCaptureBounds): Promise<void> {
         }
 
         // Fallback: use the top-left coordinate overlay detector when tile-location OCR misses.
-        const overlayBox = detectOverlayBoxInScreenshot(bitmap);
+        const overlayBox = detectOverlayBoxInScreenshot(bitmap, currentWindowsScalePercent);
         if (!overlayBox) {
           return {
             tile: null,
@@ -1132,6 +1133,7 @@ export function onMotherlodeMineBotStart(): void {
 
   const scaleFactor = getWindowsDisplayScaleFactor(logicalBounds);
   const captureBounds = toPhysicalBounds(logicalBounds, scaleFactor);
+  currentWindowsScalePercent = Math.round(scaleFactor * 100);
 
   void runLoop(captureBounds);
 }

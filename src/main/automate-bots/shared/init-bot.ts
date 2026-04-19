@@ -1,4 +1,5 @@
 import { screen } from "robotjs";
+import { screen as electronScreen } from "electron";
 import { Window } from "node-window-manager";
 import * as logger from "../../logger";
 import { getRuneLite } from "../../runeLiteWindow";
@@ -61,8 +62,18 @@ export function initBotCoordinateDetection(): InitBotResult {
   // Capture the full screenshot from RuneLite window
   const fullBitmap = screen.capture(bounds.x, bounds.y, bounds.width, bounds.height);
 
+  const display = electronScreen.getDisplayMatching({
+    x: bounds.x,
+    y: bounds.y,
+    width: Math.max(1, bounds.width),
+    height: Math.max(1, bounds.height),
+  });
+  const windowsScalePercent = Math.round(
+    (Number.isFinite(display.scaleFactor) && display.scaleFactor > 0 ? display.scaleFactor : 1) * 100,
+  );
+
   // Detect coordinate overlay in screenshot
-  const detectedOverlay = detectOverlayBoxInScreenshot(fullBitmap);
+  const detectedOverlay = detectOverlayBoxInScreenshot(fullBitmap, windowsScalePercent);
 
   if (!detectedOverlay) {
     logger.error(`Bot Init: ${RUNELIT_PLUGIN_ERROR_MESSAGE}`);
@@ -70,7 +81,9 @@ export function initBotCoordinateDetection(): InitBotResult {
     return { ok: false, error: RUNELIT_PLUGIN_ERROR_MESSAGE };
   }
 
-  logger.info(`Bot Init: Coordinates detected - ${detectedOverlay.matchedLine} at x=${detectedOverlay.x}, y=${detectedOverlay.y}`);
+  logger.info(
+    `Bot Init: Coordinates detected - ${detectedOverlay.matchedLine} at x=${detectedOverlay.x}, y=${detectedOverlay.y}`,
+  );
 
   return { ok: true, window, overlay: detectedOverlay };
 }

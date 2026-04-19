@@ -7,7 +7,7 @@
     "dev": "concurrently -k \"vite\" \"tsc -p tsconfig.main.json --watch --preserveWatchOutput\" \"wait-on http://localhost:5173 dist/main/index.js && electronmon dist/main/index.js\"",
     "build": "vite build && tsc -p tsconfig.main.json",
     "start": "electron dist/main/index.js",
-    "test:screenshot:coordinate": "ts-node src/main/automate-bots/shared/coordinate-box-detector.spec.ts test-images/coordinate-box/tile-*.png",
+    "test:screenshot:coordinate": "ts-node src/main/automate-bots/shared/coordinate-box-detector.spec.ts test-images/coordinate-box/*r-*.png",
     "test:screenshot:agility": "ts-node src/main/automate-bots/shared/agility-box-detector.spec.ts test-images/agility-box/*.png",
     "test:screenshot:tile-location": "ts-node src/main/automate-bots/shared/tile-location-detection.spec.ts test-images/tile-location-box/*.png",
     "test:screenshot:cyan": "ts-node src/main/automate-bots/shared/cyan-box-detector.spec.ts test-images/npc-box/*.png",

@@ -1,4 +1,4 @@
-import fs from "fs";
+﻿import fs from "fs";
 import path from "path";
 import { PNG } from "pngjs";
 import { buildWhiteTextMask, OCR_SCALE_FACTOR, readNumericLine, RobotBitmap } from "./ocr-engine";
@@ -19,6 +19,88 @@ type CoordinateCandidate = {
   line: string;
 };
 
+type OverlayDetectionWithScore = OverlayBox & {
+  score: number;
+};
+
+function upscaleBinaryMask(binary: Uint8Array, width: number, height: number): Uint8Array {
+  const scaledWidth = width * OCR_SCALE_FACTOR;
+  const scaledHeight = height * OCR_SCALE_FACTOR;
+  const upscaled = new Uint8Array(scaledWidth * scaledHeight);
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const value = binary[y * width + x];
+      if (value === 0) {
+        continue;
+      }
+
+      for (let dy = 0; dy < OCR_SCALE_FACTOR; dy += 1) {
+        for (let dx = 0; dx < OCR_SCALE_FACTOR; dx += 1) {
+          const scaledY = y * OCR_SCALE_FACTOR + dy;
+          const scaledX = x * OCR_SCALE_FACTOR + dx;
+          upscaled[scaledY * scaledWidth + scaledX] = 1;
+        }
+      }
+    }
+  }
+
+  return upscaled;
+}
+
+function buildSoftWhiteTextMask(bitmap: RobotBitmap): Uint8Array {
+  const gray = new Uint8Array(bitmap.width * bitmap.height);
+  let max = 0;
+
+  for (let y = 0; y < bitmap.height; y += 1) {
+    for (let x = 0; x < bitmap.width; x += 1) {
+      const offset = y * bitmap.byteWidth + x * bitmap.bytesPerPixel;
+      const b = bitmap.image[offset];
+      const g = bitmap.image[offset + 1];
+      const r = bitmap.image[offset + 2];
+      const grayVal = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+      gray[y * bitmap.width + x] = grayVal;
+      if (grayVal > max) max = grayVal;
+    }
+  }
+
+  const threshold = max - 55;
+  const binary = new Uint8Array(bitmap.width * bitmap.height);
+  for (let i = 0; i < gray.length; i += 1) {
+    binary[i] = gray[i] >= threshold ? 1 : 0;
+  }
+
+  return upscaleBinaryMask(binary, bitmap.width, bitmap.height);
+}
+
+function buildCoordinateOverlayTextMask(bitmap: RobotBitmap): Uint8Array {
+  const binary = new Uint8Array(bitmap.width * bitmap.height);
+
+  for (let y = 0; y < bitmap.height; y += 1) {
+    for (let x = 0; x < bitmap.width; x += 1) {
+      const offset = y * bitmap.byteWidth + x * bitmap.bytesPerPixel;
+      const b = bitmap.image[offset];
+      const g = bitmap.image[offset + 1];
+      const r = bitmap.image[offset + 2];
+
+      const maxChannel = Math.max(r, g, b);
+      const minChannel = Math.min(r, g, b);
+      const saturation = maxChannel - minChannel;
+      const luminance = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+
+      const isNeutralBrightText = luminance >= 130 && saturation <= 130;
+      const isUltraBrightText = luminance >= 190 && saturation <= 155;
+      if (!isNeutralBrightText && !isUltraBrightText) {
+        continue;
+      }
+
+      binary[y * bitmap.width + x] = 1;
+    }
+  }
+
+  return upscaleBinaryMask(binary, bitmap.width, bitmap.height);
+}
+
 function extractCoordinateCandidate(line: string): CoordinateCandidate | null {
   const cleaned = line.replace(/[^0-9,]/g, "");
   if (cleaned.length < 7 || cleaned.length > 24) {
@@ -31,7 +113,7 @@ function extractCoordinateCandidate(line: string): CoordinateCandidate | null {
 
   // Accept any single Z digit here; OCR can read 0 as 8/6/9 in some captures.
   // We only need a stable anchor for overlay box detection.
-  const delimitedPattern = /(\d{3,5}),(\d{3,5}),(\d)/g;
+  const delimitedPattern = /(\d{4,5}),(\d{4,5}),(\d)/g;
   for (const match of cleaned.matchAll(delimitedPattern)) {
     const x = Number(match[1]);
     const y = Number(match[2]);
@@ -44,9 +126,9 @@ function extractCoordinateCandidate(line: string): CoordinateCandidate | null {
       continue;
     }
 
-    const zPenalty = z > 3 ? 10 : 0;
+    const zScore = z === 0 ? 18 : z === 1 ? 12 : z === 2 ? 8 : z === 3 ? 4 : -16;
     const extraChars = Math.max(0, cleaned.length - match[0].length);
-    const score = 220 + match[0].length - zPenalty - extraChars * 2;
+    const score = 228 + match[0].length + zScore - extraChars * 2;
     const candidate: CoordinateCandidate = {
       x,
       y,
@@ -76,9 +158,10 @@ function extractCoordinateCandidate(line: string): CoordinateCandidate | null {
   }
 
   for (let start = 0; start < digitsOnly.length; start += 1) {
-    for (let xLen = 3; xLen <= 5; xLen += 1) {
-      for (let yLen = 3; yLen <= 5; yLen += 1) {
-        const zIndex = start + xLen + yLen;
+    for (let xLen = 4; xLen <= 5; xLen += 1) {
+      for (let yLen = 4; yLen <= 5; yLen += 1) {
+        for (let skip = 0; skip <= 1; skip += 1) {
+        const zIndex = start + xLen + yLen + skip;
         if (zIndex >= digitsOnly.length) {
           continue;
         }
@@ -89,7 +172,7 @@ function extractCoordinateCandidate(line: string): CoordinateCandidate | null {
         }
 
         const x = Number(digitsOnly.slice(start, start + xLen));
-        const y = Number(digitsOnly.slice(start + xLen, zIndex));
+        const y = Number(digitsOnly.slice(start + xLen, start + xLen + yLen));
         if (!Number.isFinite(x) || !Number.isFinite(y)) {
           continue;
         }
@@ -97,15 +180,16 @@ function extractCoordinateCandidate(line: string): CoordinateCandidate | null {
           continue;
         }
 
-        const candidateLen = xLen + yLen + 1;
+        const candidateLen = xLen + yLen + 1 + skip;
         const extraDigits = digitsOnly.length - candidateLen;
-        if (extraDigits > 5) {
+        if (extraDigits > 6) {
           continue;
         }
 
-        const zPenalty = z > 3 ? 8 : 0;
-        const commaBonus = commaCount >= 2 ? 12 : 0;
-        const score = 120 + commaBonus + xLen + yLen - extraDigits * 8 - start * 3 - zPenalty;
+        const zScore = z === 0 ? 14 : z === 1 ? 10 : z === 2 ? 7 : z === 3 ? 4 : -14;
+        const commaBonus = commaCount >= 2 ? 14 : 0;
+        const skipPenalty = skip * 8;
+        const score = 132 + commaBonus + xLen + yLen + zScore - extraDigits * 6 - start - skipPenalty;
 
         const candidate: CoordinateCandidate = {
           x,
@@ -117,6 +201,7 @@ function extractCoordinateCandidate(line: string): CoordinateCandidate | null {
 
         if (!best || candidate.score > best.score) {
           best = candidate;
+        }
         }
       }
     }
@@ -202,6 +287,37 @@ export function saveBitmapWithBox(
   }
 
   drawRectangleOnPng(png, box.x, box.y, box.width, box.height, { r: 255, g: 0, b: 0 }, 2);
+
+  const dir = path.dirname(filename);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+
+  png.pack().pipe(fs.createWriteStream(filename));
+}
+
+export function saveSoftMaskDebug(
+  bitmap: RobotBitmap,
+  box: { x: number; y: number; width: number; height: number },
+  filename: string,
+): void {
+  const result = buildSoftMaskForCrop(bitmap, box, 80);
+  if (!result) {
+    return;
+  }
+
+  const { mask, croppedWidthScaled, croppedHeightScaled } = result;
+  const png = new PNG({ width: croppedWidthScaled, height: croppedHeightScaled });
+  for (let y = 0; y < croppedHeightScaled; y += 1) {
+    for (let x = 0; x < croppedWidthScaled; x += 1) {
+      const idx = (y * croppedWidthScaled + x) * 4;
+      const val = mask[y * croppedWidthScaled + x] === 1 ? 255 : 0;
+      png.data[idx] = val;
+      png.data[idx + 1] = val;
+      png.data[idx + 2] = val;
+      png.data[idx + 3] = 255;
+    }
+  }
 
   const dir = path.dirname(filename);
   if (!fs.existsSync(dir)) {
@@ -356,22 +472,249 @@ function deriveOverlayBoxFromBandCluster(
   };
 }
 
-export function detectOverlayBoxInScreenshot(bitmap: RobotBitmap): OverlayBox | null {
-  // ── 1. Binary mask (white text on dark background) ──────────────────────────
-  const mask = buildWhiteTextMask(bitmap);
+function cropUpscaledMaskToOverlayBox(
+  mask: Uint8Array,
+  bitmapWidth: number,
+  bitmapHeight: number,
+  overlayBox: { x: number; y: number; width: number; height: number },
+): { croppedMask: Uint8Array; croppedWidthScaled: number; croppedHeightScaled: number } | null {
+  if (overlayBox.width <= 0 || overlayBox.height <= 0) {
+    return null;
+  }
+
+  const fullScaledWidth = bitmapWidth * OCR_SCALE_FACTOR;
+  const fullScaledHeight = bitmapHeight * OCR_SCALE_FACTOR;
+
+  const x0Scaled = Math.max(0, overlayBox.x * OCR_SCALE_FACTOR);
+  const y0Scaled = Math.max(0, overlayBox.y * OCR_SCALE_FACTOR);
+  const x1Scaled = Math.min(fullScaledWidth, (overlayBox.x + overlayBox.width) * OCR_SCALE_FACTOR);
+  const y1Scaled = Math.min(fullScaledHeight, (overlayBox.y + overlayBox.height) * OCR_SCALE_FACTOR);
+
+  const croppedWidthScaled = x1Scaled - x0Scaled;
+  const croppedHeightScaled = y1Scaled - y0Scaled;
+  if (croppedWidthScaled <= 0 || croppedHeightScaled <= 0) {
+    return null;
+  }
+
+  const croppedMask = new Uint8Array(croppedWidthScaled * croppedHeightScaled);
+  for (let y = 0; y < croppedHeightScaled; y += 1) {
+    const srcOffset = (y0Scaled + y) * fullScaledWidth + x0Scaled;
+    const dstOffset = y * croppedWidthScaled;
+    croppedMask.set(mask.subarray(srcOffset, srcOffset + croppedWidthScaled), dstOffset);
+  }
+
+  return {
+    croppedMask,
+    croppedWidthScaled,
+    croppedHeightScaled,
+  };
+}
+
+function buildSoftMaskForCrop(
+  bitmap: RobotBitmap,
+  box: { x: number; y: number; width: number; height: number },
+  thresholdGap: number,
+  windowsScalePercent: number = 100,
+): {
+  mask: Uint8Array;
+  dilatedMask: Uint8Array;
+  effectiveCropWidth: number;
+  effectiveCropHeight: number;
+  croppedWidthScaled: number;
+  croppedHeightScaled: number;
+} | null {
+  const x0 = Math.max(0, box.x);
+  const y0 = Math.max(0, box.y);
+  const x1 = Math.min(bitmap.width, box.x + box.width);
+  const y1 = Math.min(bitmap.height, box.y + box.height);
+  const cropW = x1 - x0;
+  const cropH = y1 - y0;
+  if (cropW <= 0 || cropH <= 0) {
+    return null;
+  }
+
+  // At high DPI (125%+), Windows DPI virtualization bitmap-upscales the game
+  // window, creating smooth anti-aliased gradients at text edges. Downscaling
+  // the crop by 1/scaleFactor undoes this, restoring crisp text that matches
+  // the OCR glyph templates. Pixel analysis confirms the anti-aliasing is
+  // purely grayscale (R≈G≈B), not ClearType sub-pixel colored.
+  const dsFactor = windowsScalePercent > 100 ? windowsScalePercent / 100 : 1;
+  const effW = dsFactor > 1 ? Math.round(cropW / dsFactor) : cropW;
+  const effH = dsFactor > 1 ? Math.round(cropH / dsFactor) : cropH;
+  if (effW <= 0 || effH <= 0) {
+    return null;
+  }
+
+  const gray = new Uint8Array(effW * effH);
+  let max = 0;
+  for (let y = 0; y < effH; y += 1) {
+    const srcY = dsFactor > 1 ? Math.min(cropH - 1, Math.round(y * dsFactor)) : y;
+    for (let x = 0; x < effW; x += 1) {
+      const srcX = dsFactor > 1 ? Math.min(cropW - 1, Math.round(x * dsFactor)) : x;
+      const offset = (y0 + srcY) * bitmap.byteWidth + (x0 + srcX) * bitmap.bytesPerPixel;
+      const b = bitmap.image[offset];
+      const g = bitmap.image[offset + 1];
+      const r = bitmap.image[offset + 2];
+      const grayVal = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+      gray[y * effW + x] = grayVal;
+      if (grayVal > max) max = grayVal;
+    }
+  }
+
+  const threshold = max - thresholdGap;
+  const binary = new Uint8Array(effW * effH);
+  for (let i = 0; i < gray.length; i += 1) {
+    binary[i] = gray[i] >= threshold ? 1 : 0;
+  }
+
+  // Dilate 1px at effective resolution to fill anti-aliased gaps.
+  // Used for band detection (row density needs connected strokes).
+  // The non-dilated mask is used for OCR reading (preserves character gaps).
+  const dilated = new Uint8Array(effW * effH);
+  for (let y = 0; y < effH; y += 1) {
+    for (let x = 0; x < effW; x += 1) {
+      if (binary[y * effW + x] === 1) {
+        dilated[y * effW + x] = 1;
+        continue;
+      }
+      let found = false;
+      for (let dy = -1; dy <= 1 && !found; dy += 1) {
+        for (let dx = -1; dx <= 1 && !found; dx += 1) {
+          const ny = y + dy;
+          const nx = x + dx;
+          if (ny >= 0 && ny < effH && nx >= 0 && nx < effW && binary[ny * effW + nx] === 1) {
+            found = true;
+          }
+        }
+      }
+      if (found) {
+        dilated[y * effW + x] = 1;
+      }
+    }
+  }
+
+  const mask = upscaleBinaryMask(binary, effW, effH);
+  const dilatedMask = upscaleBinaryMask(dilated, effW, effH);
+  return {
+    mask,
+    dilatedMask,
+    effectiveCropWidth: effW,
+    effectiveCropHeight: effH,
+    croppedWidthScaled: effW * OCR_SCALE_FACTOR,
+    croppedHeightScaled: effH * OCR_SCALE_FACTOR,
+  };
+}
+
+function readBestCoordinateCandidateInOverlayBox(
+  bitmap: RobotBitmap,
+  overlayBox: { x: number; y: number; width: number; height: number },
+  scanRatios: number[],
+  windowsScalePercent: number = 100,
+): CoordinateCandidate | null {
+  const thresholdGaps = [30, 50, 70, 90, 100, 120];
+
+  // Strategy 1: Regular processing (always runs, preserves existing behavior)
+  const regularBest = tryReadCandidates(bitmap, overlayBox, scanRatios, thresholdGaps, 100, null);
+
+  if (windowsScalePercent <= 100) {
+    return regularBest;
+  }
+
+  // Strategy 2: For high DPI, also try with downscaled crop to undo
+  // Windows DPI virtualization bitmap upscaling. This restores crisp text
+  // edges that better match the OCR glyph templates.
+  const dsBest = tryReadCandidates(bitmap, overlayBox, scanRatios, thresholdGaps, windowsScalePercent, null);
+
+  if (!regularBest) return dsBest;
+  if (!dsBest) return regularBest;
+
+  // Prefer downscaled only if it has substantially higher score, since the
+  // regular strategy works well for large windows and shouldn't be overridden
+  // by slightly-better-scoring garbage from the downscaled version.
+  if (dsBest.score > regularBest.score + 30) return dsBest;
+  return regularBest;
+}
+
+function tryReadCandidates(
+  bitmap: RobotBitmap,
+  overlayBox: { x: number; y: number; width: number; height: number },
+  scanRatios: number[],
+  thresholdGaps: number[],
+  scaleForCrop: number,
+  currentBest: CoordinateCandidate | null,
+): CoordinateCandidate | null {
+  let bestCandidate = currentBest;
+
+  for (const gap of thresholdGaps) {
+    const cropped = buildSoftMaskForCrop(bitmap, overlayBox, gap, scaleForCrop);
+    if (!cropped) {
+      continue;
+    }
+
+    // Use dilated mask for band detection always.
+    // At 125%+ DPI, anti-aliased text has holes in the binary mask that make
+    // digits unreadable. Dilation fills those holes while the normalizeGlyph()
+    // step in classifySegment() handles the thicker strokes by rescaling to 5×7.
+    const bands = findTextBandsInLeftStrip(
+      cropped.dilatedMask,
+      cropped.croppedWidthScaled,
+      cropped.croppedHeightScaled,
+      cropped.croppedWidthScaled,
+    );
+    if (bands.length === 0) {
+      continue;
+    }
+
+    for (const band of bands) {
+      for (const ratio of scanRatios) {
+        const line = readNumericLine(
+          cropped.mask,
+          cropped.effectiveCropWidth,
+          cropped.effectiveCropHeight,
+          band.startY,
+          band.endY,
+          ratio,
+        );
+        if (!line || line.length < 7) {
+          continue;
+        }
+
+        const candidate = extractCoordinateCandidate(line);
+        if (!candidate) {
+          continue;
+        }
+
+        console.log(`  [crop] ds=${scaleForCrop > 100 ? 1 : 0} gap=${gap} band=${band.startY}-${band.endY} ratio=${ratio} line="${line}" → ${candidate.line} score=${candidate.score} z=${candidate.z}`);
+
+        if (!bestCandidate || isBetterCoordinateCandidate(candidate, bestCandidate)) {
+          bestCandidate = candidate;
+        }
+      }
+    }
+  }
+
+  return bestCandidate;
+}
+
+function isBetterCoordinateCandidate(a: CoordinateCandidate, b: CoordinateCandidate): boolean {
+  // Prefer low z-plane (0-1 are normal game planes)
+  const aLowZ = a.z <= 1;
+  const bLowZ = b.z <= 1;
+  if (aLowZ && !bLowZ) return true;
+  if (!aLowZ && bLowZ) return false;
+
+  // Among same z-plane tier, prefer higher score
+  return a.score > b.score;
+}
+
+function detectOverlayBoxWithMask(bitmap: RobotBitmap, mask: Uint8Array, windowsScalePercent: number = 100): OverlayDetectionWithScore | null {
   const scaledWidth = bitmap.width * OCR_SCALE_FACTOR;
   const scaledHeight = bitmap.height * OCR_SCALE_FACTOR;
 
-  // ── 2. Left-strip constraint: adapt based on resolution ──────────────────────
-  // For fullscreen/large resolutions, search up to 1/4 width (was 1/6)
-  // This accommodates overlay positioning in various fullscreen scenarios
-  const stripRatio = bitmap.width > 2560 ? 0.25 : 0.166; // 25% for 4K+, ~16.7% for 1080p
+  const stripRatio = bitmap.width > 2560 ? 0.25 : 0.166;
   const leftStripWidthOrig = Math.max(40, Math.floor(bitmap.width * stripRatio));
   const scaledStripWidth = Math.min(scaledWidth, leftStripWidthOrig * OCR_SCALE_FACTOR);
 
-  // ── 3. Build strip-only sub-mask (prevents right-side text contamination) ───
-  // stripMask dimensions: scaledStripWidth × scaledHeight
-  // readNumericLine sees origWidth = leftStripWidthOrig, so it stays inside the strip.
   const stripMask = new Uint8Array(scaledStripWidth * scaledHeight);
   for (let sy = 0; sy < scaledHeight; sy += 1) {
     for (let sx = 0; sx < scaledStripWidth; sx += 1) {
@@ -379,21 +722,15 @@ export function detectOverlayBoxInScreenshot(bitmap: RobotBitmap): OverlayBox | 
     }
   }
 
-  // ── 4. Detect horizontal text bands in the left strip ───────────────────────
-  // findTextBandsInLeftStrip returns startY/endY in upscaled (×OCR_SCALE_FACTOR) coords.
-  // readNumericLine expects the same upscaled coords — pass them directly.
   const bands = findTextBandsInLeftStrip(mask, scaledWidth, scaledHeight, scaledStripWidth);
   if (bands.length === 0) {
     return null;
   }
 
-  // Max gap between adjacent overlay lines: scale-independent, adapted for fullscreen
-  // Increased from 30px to 40px to handle fullscreen resolution variations
   const maxGapScaled = 40 * OCR_SCALE_FACTOR;
+  const scanRatios = [0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35];
 
-  const scanRatios = [0, 0.15, 0.25, 0.35];
-
-  let bestDetection: (OverlayBox & { score: number }) | null = null;
+  let bestDetection: OverlayDetectionWithScore | null = null;
 
   for (let i = 0; i < bands.length; i += 1) {
     const band = bands[i];
@@ -421,24 +758,10 @@ export function detectOverlayBoxInScreenshot(bitmap: RobotBitmap): OverlayBox | 
 
     const tileX = bestCandidate.x;
     const tileY = bestCandidate.y;
-    const tileZ = bestCandidate.z;
-
-    // ── 7. Coordinate range validation ───────────────────────────────────────
-    // Relaxed constraints to support fullscreen scenarios (e.g., Y up to 10,000+)
-    // X: 0 to 10,000 (covers most RuneScape map regions)
-    // Y: 0 to 10,000 (covers all known regions including southern areas)
-    // Z ∈ [0, 3] is already enforced by the regex character class [0-3]
-    if (tileX < 0 || tileX > 10000) {
-      continue;
-    }
-    if (tileY < 0 || tileY > 10000) {
+    if (tileX < 0 || tileX > 10000 || tileY < 0 || tileY > 10000) {
       continue;
     }
 
-    // ── 8. Nearby-bands validation (optional for fullscreen) ───────────────────
-    // In standard views, the RuneLite overlay always has 3 lines (Tile / Chunk ID / Region ID).
-    // For fullscreen scenarios, the overlay might be isolated, so we relax this requirement.
-    // Only validate if multiple bands exist nearby.
     const hasNearbyBand =
       bands.length === 1 ||
       bands.some((b, j) => {
@@ -453,16 +776,33 @@ export function detectOverlayBoxInScreenshot(bitmap: RobotBitmap): OverlayBox | 
       continue;
     }
 
-    // ── 9. Expand around the matched band cluster → full overlay box ─────────
-    // deriveOverlayBoxFromBandCluster expects anchorY in original (non-scaled) pixels.
     const anchorYOrig = Math.round((band.startY + band.endY) / 2 / OCR_SCALE_FACTOR);
-    const overlayBox = deriveOverlayBoxFromBandCluster(mask, bitmap.width, bitmap.height, leftStripWidthOrig, anchorYOrig, maxGapScaled);
+    const overlayBox = deriveOverlayBoxFromBandCluster(
+      mask,
+      bitmap.width,
+      bitmap.height,
+      leftStripWidthOrig,
+      anchorYOrig,
+      maxGapScaled,
+    );
     if (!overlayBox) {
       continue;
     }
 
-    // Prefer candidates that sit near other digit-heavy lines
-    // (Chunk ID / Region ID context), and with plausible box size.
+    const croppedCandidate = readBestCoordinateCandidateInOverlayBox(bitmap, overlayBox, scanRatios, windowsScalePercent);
+    // Prefer cropped re-read (multi-threshold) over initial strip-based read (single threshold)
+    const finalCandidate = croppedCandidate && croppedCandidate.z <= 3
+      ? croppedCandidate
+      : croppedCandidate && bestCandidate && isBetterCoordinateCandidate(croppedCandidate, bestCandidate)
+        ? croppedCandidate
+        : bestCandidate;
+
+    const finalTileX = finalCandidate.x;
+    const finalTileY = finalCandidate.y;
+    if (finalTileX < 0 || finalTileX > 10000 || finalTileY < 0 || finalTileY > 10000) {
+      continue;
+    }
+
     let contextScore = 0;
     for (let j = 0; j < bands.length; j += 1) {
       if (j === i) {
@@ -472,12 +812,20 @@ export function detectOverlayBoxInScreenshot(bitmap: RobotBitmap): OverlayBox | 
       const neighbor = bands[j];
       const gapBelow = neighbor.startY - band.endY;
       const gapAbove = band.startY - neighbor.endY;
-      const isNearby = (gapBelow >= 0 && gapBelow <= maxGapScaled * 2) || (gapAbove >= 0 && gapAbove <= maxGapScaled * 2);
+      const isNearby =
+        (gapBelow >= 0 && gapBelow <= maxGapScaled * 2) || (gapAbove >= 0 && gapAbove <= maxGapScaled * 2);
       if (!isNearby) {
         continue;
       }
 
-      const neighborLine = readNumericLine(stripMask, leftStripWidthOrig, bitmap.height, neighbor.startY, neighbor.endY, 0);
+      const neighborLine = readNumericLine(
+        stripMask,
+        leftStripWidthOrig,
+        bitmap.height,
+        neighbor.startY,
+        neighbor.endY,
+        0,
+      );
       const digitCount = (neighborLine.match(/\d/g) ?? []).length;
       if (digitCount >= 5) {
         contextScore += 10;
@@ -495,14 +843,16 @@ export function detectOverlayBoxInScreenshot(bitmap: RobotBitmap): OverlayBox | 
       geometryScore += 8;
     }
 
-    const totalScore = bestCandidate.score + contextScore + geometryScore;
+    const totalScore = finalCandidate.score + contextScore + geometryScore;
 
-    const detection: OverlayBox & { score: number } = {
+    console.log(`  [detect] band[${i}] y=${band.startY}-${band.endY} stripBest="${bestCandidate.line}" cropBest="${croppedCandidate?.line ?? "null"}" final="${finalCandidate.line}" cropScore=${croppedCandidate?.score ?? 0} ctx=${contextScore} geo=${geometryScore} total=${totalScore}`);
+
+    const detection: OverlayDetectionWithScore = {
       x: overlayBox.x,
       y: overlayBox.y,
       width: overlayBox.width,
       height: overlayBox.height,
-      matchedLine: bestCandidate.line,
+      matchedLine: finalCandidate.line,
       score: totalScore,
     };
 
@@ -510,6 +860,66 @@ export function detectOverlayBoxInScreenshot(bitmap: RobotBitmap): OverlayBox | 
       bestDetection = detection;
     }
   }
+
+  return bestDetection;
+}
+
+export function detectOverlayBoxInScreenshot(bitmap: RobotBitmap, windowsScalePercent: number = 100): OverlayBox | null {
+  const defaultMask = buildWhiteTextMask(bitmap);
+  const coordinateMask = buildCoordinateOverlayTextMask(bitmap);
+
+  const defaultDetection = detectOverlayBoxWithMask(bitmap, defaultMask, windowsScalePercent);
+  const coordinateDetection = detectOverlayBoxWithMask(bitmap, coordinateMask, windowsScalePercent);
+
+  const parseDetectionLine = (line: string): { x: number; y: number; z: number } | null => {
+    const match = line.match(/^(\d{3,5}),(\d{3,5}),(\d)$/);
+    if (!match) {
+      return null;
+    }
+
+    const x = Number(match[1]);
+    const y = Number(match[2]);
+    const z = Number(match[3]);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+      return null;
+    }
+
+    return { x, y, z };
+  };
+
+  const isPlausibleCoordinateDetection = (detection: OverlayDetectionWithScore): boolean => {
+    if (detection.width < 90 || detection.height < 35) {
+      return false;
+    }
+
+    const maxExpectedWidth = Math.max(120, Math.floor(bitmap.width * 0.24));
+    if (detection.width > maxExpectedWidth || detection.height > 140) {
+      return false;
+    }
+
+    const commaCount = (detection.matchedLine.match(/,/g) ?? []).length;
+    if (commaCount !== 2) {
+      return false;
+    }
+
+    const digitCount = (detection.matchedLine.match(/\d/g) ?? []).length;
+    return digitCount >= 8 && digitCount <= 11;
+  };
+
+  let bestDetection: OverlayDetectionWithScore | null = null;
+  if (defaultDetection) {
+    bestDetection = defaultDetection;
+  }
+
+  if (coordinateDetection && isPlausibleCoordinateDetection(coordinateDetection)) {
+    const parsed = parseDetectionLine(coordinateDetection.matchedLine);
+    const isLowPlane = parsed ? parsed.z <= 1 : false;
+    if ((!bestDetection || coordinateDetection.score >= bestDetection.score + 40) && isLowPlane) {
+      bestDetection = coordinateDetection;
+    }
+  }
+
+  console.log(`  [final] default="${defaultDetection?.matchedLine ?? "null"}" score=${defaultDetection?.score ?? 0} coordinate="${coordinateDetection?.matchedLine ?? "null"}" score=${coordinateDetection?.score ?? 0} winner="${bestDetection?.matchedLine ?? "null"}"`);
 
   if (!bestDetection) {
     return null;

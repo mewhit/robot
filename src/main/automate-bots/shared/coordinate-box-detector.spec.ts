@@ -1,12 +1,8 @@
-/**
- * Test script to validate coordinate detector against screenshot files
- * Usage: ts-node src/main/automateBots/test-detector.ts <screenshot-path>
- */
-
-import fs from "fs";
+﻿import fs from "fs";
 import path from "path";
 import { PNG } from "pngjs";
-import { detectOverlayBoxInScreenshot, saveBitmapWithBox } from "./coordinate-box-detector";
+import { detectOverlayBoxInScreenshot, saveBitmapWithBox, saveSoftMaskDebug } from "./coordinate-box-detector";
+import { debugSaveAllStagesForRaw } from "./ocr-engine";
 
 export type RobotBitmap = {
   width: number;
@@ -16,14 +12,38 @@ export type RobotBitmap = {
   image: Buffer;
 };
 
-/**
- * Load PNG image and convert to RobotBitmap format (async)
- * @param filePath - Path to PNG file
- * @returns Promise<RobotBitmap | null>
- */
+type ExpectedCoordinates = {
+  x: number;
+  y: number;
+  z: number;
+};
+
+function cropBitmap(
+  bitmap: RobotBitmap,
+  cropX: number,
+  cropY: number,
+  cropWidth: number,
+  cropHeight: number,
+): RobotBitmap {
+  const x0 = Math.max(0, cropX);
+  const y0 = Math.max(0, cropY);
+  const x1 = Math.min(bitmap.width, cropX + cropWidth);
+  const y1 = Math.min(bitmap.height, cropY + cropHeight);
+  const w = Math.max(1, x1 - x0);
+  const h = Math.max(1, y1 - y0);
+  const bpp = bitmap.bytesPerPixel;
+  const cropped = Buffer.alloc(w * h * bpp);
+  for (let y = 0; y < h; y += 1) {
+    const srcOffset = (y0 + y) * bitmap.byteWidth + x0 * bpp;
+    const dstOffset = y * w * bpp;
+    bitmap.image.copy(cropped, dstOffset, srcOffset, srcOffset + w * bpp);
+  }
+  return { width: w, height: h, byteWidth: w * bpp, bytesPerPixel: bpp, image: cropped };
+}
+
 async function loadScreenshot(filePath: string): Promise<RobotBitmap | null> {
   if (!fs.existsSync(filePath)) {
-    console.error(`❌ File not found: ${filePath}`);
+    console.error(`File not found: ${filePath}`);
     return null;
   }
 
@@ -32,7 +52,6 @@ async function loadScreenshot(filePath: string): Promise<RobotBitmap | null> {
     fs.createReadStream(filePath)
       .pipe(png)
       .on("parsed", function (this: PNG) {
-        // Convert RGBA → BGR format (robotjs format)
         const buffer = Buffer.alloc(png.width * png.height * 4);
         for (let i = 0; i < png.data.length; i += 4) {
           const r = png.data[i];
@@ -55,53 +74,43 @@ async function loadScreenshot(filePath: string): Promise<RobotBitmap | null> {
         });
       })
       .on("error", (error) => {
-        console.error(`❌ Failed to load image: ${error}`);
+        console.error(`Failed to load image: ${error}`);
         resolve(null);
       });
   });
 }
 
-/**
- * Run detection test on a screenshot
- */
-async function testDetection(screenshotPath: string): Promise<boolean> {
-  console.log(`\n📸 Testing: ${screenshotPath}`);
-  console.log("─".repeat(60));
-
-  const bitmap = await loadScreenshot(screenshotPath);
-  if (!bitmap) {
-    console.error(`❌ Failed to load screenshot`);
-    return false;
+function parseExpectedCoordinatesFromFilename(screenshotPath: string): ExpectedCoordinates | null {
+  const fileName = path.basename(screenshotPath, path.extname(screenshotPath));
+  const match = fileName.match(/(?:^|-)r-(\d+)-(\d+)-(\d)(?:-|$)/i);
+  if (!match) {
+    return null;
   }
 
-  console.log(`✓ Loaded image: ${bitmap.width}×${bitmap.height}`);
-
-  try {
-    const result = detectOverlayBoxInScreenshot(bitmap);
-
-    if (result) {
-      console.log(`\n✅ DETECTION SUCCESS!`);
-      console.log(`   Tile Coordinates: ${result.matchedLine}`);
-      console.log(`   Overlay Box: (${result.x}, ${result.y}) ${result.width}×${result.height}`);
-
-      // Save debug image with box drawn
-      const debugOutputDir = "./test-image-debug";
-      const basename = path.basename(screenshotPath, path.extname(screenshotPath));
-      const debugPath = path.join(debugOutputDir, `${basename}-detected.png`);
-
-      saveBitmapWithBox(bitmap, result, debugPath);
-      console.log(`   Debug image: ${debugPath}`);
-      return true;
-    } else {
-      console.log(`\n❌ NO DETECTION - Overlay not found in image`);
-      return false;
-    }
-  } catch (error) {
-    console.error(`\n❌ Detection failed with error: ${error}`);
-    return false;
-  } finally {
-    console.log("─".repeat(60));
+  const x = Number(match[1]);
+  const y = Number(match[2]);
+  const z = Number(match[3]);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+    return null;
   }
+
+  return { x, y, z };
+}
+
+function parseDetectedCoordinates(matchedLine: string): ExpectedCoordinates | null {
+  const match = matchedLine.match(/^\s*(\d+),(\d+),(\d)\s*$/);
+  if (!match) {
+    return null;
+  }
+
+  const x = Number(match[1]);
+  const y = Number(match[2]);
+  const z = Number(match[3]);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+    return null;
+  }
+
+  return { x, y, z };
 }
 
 function patternToRegex(pattern: string): RegExp {
@@ -145,45 +154,120 @@ function expandScreenshotArgs(args: string[]): string[] {
   return expanded;
 }
 
-/**
- * Main test runner
- */
+function parseWindowsScalePercentFromFilename(screenshotPath: string): number {
+  const fileName = path.basename(screenshotPath, path.extname(screenshotPath));
+  // Naming convention: [gameRes]-[monitorTier]-[scalePercent]-...
+  // e.g. 1298x779-2k-125-r-3618-9473-0
+  const match = fileName.match(/^\d+x\d+-\w+-(\d+)-/);
+  if (!match) {
+    return 100;
+  }
+  const scale = Number(match[1]);
+  return Number.isFinite(scale) && scale > 0 ? scale : 100;
+}
+
+async function testDetection(screenshotPath: string): Promise<boolean> {
+  console.log(`\nTesting: ${screenshotPath}`);
+  console.log("-".repeat(60));
+
+  const bitmap = await loadScreenshot(screenshotPath);
+  if (!bitmap) {
+    console.error("Failed to load screenshot");
+    return false;
+  }
+
+  console.log(`Loaded image: ${bitmap.width}x${bitmap.height}`);
+
+  const debugOutputDir = "./test-image-debug";
+  const basename = path.basename(screenshotPath, path.extname(screenshotPath));
+  const windowsScalePercent = parseWindowsScalePercentFromFilename(screenshotPath);
+  console.log(`Windows scale: ${windowsScalePercent}%`);
+
+  try {
+    const result = detectOverlayBoxInScreenshot(bitmap, windowsScalePercent);
+    const expectedCoordinates = parseExpectedCoordinatesFromFilename(screenshotPath);
+
+    if (!result) {
+      console.log("NO DETECTION - overlay not found in image");
+      return false;
+    }
+
+    console.log("DETECTION SUCCESS");
+    console.log(`Tile coordinates: ${result.matchedLine}`);
+    console.log(`Overlay box: (${result.x}, ${result.y}) ${result.width}x${result.height}`);
+
+    const debugPath = path.join(debugOutputDir, `${basename}-detected.png`);
+    saveBitmapWithBox(bitmap, result, debugPath);
+    console.log(`Debug image: ${debugPath}`);
+
+    const croppedBitmap = cropBitmap(bitmap, result.x, result.y, result.width, result.height);
+    const debugRawPath = path.join(debugOutputDir, `${basename}-raw.png`);
+    debugSaveAllStagesForRaw(croppedBitmap, debugRawPath);
+    const softMaskPath = path.join(debugOutputDir, `${basename}-05-softmask.png`);
+    saveSoftMaskDebug(bitmap, result, softMaskPath);
+    console.log(`OCR crop debug: ${path.join(debugOutputDir, `${basename}-02-grayscale.png`)}`);
+    console.log(`OCR crop debug: ${path.join(debugOutputDir, `${basename}-04-upscaled.png`)}`);
+    console.log(`Soft mask debug: ${softMaskPath}`);
+
+    if (expectedCoordinates) {
+      const detectedCoordinates = parseDetectedCoordinates(result.matchedLine);
+      if (!detectedCoordinates) {
+        console.error(`Could not parse detected coordinates from matched line: ${result.matchedLine}`);
+        return false;
+      }
+
+      console.log(`Expected coordinates: ${expectedCoordinates.x},${expectedCoordinates.y},${expectedCoordinates.z}`);
+      const isMatch =
+        detectedCoordinates.x === expectedCoordinates.x &&
+        detectedCoordinates.y === expectedCoordinates.y &&
+        detectedCoordinates.z === expectedCoordinates.z;
+
+      if (!isMatch) {
+        console.error(
+          `Coordinate mismatch: expected ${expectedCoordinates.x},${expectedCoordinates.y},${expectedCoordinates.z}, got ${detectedCoordinates.x},${detectedCoordinates.y},${detectedCoordinates.z}`,
+        );
+        return false;
+      }
+    }
+    return true;
+  } catch (error) {
+    console.error(`Detection failed with error: ${error}`);
+    return false;
+  } finally {
+    console.log("-".repeat(60));
+  }
+}
+
 async function main(): Promise<void> {
   const args = expandScreenshotArgs(process.argv.slice(2));
+  const screenshots = args.length > 0 ? args : ["test-images/coordinate-box/*r-*.png"];
+  const expandedScreenshots = expandScreenshotArgs(screenshots);
 
-  if (args.length === 0) {
-    console.log(`
-Usage: npx ts-node src/main/automateBots/test-detector.ts <screenshot-path> [screenshot-path2] ...
-
-Examples:
-  npx ts-node src/main/automateBots/test-detector.ts ./test-images/screenshot1.png
-  npx ts-node src/main/automateBots/test-detector.ts test-images/tile-*.png
-
-The script will:
-  1. Load each PNG screenshot
-  2. Run detectOverlayBoxInScreenshot()
-  3. Print coordinates if found
-  4. Save debug image with overlay box drawn
-    `);
+  if (expandedScreenshots.length === 0) {
+    console.error("No screenshot files found.");
+    process.exitCode = 1;
     return;
   }
 
-  console.log(`\n🧪 Coordinate Detector Test Suite`);
-  console.log(`Testing ${args.length} screenshot(s)...\n`);
+  console.log("\nCoordinate Detector Test Suite");
+  console.log(`Testing ${expandedScreenshots.length} screenshot(s)...`);
 
   let successCount = 0;
   let failureCount = 0;
 
-  for (const arg of args) {
-    const success = await testDetection(arg);
+  for (const screenshotPath of expandedScreenshots) {
+    const success = await testDetection(screenshotPath);
     if (success) {
-      successCount++;
+      successCount += 1;
     } else {
-      failureCount++;
+      failureCount += 1;
     }
   }
 
-  console.log(`\n📊 Results: ${successCount} passed, ${failureCount} failed`);
+  console.log(`\nResults: ${successCount} passed, ${failureCount} failed`);
+  if (failureCount > 0) {
+    process.exitCode = 1;
+  }
 }
 
 main().catch(console.error);
