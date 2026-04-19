@@ -55,11 +55,13 @@ const DEPOSIT_CLICK_LOCK_TICKS = 1;
 const BANK_CLICK_LOCK_TICKS = 1;
 const BANK_POST_ORANGE_WAIT_TICKS = 3;
 const BANK_SOUTH_CLICK_LOCK_TICKS = 1;
-const BANK_RED_TILE_CLICK_LOCK_TICKS = 2;
+const BANK_YELLOW_TILE_CLICK_LOCK_TICKS = 2;
 const BANK_SOUTH_CLICK_OFFSET_PX = 120;
+const BANK_SOUTH_CLICK_RANDOM_RADIUS_PX = 14;
 const BANK_MOVE_MARGIN_PX = 8;
 const DEPOSIT_NEAR_STABLE_TICKS = 2;
 const DEPOSIT_STUCK_RETRY_TICKS = 3;
+const DEPOSIT_PROGRESS_EPSILON_PX = 2;
 const ACTIVE_NODE_MISSING_GRACE_TICKS = 2;
 const ACTIVE_NODE_MAX_WAIT_TICKS = 80;
 const ACTIVE_NODE_MATCH_RADIUS_PX = 34;
@@ -70,6 +72,8 @@ const BANK_ORANGE_R_TOLERANCE = 10;
 const BANK_ORANGE_G_TOLERANCE = 18;
 const BANK_ORANGE_B_TOLERANCE = 20;
 const BANK_ORANGE_MIN_COMPONENT_PIXELS = 40;
+const BOX_CLICK_INNER_RATIO = 0.75;
+const BOX_CLICK_PICK_MAX_ATTEMPTS = 12;
 
 interface ScreenCaptureBounds {
   x: number;
@@ -87,7 +91,7 @@ interface TileCoord {
 type HoverTileReadSource = "tile-location" | "overlay" | "none";
 type PostClickMouseMoveMode = "off" | "top-left" | "offset-200";
 type BotPhase = "searching" | "mining" | "depositing" | "banking";
-type BankingStep = "find-orange" | "wait-after-orange" | "move-south-until-red" | "red-clicked";
+type BankingStep = "find-orange" | "wait-after-orange" | "move-south-until-yellow" | "yellow-clicked";
 
 type HoverTileReadResult = {
   tile: TileCoord | null;
@@ -105,6 +109,8 @@ type BotState = {
   depositTriggerStableTicks: number;
   depositNearStableTicks: number;
   depositRetryTicks: number;
+  depositInFlight: boolean;
+  depositLastDistancePx: number | null;
   actionLockTicks: number;
   bankingStep: BankingStep;
   loopIndex: number;
@@ -141,6 +147,7 @@ type OrangeTargetBox = {
 let isLoopRunning = false;
 let startedAtMs: number | null = null;
 let debugCaptureIndex = 0;
+let lastClickPoint: { x: number; y: number } | null = null;
 
 function formatElapsedSinceStart(): string {
   if (startedAtMs === null) return "+0ms";
@@ -247,6 +254,67 @@ function clamp(value: number, min: number, max: number): number {
 
 function axisDistance(dx: number, dy: number): number {
   return Math.max(Math.abs(dx), Math.abs(dy));
+}
+
+function randomIntInclusive(min: number, max: number): number {
+  if (max <= min) return min;
+  return min + Math.floor(Math.random() * (max - min + 1));
+}
+
+function getInnerRange(start: number, size: number, ratio: number): { min: number; max: number } {
+  const boundedSize = Math.max(1, size);
+  const innerSize = Math.max(1, Math.floor(boundedSize * ratio));
+  const margin = Math.max(0, Math.floor((boundedSize - innerSize) / 2));
+  const min = start + margin;
+  const max = min + innerSize - 1;
+  return { min, max };
+}
+
+function pickDistinctScreenPointInLocalRange(
+  localMinX: number,
+  localMaxX: number,
+  localMinY: number,
+  localMaxY: number,
+  captureBounds: ScreenCaptureBounds,
+): { x: number; y: number } {
+  const minX = captureBounds.x + Math.min(localMinX, localMaxX);
+  const maxX = captureBounds.x + Math.max(localMinX, localMaxX);
+  const minY = captureBounds.y + Math.min(localMinY, localMaxY);
+  const maxY = captureBounds.y + Math.max(localMinY, localMaxY);
+
+  let candidate = { x: minX, y: minY };
+  for (let attempt = 0; attempt < BOX_CLICK_PICK_MAX_ATTEMPTS; attempt += 1) {
+    const x = randomIntInclusive(minX, maxX);
+    const y = randomIntInclusive(minY, maxY);
+    candidate = { x, y };
+    if (!lastClickPoint || x !== lastClickPoint.x || y !== lastClickPoint.y) {
+      return candidate;
+    }
+  }
+
+  if (minX < maxX) {
+    const nextX = candidate.x > minX ? candidate.x - 1 : candidate.x + 1;
+    return { x: nextX, y: candidate.y };
+  }
+
+  if (minY < maxY) {
+    const nextY = candidate.y > minY ? candidate.y - 1 : candidate.y + 1;
+    return { x: candidate.x, y: nextY };
+  }
+
+  return candidate;
+}
+
+function pickDistinctScreenPointInBox(
+  boxX: number,
+  boxY: number,
+  boxWidth: number,
+  boxHeight: number,
+  captureBounds: ScreenCaptureBounds,
+): { x: number; y: number } {
+  const innerX = getInnerRange(boxX, boxWidth, BOX_CLICK_INNER_RATIO);
+  const innerY = getInnerRange(boxY, boxHeight, BOX_CLICK_INNER_RATIO);
+  return pickDistinctScreenPointInLocalRange(innerX.min, innerX.max, innerY.min, innerY.max, captureBounds);
 }
 
 function isBankOrangePixel(r: number, g: number, b: number): boolean {
@@ -375,10 +443,15 @@ function toNodeInteractionScreenPoint(
   node: MotherlodeMineBox,
   captureBounds: ScreenCaptureBounds,
 ): { x: number; y: number } {
-  return {
-    x: captureBounds.x + node.centerX,
-    y: captureBounds.y + getNodeUpperBiasedLocalY(node),
-  };
+  const innerX = getInnerRange(node.x, node.width, BOX_CLICK_INNER_RATIO);
+  const innerY = getInnerRange(node.y, node.height, BOX_CLICK_INNER_RATIO);
+
+  const preferredY = clamp(getNodeUpperBiasedLocalY(node), innerY.min, innerY.max);
+  const yBandHeight = Math.max(1, Math.floor((innerY.max - innerY.min + 1) * 0.45));
+  const yMin = Math.max(innerY.min, preferredY - yBandHeight + 1);
+  const yMax = Math.max(yMin, preferredY);
+
+  return pickDistinctScreenPointInLocalRange(innerX.min, innerX.max, yMin, yMax, captureBounds);
 }
 
 function toNodeTrackingScreenPoint(
@@ -395,20 +468,40 @@ function toDepositInteractionScreenPoint(
   depositBox: MotherlodeDepositBox,
   captureBounds: ScreenCaptureBounds,
 ): { x: number; y: number } {
-  return {
-    x: captureBounds.x + depositBox.centerX,
-    y: captureBounds.y + depositBox.centerY,
-  };
+  return pickDistinctScreenPointInBox(
+    depositBox.x,
+    depositBox.y,
+    depositBox.width,
+    depositBox.height,
+    captureBounds,
+  );
 }
 
 function toObstacleInteractionScreenPoint(
   obstacleBox: MotherlodeObstacleRedBox,
   captureBounds: ScreenCaptureBounds,
 ): { x: number; y: number } {
-  return {
-    x: captureBounds.x + obstacleBox.centerX,
-    y: captureBounds.y + obstacleBox.centerY,
-  };
+  return pickDistinctScreenPointInBox(
+    obstacleBox.x,
+    obstacleBox.y,
+    obstacleBox.width,
+    obstacleBox.height,
+    captureBounds,
+  );
+}
+
+function toOrangeInteractionScreenPoint(
+  orangeBox: OrangeTargetBox,
+  captureBounds: ScreenCaptureBounds,
+): { x: number; y: number } {
+  return pickDistinctScreenPointInBox(orangeBox.x, orangeBox.y, orangeBox.width, orangeBox.height, captureBounds);
+}
+
+function toYellowInteractionScreenPoint(
+  node: MotherlodeMineBox,
+  captureBounds: ScreenCaptureBounds,
+): { x: number; y: number } {
+  return pickDistinctScreenPointInBox(node.x, node.y, node.width, node.height, captureBounds);
 }
 
 function resolvePostClickMouseTarget(
@@ -445,24 +538,30 @@ function moveMouseAwayFromClickedNode(
 function clickScreenPoint(screenX: number, screenY: number): void {
   moveMouse(screenX, screenY);
   mouseClick("left", false);
+  lastClickPoint = { x: screenX, y: screenY };
 }
 
 function toSouthMoveScreenPoint(
   captureBounds: ScreenCaptureBounds,
   playerAnchorInCapture: { x: number; y: number } | null,
 ): { x: number; y: number } {
-  const minX = captureBounds.x + BANK_MOVE_MARGIN_PX;
-  const minY = captureBounds.y + BANK_MOVE_MARGIN_PX;
-  const maxX = captureBounds.x + captureBounds.width - 1 - BANK_MOVE_MARGIN_PX;
-  const maxY = captureBounds.y + captureBounds.height - 1 - BANK_MOVE_MARGIN_PX;
-
   const anchorX = playerAnchorInCapture?.x ?? Math.round(captureBounds.width / 2);
   const anchorY = playerAnchorInCapture?.y ?? Math.round(captureBounds.height / 2);
 
-  return {
-    x: clamp(captureBounds.x + anchorX, minX, maxX),
-    y: clamp(captureBounds.y + anchorY + BANK_SOUTH_CLICK_OFFSET_PX, minY, maxY),
-  };
+  const minLocalX = BANK_MOVE_MARGIN_PX;
+  const minLocalY = BANK_MOVE_MARGIN_PX;
+  const maxLocalX = captureBounds.width - 1 - BANK_MOVE_MARGIN_PX;
+  const maxLocalY = captureBounds.height - 1 - BANK_MOVE_MARGIN_PX;
+
+  const baseLocalX = clamp(anchorX, minLocalX, maxLocalX);
+  const baseLocalY = clamp(anchorY + BANK_SOUTH_CLICK_OFFSET_PX, minLocalY, maxLocalY);
+
+  const randomMinX = clamp(baseLocalX - BANK_SOUTH_CLICK_RANDOM_RADIUS_PX, minLocalX, maxLocalX);
+  const randomMaxX = clamp(baseLocalX + BANK_SOUTH_CLICK_RANDOM_RADIUS_PX, minLocalX, maxLocalX);
+  const randomMinY = clamp(baseLocalY - BANK_SOUTH_CLICK_RANDOM_RADIUS_PX, minLocalY, maxLocalY);
+  const randomMaxY = clamp(baseLocalY + BANK_SOUTH_CLICK_RANDOM_RADIUS_PX, minLocalY, maxLocalY);
+
+  return pickDistinctScreenPointInLocalRange(randomMinX, randomMaxX, randomMinY, randomMaxY, captureBounds);
 }
 
 function isPlayerNearDepositBox(
@@ -470,12 +569,20 @@ function isPlayerNearDepositBox(
   depositBox: MotherlodeDepositBox | null,
   radiusPx: number,
 ): boolean {
-  if (!playerAnchorInCapture || !depositBox) return false;
+  const distance = getPlayerDistanceToDepositBox(playerAnchorInCapture, depositBox);
+  return distance !== null && distance <= radiusPx;
+}
+
+function getPlayerDistanceToDepositBox(
+  playerAnchorInCapture: { x: number; y: number } | null,
+  depositBox: MotherlodeDepositBox | null,
+): number | null {
+  if (!playerAnchorInCapture || !depositBox) return null;
   const nearestX = clamp(playerAnchorInCapture.x, depositBox.x, depositBox.x + depositBox.width - 1);
   const nearestY = clamp(playerAnchorInCapture.y, depositBox.y, depositBox.y + depositBox.height - 1);
   const dx = playerAnchorInCapture.x - nearestX;
   const dy = playerAnchorInCapture.y - nearestY;
-  return Math.sqrt(dx * dx + dy * dy) <= radiusPx;
+  return Math.sqrt(dx * dx + dy * dy);
 }
 
 function isPlayerCollidingWithObstacle(
@@ -506,6 +613,8 @@ function resetToSearching(current: BotState): BotState {
     miningWaitTicks: 0,
     depositNearStableTicks: 0,
     depositRetryTicks: 0,
+    depositInFlight: false,
+    depositLastDistancePx: null,
     bankingStep: "find-orange",
   };
 }
@@ -520,6 +629,8 @@ function resetToDepositing(current: BotState): BotState {
     miningWaitTicks: 0,
     depositNearStableTicks: 0,
     depositRetryTicks: 0,
+    depositInFlight: false,
+    depositLastDistancePx: null,
     bankingStep: "find-orange",
   };
 }
@@ -534,6 +645,8 @@ function resetToBanking(current: BotState): BotState {
     miningWaitTicks: 0,
     depositNearStableTicks: 0,
     depositRetryTicks: 0,
+    depositInFlight: false,
+    depositLastDistancePx: null,
     bankingStep: "find-orange",
   };
 }
@@ -741,14 +854,37 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
     const capture = captureDepositState(captureBounds, "deposit");
     current = updateBagState(current, capture.bagFullState);
 
+    const depositDistancePx = getPlayerDistanceToDepositBox(capture.playerAnchorInCapture, capture.depositBox);
     const nearDeposit = isPlayerNearDepositBox(
       capture.playerAnchorInCapture,
       capture.depositBox,
       DEPOSIT_PLAYER_NEAR_RADIUS_PX,
     );
     const depositNearStableTicks = nearDeposit ? current.depositNearStableTicks + 1 : 0;
-    const depositRetryTicks = nearDeposit ? 0 : current.depositRetryTicks + 1;
-    current = { ...current, depositNearStableTicks, depositRetryTicks };
+    let depositRetryTicks = current.depositRetryTicks;
+    let depositLastDistancePx = current.depositLastDistancePx;
+
+    if (nearDeposit) {
+      depositRetryTicks = 0;
+      depositLastDistancePx = depositDistancePx;
+    } else if (!current.depositInFlight) {
+      depositRetryTicks = 0;
+      depositLastDistancePx = depositDistancePx;
+    } else if (depositDistancePx === null) {
+      depositRetryTicks += 1;
+      depositLastDistancePx = null;
+    } else if (
+      depositLastDistancePx === null ||
+      depositDistancePx < depositLastDistancePx - DEPOSIT_PROGRESS_EPSILON_PX
+    ) {
+      depositRetryTicks = 0;
+      depositLastDistancePx = depositDistancePx;
+    } else {
+      depositRetryTicks += 1;
+      depositLastDistancePx = depositDistancePx;
+    }
+
+    current = { ...current, depositNearStableTicks, depositRetryTicks, depositLastDistancePx };
 
     if (depositNearStableTicks >= DEPOSIT_NEAR_STABLE_TICKS) {
       if (current.bagFullState === "red") {
@@ -773,6 +909,24 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
       return current;
     }
 
+    if (!current.depositInFlight) {
+      const point = toDepositInteractionScreenPoint(capture.depositBox, captureBounds);
+      log(`Automate Bot (${BOT_NAME}): #${current.loopIndex} Clicking cyan deposit at (${point.x},${point.y}).`);
+      clickScreenPoint(point.x, point.y);
+      moveMouseAwayFromClickedNode(point.x, point.y, captureBounds);
+      return {
+        ...current,
+        depositInFlight: true,
+        depositRetryTicks: 0,
+        depositLastDistancePx: depositDistancePx,
+        actionLockTicks: DEPOSIT_CLICK_LOCK_TICKS,
+      };
+    }
+
+    if (current.depositRetryTicks < DEPOSIT_STUCK_RETRY_TICKS) {
+      return current;
+    }
+
     if (
       current.depositRetryTicks >= DEPOSIT_STUCK_RETRY_TICKS &&
       shouldClearRedObstacle(capture.playerBoxInCapture, capture.obstacleBox)
@@ -786,15 +940,23 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
       return {
         ...current,
         depositRetryTicks: 0,
+        depositLastDistancePx: depositDistancePx,
         actionLockTicks: OBSTACLE_CLICK_LOCK_TICKS,
       };
     }
 
     const point = toDepositInteractionScreenPoint(capture.depositBox, captureBounds);
-    log(`Automate Bot (${BOT_NAME}): #${current.loopIndex} Clicking cyan deposit at (${point.x},${point.y}).`);
+    warn(
+      `Automate Bot (${BOT_NAME}): #${current.loopIndex} Deposit travel stalled for ${current.depositRetryTicks} ticks. Retrying cyan deposit click at (${point.x},${point.y}).`,
+    );
     clickScreenPoint(point.x, point.y);
     moveMouseAwayFromClickedNode(point.x, point.y, captureBounds);
-    return { ...current, actionLockTicks: DEPOSIT_CLICK_LOCK_TICKS };
+    return {
+      ...current,
+      depositRetryTicks: 0,
+      depositLastDistancePx: depositDistancePx,
+      actionLockTicks: DEPOSIT_CLICK_LOCK_TICKS,
+    };
   }
 
   const captureLabel = current.phase === "mining" ? "mine" : current.phase === "banking" ? "bank" : "search";
@@ -837,11 +999,13 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
       if (current.actionLockTicks > 0) {
         return current;
       }
-      log(`Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking post-ladder wait finished; moving south until red tile appears.`);
-      return { ...current, bankingStep: "move-south-until-red" };
+      log(
+        `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking post-ladder wait finished; moving south until yellow tile appears.`,
+      );
+      return { ...current, bankingStep: "move-south-until-yellow" };
     }
 
-    if (current.bankingStep === "red-clicked") {
+    if (current.bankingStep === "yellow-clicked") {
       if (current.actionLockTicks > 0) {
         return current;
       }
@@ -855,12 +1019,9 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
     if (current.bankingStep === "find-orange") {
       const nearestOrangeBox = findNearestOrangeBox(capture.orangeBoxes, captureBounds, capture.playerAnchorInCapture);
       if (nearestOrangeBox) {
-        const point = {
-          x: captureBounds.x + nearestOrangeBox.centerX,
-          y: captureBounds.y + nearestOrangeBox.centerY,
-        };
+        const point = toOrangeInteractionScreenPoint(nearestOrangeBox, captureBounds);
         log(
-          `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking phase clicking orange box center at (${point.x},${point.y}) rgb˜(${BANK_ORANGE_TARGET_R},${BANK_ORANGE_TARGET_G},${BANK_ORANGE_TARGET_B}) pixels=${nearestOrangeBox.pixelCount}.`,
+          `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking phase clicking orange box at (${point.x},${point.y}) rgb˜(${BANK_ORANGE_TARGET_R},${BANK_ORANGE_TARGET_G},${BANK_ORANGE_TARGET_B}) pixels=${nearestOrangeBox.pixelCount}.`,
         );
         clickScreenPoint(point.x, point.y);
         moveMouseAwayFromClickedNode(point.x, point.y, captureBounds);
@@ -871,15 +1032,15 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
         };
       }
 
-      const nearestYellowNode = findNearestYellowNode(capture.boxes, captureBounds, capture.playerAnchorInCapture);
-      if (!nearestYellowNode) {
+      const nearestYellowNodeForFallback = findNearestYellowNode(capture.boxes, captureBounds, capture.playerAnchorInCapture);
+      if (!nearestYellowNodeForFallback) {
         warn(`Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking phase active but no orange/yellow box found.`);
         return current;
       }
 
-      const fallbackPoint = toNodeTrackingScreenPoint(nearestYellowNode, captureBounds);
+      const fallbackPoint = toYellowInteractionScreenPoint(nearestYellowNodeForFallback, captureBounds);
       warn(
-        `Automate Bot (${BOT_NAME}): #${current.loopIndex} Orange box not found; fallback clicking yellow box center at (${fallbackPoint.x},${fallbackPoint.y}).`,
+        `Automate Bot (${BOT_NAME}): #${current.loopIndex} Orange box not found; fallback clicking yellow box at (${fallbackPoint.x},${fallbackPoint.y}).`,
       );
       clickScreenPoint(fallbackPoint.x, fallbackPoint.y);
       moveMouseAwayFromClickedNode(fallbackPoint.x, fallbackPoint.y, captureBounds);
@@ -890,25 +1051,30 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
       };
     }
 
-    if (capture.obstacleBox) {
-      const redPoint = toObstacleInteractionScreenPoint(capture.obstacleBox, captureBounds);
-      log(`Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking found red tile at (${redPoint.x},${redPoint.y}); clicking.`);
-      clickScreenPoint(redPoint.x, redPoint.y);
-      moveMouseAwayFromClickedNode(redPoint.x, redPoint.y, captureBounds);
+    const nearestYellowNode = findNearestYellowNode(capture.boxes, captureBounds, capture.playerAnchorInCapture);
+    if (nearestYellowNode) {
+      const yellowPoint = toYellowInteractionScreenPoint(nearestYellowNode, captureBounds);
+      log(
+        `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking found yellow tile at (${yellowPoint.x},${yellowPoint.y}); clicking.`,
+      );
+      clickScreenPoint(yellowPoint.x, yellowPoint.y);
+      moveMouseAwayFromClickedNode(yellowPoint.x, yellowPoint.y, captureBounds);
       return {
         ...current,
-        bankingStep: "red-clicked",
-        actionLockTicks: BANK_RED_TILE_CLICK_LOCK_TICKS,
+        bankingStep: "yellow-clicked",
+        actionLockTicks: BANK_YELLOW_TILE_CLICK_LOCK_TICKS,
       };
     }
 
     const southPoint = toSouthMoveScreenPoint(captureBounds, capture.playerAnchorInCapture);
-    log(`Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking red tile not visible; clicking south at (${southPoint.x},${southPoint.y}).`);
+    log(
+      `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking yellow tile not visible; clicking south at (${southPoint.x},${southPoint.y}).`,
+    );
     clickScreenPoint(southPoint.x, southPoint.y);
     moveMouseAwayFromClickedNode(southPoint.x, southPoint.y, captureBounds);
     return {
       ...current,
-      bankingStep: "move-south-until-red",
+      bankingStep: "move-south-until-yellow",
       actionLockTicks: BANK_SOUTH_CLICK_LOCK_TICKS,
     };
   }
@@ -944,7 +1110,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
     log(
       `Automate Bot (${BOT_NAME}): #${current.loopIndex} Clicking node at tile (${tileRead.tile.x},${tileRead.tile.y},${tileRead.tile.z}) via ${tileRead.source}.`,
     );
-    mouseClick("left", false);
+    clickScreenPoint(interactionPoint.x, interactionPoint.y);
     moveMouseAwayFromClickedNode(interactionPoint.x, interactionPoint.y, captureBounds);
     return {
       ...current,
@@ -1014,6 +1180,8 @@ async function runLoop(captureBounds: ScreenCaptureBounds): Promise<void> {
     depositTriggerStableTicks: 0,
     depositNearStableTicks: 0,
     depositRetryTicks: 0,
+    depositInFlight: false,
+    depositLastDistancePx: null,
     actionLockTicks: 0,
     bankingStep: "find-orange",
     loopIndex: 0,
@@ -1053,6 +1221,7 @@ export function onMotherlodeMineBotV2Start(): void {
   if (!isLoopRunning) {
     startedAtMs = Date.now();
     debugCaptureIndex = 0;
+    lastClickPoint = null;
   }
 
   log(`Automate Bot STARTED (${BOT_NAME}).`);
