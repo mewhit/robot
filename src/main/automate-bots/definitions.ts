@@ -2,12 +2,14 @@ export const AGILITY_BOT_ID = "agility";
 export const ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID = "attack-zamorak-warrior-safe-spot";
 export const COMBAT_AUTO_BOT_ID = "combat-auto";
 export const MINING_MOTHERLODE_MINE_BOT_ID = "mining-motherlode-mine";
+export const MINING_MOTHERLODE_MINE_V2_BOT_ID = "mining-motherlode-mine-v2";
 
 export type AutomateBotId =
   | typeof AGILITY_BOT_ID
   | typeof ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID
   | typeof COMBAT_AUTO_BOT_ID
-  | typeof MINING_MOTHERLODE_MINE_BOT_ID;
+  | typeof MINING_MOTHERLODE_MINE_BOT_ID
+  | typeof MINING_MOTHERLODE_MINE_V2_BOT_ID;
 
 export type AutomateBotDefinition = {
   id: AutomateBotId;
@@ -33,6 +35,11 @@ export const AUTOMATE_BOTS: AutomateBotDefinition[] = [
   {
     id: MINING_MOTHERLODE_MINE_BOT_ID,
     name: "Motherlode Mine",
+    group: "Mining",
+  },
+  {
+    id: MINING_MOTHERLODE_MINE_V2_BOT_ID,
+    name: "Motherlode Mine V2",
     group: "Mining",
   },
 ];

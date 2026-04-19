@@ -3,12 +3,14 @@ import { onAgilityBotStart } from "./automate-bots/agility-bot";
 import { onAttackZamorakWarriorSafeSpotBotStart } from "./automate-bots/attack-zamorak-warrior-safe-spot-bot";
 import { onCombatAutoBotStart } from "./automate-bots/combat/auto-bot";
 import { onMotherlodeMineBotStart } from "./automate-bots/motherlode-mine-bot";
+import { onMotherlodeMineBotV2Start } from "./automate-bots/motherlode-mine-bot-v2";
 import {
   AGILITY_BOT_ID,
   ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID,
   COMBAT_AUTO_BOT_ID,
   DEFAULT_AUTOMATE_BOT_ID,
   MINING_MOTHERLODE_MINE_BOT_ID,
+  MINING_MOTHERLODE_MINE_V2_BOT_ID,
   isAutomateBotId,
 } from "./automate-bots/definitions";
 import { flushOcrDebugDirectory } from "./automate-bots/shared/ocr-engine";
@@ -21,6 +23,7 @@ const botStartHandlers = new Map<string, () => void>([
   [ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID, onAttackZamorakWarriorSafeSpotBotStart],
   [COMBAT_AUTO_BOT_ID, onCombatAutoBotStart],
   [MINING_MOTHERLODE_MINE_BOT_ID, onMotherlodeMineBotStart],
+  [MINING_MOTHERLODE_MINE_V2_BOT_ID, onMotherlodeMineBotV2Start],
 ]);
 
 const botStartFromStepHandlers = new Map<string, (stepId: string) => void>();
@@ -60,7 +63,7 @@ export function loadSavedAutomateBotSelection() {
   AppState.selectedAutomateBotId = isAutomateBotId(normalized) ? normalized : DEFAULT_AUTOMATE_BOT_ID;
 }
 
-export function stopAutomateBot(source: "f2" | "ui" | "bot") {
+export function stopAutomateBot(source: "f4" | "ui" | "bot") {
   if (!AppState.automateBotRunning) {
     return;
   }
@@ -72,7 +75,7 @@ export function stopAutomateBot(source: "f2" | "ui" | "bot") {
   console.log(`Automate Bot STOPPED via ${source.toUpperCase()}.`);
 }
 
-export function startSelectedAutomateBot(source: "f2" | "ui") {
+export function startSelectedAutomateBot(source: "f4" | "ui") {
   if (AppState.automateBotRunning) {
     return;
   }
@@ -125,7 +128,7 @@ export function startAutomateBotFromStep(stepId: string) {
   matchedHandler(stepId);
 }
 
-export function toggleSelectedAutomateBot(source: "f2" | "ui") {
+export function toggleSelectedAutomateBot(source: "f4" | "ui") {
   if (AppState.automateBotRunning) {
     stopAutomateBot(source);
     return;

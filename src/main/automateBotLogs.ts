@@ -11,7 +11,7 @@ const automateBotLogLines: string[] = [];
 type BotLogSession = {
   id: string;
   botId: string;
-  source: "f2" | "ui" | "bot";
+  source: "f4" | "ui" | "bot";
   startedAtIso: string;
 };
 
@@ -44,7 +44,7 @@ function formatSessionId(date: Date): string {
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
 
-function writeSessionLogFile(session: BotLogSession, stopSource: "f2" | "ui" | "bot", stopReason: string): void {
+function writeSessionLogFile(session: BotLogSession, stopSource: "f4" | "ui" | "bot", stopReason: string): void {
   try {
     fs.mkdirSync(AUTOMATE_BOT_LOGS_DIR, { recursive: true });
 
@@ -69,7 +69,7 @@ function writeSessionLogFile(session: BotLogSession, stopSource: "f2" | "ui" | "
   }
 }
 
-export function startAutomateBotLogSession(botId: string, source: "f2" | "ui" | "bot"): void {
+export function startAutomateBotLogSession(botId: string, source: "f4" | "ui" | "bot"): void {
   if (currentSession) {
     writeSessionLogFile(currentSession, source, "restarted-before-stop");
   }
@@ -87,7 +87,7 @@ export function startAutomateBotLogSession(botId: string, source: "f2" | "ui" | 
   sendAutomateBotLogs();
 }
 
-export function stopAutomateBotLogSession(source: "f2" | "ui" | "bot", reason: string = "stopped"): void {
+export function stopAutomateBotLogSession(source: "f4" | "ui" | "bot", reason: string = "stopped"): void {
   if (!currentSession) {
     return;
   }

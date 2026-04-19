@@ -21,17 +21,19 @@ export function setupIoHookHandlers() {
       return;
     }
 
-    if (e.keycode === UiohookKey.F2) {
+    if (e.keycode === UiohookKey.F4) {
       if (AppState.activeView === "automateBot" || AppState.automateBotRunning) {
         try {
-          toggleSelectedAutomateBot("f2");
+          toggleSelectedAutomateBot("f4");
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           console.error(`Could not toggle automate bot: ${message}`);
         }
         return;
       }
+    }
 
+    if (e.keycode === UiohookKey.F2) {
       if (AppState.activeView === "debug") {
         const result = runAgilityScreenshotCapture({
           targetFilePath: getSavedScreenshotSavePath() ?? undefined,
