@@ -1,7 +1,10 @@
 import fs from "fs";
 import path from "path";
 import { PNG } from "pngjs";
-import { detectMotherlodeMineBoxesInScreenshot, saveBitmapWithMotherlodeMineBoxes } from "./motherlode-mine-box-detector";
+import {
+  detectMotherlodeMineBoxesInScreenshot,
+  saveBitmapWithMotherlodeMineBoxes,
+} from "./motherlode-mine-box-detector";
 
 type RobotBitmap = {
   width: number;
@@ -92,6 +95,41 @@ function expandScreenshotArgs(args: string[]): string[] {
   return expanded;
 }
 
+type ExpectedBoxCounts = {
+  green: number;
+  yellow: number;
+};
+
+function parseExpectedColorCountsFromFilename(screenshotPath: string): ExpectedBoxCounts | null {
+  const basename = path.basename(screenshotPath, path.extname(screenshotPath));
+  const match = basename.match(/-g(\d+)-y(\d+)(?:-nodes)?$/i);
+  if (!match) {
+    return null;
+  }
+
+  const expectedGreenCount = Number(match[1]);
+  const expectedYellowCount = Number(match[2]);
+  if (!Number.isFinite(expectedGreenCount) || !Number.isFinite(expectedYellowCount)) {
+    return null;
+  }
+
+  return {
+    green: expectedGreenCount,
+    yellow: expectedYellowCount,
+  };
+}
+
+function parseExpectedNodeCountFromFilename(screenshotPath: string): number | null {
+  const basename = path.basename(screenshotPath, path.extname(screenshotPath));
+  const match = basename.match(/-(\d+)-nodes$/i);
+  if (!match) {
+    return null;
+  }
+
+  const expectedCount = Number(match[1]);
+  return Number.isFinite(expectedCount) ? expectedCount : null;
+}
+
 async function testDetection(screenshotPath: string): Promise<boolean> {
   console.log(`\nTesting: ${screenshotPath}`);
   console.log("-".repeat(60));
@@ -102,9 +140,13 @@ async function testDetection(screenshotPath: string): Promise<boolean> {
   }
 
   const boxes = detectMotherlodeMineBoxesInScreenshot(bitmap);
+  const greenBoxes = boxes.filter((box) => box.color === "green");
+  const yellowBoxes = boxes.filter((box) => box.color === "yellow");
+  const expectedColorCounts = parseExpectedColorCountsFromFilename(screenshotPath);
+  const expectedNodeCount = parseExpectedNodeCountFromFilename(screenshotPath);
+
   if (boxes.length === 0) {
     console.log("No motherlode mine boxes detected.");
-    return false;
   }
 
   for (const [index, box] of boxes.entries()) {
@@ -113,11 +155,43 @@ async function testDetection(screenshotPath: string): Promise<boolean> {
     );
   }
 
-  const debugOutputDir = "./ocr-debug";
+  const debugOutputDir = "./test-image-debug";
   const basename = path.basename(screenshotPath, path.extname(screenshotPath));
   const debugPath = path.join(debugOutputDir, `${basename}-motherlode-mine-boxes.png`);
   saveBitmapWithMotherlodeMineBoxes(bitmap, boxes, debugPath);
   console.log(`Debug image: ${debugPath}`);
+
+  if (expectedColorCounts !== null) {
+    if (greenBoxes.length !== expectedColorCounts.green || yellowBoxes.length !== expectedColorCounts.yellow) {
+      console.error(
+        `FAILED: Expected counts from filename suffix '-g${expectedColorCounts.green}-y${expectedColorCounts.yellow}': green=${expectedColorCounts.green}, yellow=${expectedColorCounts.yellow}; detected green=${greenBoxes.length}, yellow=${yellowBoxes.length}.`,
+      );
+      return false;
+    }
+
+    console.log(
+      `Color count assertion passed: expected g=${expectedColorCounts.green}, y=${expectedColorCounts.yellow}; detected g=${greenBoxes.length}, y=${yellowBoxes.length}.`,
+    );
+    return true;
+  }
+
+  if (expectedNodeCount !== null) {
+    if (boxes.length !== expectedNodeCount) {
+      console.error(
+        `FAILED: Expected ${expectedNodeCount} node(s) from filename suffix '-${expectedNodeCount}-nodes', but detected ${boxes.length}.`,
+      );
+      return false;
+    }
+
+    console.log(`Node count assertion passed: expected ${expectedNodeCount}, detected ${boxes.length}.`);
+    return true;
+  }
+
+  if (boxes.length === 0) {
+    return false;
+  }
+
+  console.log("No '-gN-yN' or '-N-nodes' suffix in filename; skipping count assertions.");
 
   return true;
 }
@@ -143,6 +217,10 @@ async function main(): Promise<void> {
   }
 
   console.log(`\nResults: ${successCount} passed, ${failureCount} failed`);
+
+  if (failureCount > 0) {
+    process.exitCode = 1;
+  }
 }
 
 main().catch(console.error);

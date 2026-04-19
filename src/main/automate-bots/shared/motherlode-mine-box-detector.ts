@@ -43,7 +43,7 @@ const MIN_ASPECT_RATIO = 0.68;
 const MAX_ASPECT_RATIO = 1.45;
 const MIN_AVG_GREEN = 145;
 const MIN_GREEN_DOMINANCE = 105;
-const GREEN_RING_MIN_PIXEL_COUNT = 140;
+const GREEN_RING_MIN_PIXEL_COUNT = 120;
 const GREEN_RING_MIN_SIDE_PX = 30;
 const GREEN_RING_MAX_SIDE_PX = 40;
 const GREEN_RING_MIN_FILL_RATIO = 0.12;
@@ -51,22 +51,18 @@ const GREEN_RING_MAX_FILL_RATIO = 0.38;
 const GREEN_RING_MIN_ASPECT_RATIO = 0.85;
 const GREEN_RING_MAX_ASPECT_RATIO = 1.2;
 const GREEN_RING_MIN_AVG_GREEN = 150;
-const GREEN_RING_MIN_GREEN_DOMINANCE = 88;
-const MIN_AVG_YELLOW_RED = 165;
-const MIN_YELLOW_RED_DOMINANCE = 60;
-const YELLOW_RING_MIN_PIXEL_COUNT = 130;
-const YELLOW_RING_MIN_SIDE_PX = 22;
-const YELLOW_RING_MAX_SIDE_PX = 44;
-const YELLOW_RING_MIN_FILL_RATIO = 0.1;
-const YELLOW_RING_MAX_FILL_RATIO = 0.62;
-const YELLOW_RING_MIN_ASPECT_RATIO = 0.7;
-const YELLOW_RING_MAX_ASPECT_RATIO = 1.45;
-const YELLOW_RING_MIN_AVG_RED = 160;
-const YELLOW_RING_MIN_RED_DOMINANCE = 60;
+const GREEN_RING_MIN_GREEN_DOMINANCE = 84;
+const MIN_YELLOW_PIXEL_COUNT = 900;
+const MIN_AVG_YELLOW_RED = 175;
+const MIN_YELLOW_RED_DOMINANCE = 95;
+const MAX_YELLOW_RED_DOMINANCE = 150;
+const MAX_YELLOW_GREEN_DOMINANCE = 45;
 const COMPONENT_MERGE_GAP_PX = 5;
 const COMPONENT_MIN_OVERLAP_RATIO = 0.8;
 const MAX_MERGED_COMPONENT_WIDTH_PX = MAX_BOX_WIDTH_PX + 8;
 const MAX_MERGED_COMPONENT_HEIGHT_PX = MAX_BOX_HEIGHT_PX + 8;
+const GREEN_SPLIT_MIN_ELONGATION_RATIO = 1.55;
+const GREEN_SPLIT_MAX_SEGMENTS = 3;
 
 function isMotherlodeGreenPixel(r: number, g: number, b: number): boolean {
   return g >= 132 && g - r >= 55 && g - b >= 28 && r <= 190 && b <= 190;
@@ -331,6 +327,140 @@ function mergeNearbyComponents(components: BoxCandidate[]): BoxCandidate[] {
   return merged;
 }
 
+function buildCandidateFromMaskSlice(
+  mask: Uint8Array,
+  bitmap: RobotBitmap,
+  minX: number,
+  minY: number,
+  maxX: number,
+  maxY: number,
+): BoxCandidate | null {
+  let boundsMinX = bitmap.width;
+  let boundsMinY = bitmap.height;
+  let boundsMaxX = -1;
+  let boundsMaxY = -1;
+  let pixelCount = 0;
+  let redSum = 0;
+  let greenSum = 0;
+  let blueSum = 0;
+
+  for (let y = minY; y <= maxY; y += 1) {
+    for (let x = minX; x <= maxX; x += 1) {
+      const index = y * bitmap.width + x;
+      if (!mask[index]) {
+        continue;
+      }
+
+      const offset = y * bitmap.byteWidth + x * bitmap.bytesPerPixel;
+      const b = bitmap.image[offset];
+      const g = bitmap.image[offset + 1];
+      const r = bitmap.image[offset + 2];
+
+      pixelCount += 1;
+      boundsMinX = Math.min(boundsMinX, x);
+      boundsMinY = Math.min(boundsMinY, y);
+      boundsMaxX = Math.max(boundsMaxX, x);
+      boundsMaxY = Math.max(boundsMaxY, y);
+      redSum += r;
+      greenSum += g;
+      blueSum += b;
+    }
+  }
+
+  if (pixelCount === 0) {
+    return null;
+  }
+
+  return {
+    minX: boundsMinX,
+    minY: boundsMinY,
+    maxX: boundsMaxX,
+    maxY: boundsMaxY,
+    pixelCount,
+    redSum,
+    greenSum,
+    blueSum,
+  };
+}
+
+function splitElongatedGreenComponent(candidate: BoxCandidate, mask: Uint8Array, bitmap: RobotBitmap): BoxCandidate[] {
+  const width = candidate.maxX - candidate.minX + 1;
+  const height = candidate.maxY - candidate.minY + 1;
+  const fillRatio = candidate.pixelCount / (width * height);
+  const avgRed = candidate.redSum / candidate.pixelCount;
+  const avgGreen = candidate.greenSum / candidate.pixelCount;
+  const avgBlue = candidate.blueSum / candidate.pixelCount;
+  const greenDominance = avgGreen - (avgRed + avgBlue) / 2;
+
+  const verticalElongated = height > width * GREEN_SPLIT_MIN_ELONGATION_RATIO;
+  const horizontalElongated = width > height * GREEN_SPLIT_MIN_ELONGATION_RATIO;
+  if (!verticalElongated && !horizontalElongated) {
+    return [candidate];
+  }
+
+  if (
+    candidate.pixelCount < MIN_PIXEL_COUNT ||
+    fillRatio < MIN_FILL_RATIO ||
+    fillRatio > MAX_FILL_RATIO ||
+    avgGreen < MIN_AVG_GREEN ||
+    greenDominance < GREEN_RING_MIN_GREEN_DOMINANCE
+  ) {
+    return [candidate];
+  }
+
+  const longSide = verticalElongated ? height : width;
+  const shortSide = verticalElongated ? width : height;
+  if (shortSide < MIN_BOX_WIDTH_PX) {
+    return [candidate];
+  }
+
+  const estimatedSegments = Math.round(longSide / shortSide);
+  const segmentCount = Math.max(2, Math.min(GREEN_SPLIT_MAX_SEGMENTS, estimatedSegments));
+  if (segmentCount < 2) {
+    return [candidate];
+  }
+
+  const sliced: BoxCandidate[] = [];
+  for (let segmentIndex = 0; segmentIndex < segmentCount; segmentIndex += 1) {
+    const startFraction = segmentIndex / segmentCount;
+    const endFraction = (segmentIndex + 1) / segmentCount;
+
+    const rawMinAlong = Math.floor(longSide * startFraction);
+    const rawMaxAlong = Math.floor(longSide * endFraction) - 1;
+    const minAlong = rawMinAlong;
+    const maxAlong = Math.max(rawMinAlong, rawMaxAlong);
+
+    const sliceMinX = verticalElongated ? candidate.minX : candidate.minX + minAlong;
+    const sliceMaxX = verticalElongated ? candidate.maxX : candidate.minX + maxAlong;
+    const sliceMinY = verticalElongated ? candidate.minY + minAlong : candidate.minY;
+    const sliceMaxY = verticalElongated ? candidate.minY + maxAlong : candidate.maxY;
+
+    const slice = buildCandidateFromMaskSlice(mask, bitmap, sliceMinX, sliceMinY, sliceMaxX, sliceMaxY);
+    if (!slice || slice.pixelCount < 8) {
+      continue;
+    }
+
+    sliced.push(slice);
+  }
+
+  return sliced.length >= 2 ? sliced : [candidate];
+}
+
+function splitElongatedGreenComponents(
+  components: BoxCandidate[],
+  mask: Uint8Array,
+  bitmap: RobotBitmap,
+): BoxCandidate[] {
+  const split: BoxCandidate[] = [];
+
+  for (const candidate of components) {
+    const pieces = splitElongatedGreenComponent(candidate, mask, bitmap);
+    split.push(...pieces);
+  }
+
+  return split;
+}
+
 function toMotherlodeMineBox(
   candidate: BoxCandidate,
   sourceWidth: number,
@@ -391,21 +521,14 @@ function toMotherlodeMineBox(
       aspectRatio >= MIN_ASPECT_RATIO &&
       aspectRatio <= MAX_ASPECT_RATIO;
 
-    const ringYellowGeometryOk =
-      candidate.pixelCount >= YELLOW_RING_MIN_PIXEL_COUNT &&
-      width >= YELLOW_RING_MIN_SIDE_PX &&
-      height >= YELLOW_RING_MIN_SIDE_PX &&
-      width <= YELLOW_RING_MAX_SIDE_PX &&
-      height <= YELLOW_RING_MAX_SIDE_PX &&
-      fillRatio >= YELLOW_RING_MIN_FILL_RATIO &&
-      fillRatio <= YELLOW_RING_MAX_FILL_RATIO &&
-      aspectRatio >= YELLOW_RING_MIN_ASPECT_RATIO &&
-      aspectRatio <= YELLOW_RING_MAX_ASPECT_RATIO;
+    const denseYellowSignalOk =
+      candidate.pixelCount >= MIN_YELLOW_PIXEL_COUNT &&
+      avgRed >= MIN_AVG_YELLOW_RED &&
+      redDominance >= MIN_YELLOW_RED_DOMINANCE &&
+      redDominance <= MAX_YELLOW_RED_DOMINANCE &&
+      greenDominance <= MAX_YELLOW_GREEN_DOMINANCE;
 
-    const denseYellowSignalOk = avgRed >= MIN_AVG_YELLOW_RED && redDominance >= MIN_YELLOW_RED_DOMINANCE;
-    const ringYellowSignalOk = avgRed >= YELLOW_RING_MIN_AVG_RED && redDominance >= YELLOW_RING_MIN_RED_DOMINANCE;
-
-    if (!(denseYellowGeometryOk && denseYellowSignalOk) && !(ringYellowGeometryOk && ringYellowSignalOk)) {
+    if (!(denseYellowGeometryOk && denseYellowSignalOk)) {
       return null;
     }
   }
@@ -462,8 +585,10 @@ function sortBoxes(boxes: MotherlodeMineBox[]): MotherlodeMineBox[] {
 export function detectMotherlodeMineBoxesInScreenshot(bitmap: RobotBitmap): MotherlodeMineBox[] {
   // Detect green nodes
   const greenMask = buildMotherlodeGreenMask(bitmap);
-  const greenComponents = mergeNearbyComponents(
-    collectConnectedComponents(greenMask, bitmap).filter((candidate) => candidate.pixelCount >= 8),
+  const greenComponents = splitElongatedGreenComponents(
+    mergeNearbyComponents(collectConnectedComponents(greenMask, bitmap).filter((candidate) => candidate.pixelCount >= 8)),
+    greenMask,
+    bitmap,
   );
   const greenBoxes = greenComponents
     .map((candidate) => toMotherlodeMineBox(candidate, bitmap.width, bitmap.height, "green"))
@@ -489,8 +614,10 @@ export function detectBestMotherlodeMineBoxInScreenshot(bitmap: RobotBitmap): Mo
 
 export function detectBestGreenMotherlodeMineBoxInScreenshot(bitmap: RobotBitmap): MotherlodeMineBox | null {
   const mask = buildMotherlodeGreenMask(bitmap);
-  const components = mergeNearbyComponents(
-    collectConnectedComponents(mask, bitmap).filter((candidate) => candidate.pixelCount >= 8),
+  const components = splitElongatedGreenComponents(
+    mergeNearbyComponents(collectConnectedComponents(mask, bitmap).filter((candidate) => candidate.pixelCount >= 8)),
+    mask,
+    bitmap,
   );
   const boxes = components
     .map((candidate) => toMotherlodeMineBox(candidate, bitmap.width, bitmap.height, "green"))
@@ -517,6 +644,7 @@ export function saveBitmapWithMotherlodeMineBoxes(
   filename: string,
   activeTarget?: { x: number; y: number } | null,
   playerBox?: { x: number; y: number; width: number; height: number } | null,
+  activeTargetColor?: { r: number; g: number; b: number },
 ): void {
   const png = new PNG({
     width: bitmap.width,
@@ -545,13 +673,14 @@ export function saveBitmapWithMotherlodeMineBoxes(
   if (activeTarget) {
     const markerSize = 16;
     const markerHalf = Math.floor(markerSize / 2);
+    const markerColor = activeTargetColor ?? { r: 64, g: 220, b: 255 };
     drawRectangleOnPng(
       png,
       activeTarget.x - markerHalf,
       activeTarget.y - markerHalf,
       markerSize,
       markerSize,
-      { r: 64, g: 220, b: 255 },
+      markerColor,
       2,
     );
   }

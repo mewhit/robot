@@ -216,7 +216,7 @@ async function testDetection(screenshotPath: string): Promise<boolean> {
 
   const basename = path.basename(screenshotPath);
   const expected = EXPECTED_BY_SCREENSHOT[basename];
-  const debugOutputDir = "./ocr-debug";
+  const debugOutputDir = "./test-image-debug";
   const basenameNoExt = path.basename(screenshotPath, path.extname(screenshotPath));
   const debugPath = path.join(debugOutputDir, `${basenameNoExt}-motherlode-obstacle-red-boxes.png`);
 

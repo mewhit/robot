@@ -110,7 +110,7 @@ async function testDetection(screenshotPath: string): Promise<boolean> {
   console.log(`Tile Location: ${detection.matchedLine}`);
   console.log(`Box: (${detection.x}, ${detection.y}) ${detection.width}x${detection.height}`);
 
-  const debugOutputDir = "./ocr-debug";
+  const debugOutputDir = "./test-image-debug";
   const basename = path.basename(screenshotPath, path.extname(screenshotPath));
   const debugPath = path.join(debugOutputDir, `${basename}-tile-location-box.png`);
   saveBitmapWithTileLocationBox(bitmap, detection, debugPath);

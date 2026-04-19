@@ -24,6 +24,7 @@ import {
   MotherlodeObstacleRedBox,
   detectBestMotherlodeObstacleRedBoxInScreenshot,
 } from "./shared/motherlode-obstacle-red-detector";
+import { isPlayerCollidingWithObstacle as isPlayerCollidingWithObstacleBox } from "./shared/player-obstacle-collision";
 import { PlayerBox, detectBestPlayerBoxInScreenshot } from "./shared/player-box-detector";
 import { selectNearestGreenMotherlodeNode } from "./shared/motherlode-target-selection";
 import { screen as electronScreen } from "electron";
@@ -43,7 +44,7 @@ const ENABLE_TILE_LOCATION_DETECTION = false;
 // Toggle whether to hover the node before reading tile/overlay text.
 const ENABLE_NODE_HOVER_BEFORE_TILE_READ = true;
 // Toggle clearing red collision obstacles by clicking the detected red marker.
-const ENABLE_OBSTACLE_RED_CLICK = false;
+const ENABLE_OBSTACLE_RED_CLICK = true;
 // Move mouse away after clicking so the cursor does not obscure node color detection.
 const POST_CLICK_MOUSE_MOVE_MODE: PostClickMouseMoveMode = "offset-200";
 const POST_CLICK_MOUSE_OFFSET_PX = 200;
@@ -334,26 +335,7 @@ function isPlayerCollidingWithObstacle(
   playerBoxInCapture: PlayerBox | null,
   obstacleBox: MotherlodeObstacleRedBox | null,
 ): boolean {
-  if (!playerBoxInCapture || !obstacleBox) {
-    return false;
-  }
-
-  const playerLeft = playerBoxInCapture.x;
-  const playerTop = playerBoxInCapture.y;
-  const playerRight = playerBoxInCapture.x + playerBoxInCapture.width - 1;
-  const playerBottom = playerBoxInCapture.y + playerBoxInCapture.height - 1;
-
-  const obstacleLeft = obstacleBox.x - OBSTACLE_PLAYER_COLLISION_PADDING_PX;
-  const obstacleTop = obstacleBox.y - OBSTACLE_PLAYER_COLLISION_PADDING_PX;
-  const obstacleRight = obstacleBox.x + obstacleBox.width - 1 + OBSTACLE_PLAYER_COLLISION_PADDING_PX;
-  const obstacleBottom = obstacleBox.y + obstacleBox.height - 1 + OBSTACLE_PLAYER_COLLISION_PADDING_PX;
-
-  return !(
-    playerRight < obstacleLeft ||
-    obstacleRight < playerLeft ||
-    playerBottom < obstacleTop ||
-    obstacleBottom < playerTop
-  );
+  return isPlayerCollidingWithObstacleBox(playerBoxInCapture, obstacleBox, OBSTACLE_PLAYER_COLLISION_PADDING_PX);
 }
 
 function shouldClearRedObstacle(

@@ -116,7 +116,7 @@ async function testDetection(screenshotPath: string): Promise<boolean> {
 
   if (boxes.length > 0) {
     const outputPath = path.join(
-      "ocr-debug",
+      "test-image-debug",
       path.basename(screenshotPath, path.extname(screenshotPath)) + "-player.png",
     );
     await saveBitmapWithPlayerBoxes(bitmap, boxes, outputPath);

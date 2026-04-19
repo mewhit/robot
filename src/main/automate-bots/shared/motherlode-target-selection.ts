@@ -32,6 +32,12 @@ function distanceToBox(anchorX: number, anchorY: number, box: MotherlodeMineBox)
   return { edge: edgeDistance, center: centerDistance };
 }
 
+function centerDistanceSquared(anchorX: number, anchorY: number, box: MotherlodeMineBox): number {
+  const dx = anchorX - box.centerX;
+  const dy = anchorY - box.centerY;
+  return dx * dx + dy * dy;
+}
+
 export function selectNearestGreenMotherlodeNode(
   greenBoxes: MotherlodeMineBox[],
   captureSize: CaptureSize,
@@ -47,14 +53,15 @@ export function selectNearestGreenMotherlodeNode(
 
   let best: MotherlodeMineBox | null = null;
   let bestEdgeDistance = Number.POSITIVE_INFINITY;
-  let bestCenterDistance = Number.POSITIVE_INFINITY;
+  let bestCenterDistanceSquared = Number.POSITIVE_INFINITY;
 
   for (const box of greenBoxes) {
     const distance = distanceToBox(anchorX, anchorY, box);
+    const centerDistanceSq = centerDistanceSquared(anchorX, anchorY, box);
 
     if (distance.edge < bestEdgeDistance) {
       bestEdgeDistance = distance.edge;
-      bestCenterDistance = distance.center;
+      bestCenterDistanceSquared = centerDistanceSq;
       best = box;
       continue;
     }
@@ -63,15 +70,15 @@ export function selectNearestGreenMotherlodeNode(
       continue;
     }
 
-    if (distance.center < bestCenterDistance) {
-      bestCenterDistance = distance.center;
+    if (centerDistanceSq < bestCenterDistanceSquared) {
+      bestCenterDistanceSquared = centerDistanceSq;
       best = box;
       continue;
     }
 
     // Keep detector confidence as the final tiebreaker.
-    if (Math.abs(distance.center - bestCenterDistance) < 0.5 && box.score > best.score) {
-      bestCenterDistance = distance.center;
+    if (Math.abs(centerDistanceSq - bestCenterDistanceSquared) < 0.5 && box.score > best.score) {
+      bestCenterDistanceSquared = centerDistanceSq;
       best = box;
     }
   }

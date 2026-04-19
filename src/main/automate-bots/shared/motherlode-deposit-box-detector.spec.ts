@@ -200,7 +200,7 @@ async function testDetection(screenshotPath: string): Promise<boolean> {
     `Best deposit-box at (${best.x}, ${best.y}) ${best.width}x${best.height} center=(${best.centerX}, ${best.centerY}) pixels=${best.pixelCount} fill=${best.fillRatio.toFixed(3)} score=${best.score.toFixed(1)}`,
   );
 
-  const debugOutputDir = "./ocr-debug";
+  const debugOutputDir = "./test-image-debug";
   const basename = path.basename(screenshotPath, path.extname(screenshotPath));
   const debugPath = path.join(debugOutputDir, `${basename}-motherlode-deposit-boxes.png`);
   saveBitmapWithMotherlodeDepositBoxes(bitmap, boxes, debugPath);

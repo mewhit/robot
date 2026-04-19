@@ -16,7 +16,9 @@
     "test:screenshot:motherlode-deposit": "ts-node src/main/automate-bots/shared/motherlode-deposit-box-detector.spec.ts test-images/motherlode-mine-upstair-deposit/*.png",
     "test:screenshot:motherlode-bag-full": "ts-node src/main/automate-bots/shared/motherlode-bag-full-box-detector.spec.ts test-images/motherlode-bag-full-box/*.png",
     "test:screenshot:motherlode-obstacle-red": "ts-node src/main/automate-bots/shared/motherlode-obstacle-red-detector.spec.ts test-images/motherload-obstacle/*.png",
+    "test:screenshot:motherlode-collision": "ts-node src/main/automate-bots/shared/player-obstacle-collision.spec.ts test-images/colide/*.png",
     "test:screenshot:motherlode-targeting": "ts-node src/main/automate-bots/shared/motherlode-target-selection.spec.ts image-test/motherlode-nearest-anchor.png",
+    "test:screenshot:motherlode-active-node": "ts-node src/main/automate-bots/shared/motherlode-active-node.spec.ts test-images/motherlode-active-node/*.png",
     "test:screenshot:player": "ts-node src/main/automate-bots/shared/player-box-detector.spec.ts test-images/player/*.png"
   },
   "electronmon": {

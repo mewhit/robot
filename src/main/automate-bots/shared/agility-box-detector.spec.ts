@@ -113,7 +113,7 @@ async function testDetection(screenshotPath: string): Promise<boolean> {
     );
   }
 
-  const debugOutputDir = "./ocr-debug";
+  const debugOutputDir = "./test-image-debug";
   const basename = path.basename(screenshotPath, path.extname(screenshotPath));
   const debugPath = path.join(debugOutputDir, `${basename}-agility-boxes.png`);
   saveBitmapWithAgilityBoxes(bitmap, boxes, debugPath);
