@@ -52,10 +52,14 @@ const MIN_FILL_RATIO = 0.12;
 const MAX_FILL_RATIO = 0.82;
 const MIN_ASPECT_RATIO = 0.62;
 const MAX_ASPECT_RATIO = 1.45;
+const RELAXED_MAX_ASPECT_RATIO = 1.7;
 const MIN_AVG_RED = 190;
 const MIN_AVG_GREEN = 176;
 const MAX_AVG_BLUE = 72;
 const MIN_YELLOW_STRENGTH = 138;
+const MAX_BOX_WIDTH_RATIO = 0.03;
+const MAX_BOX_HEIGHT_RATIO = 0.045;
+const RELAXED_MIN_BOX_WIDTH_PX = 100;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -77,6 +81,14 @@ function resolveSearchBounds(bitmap: RobotBitmap): SearchBounds {
     maxX,
     maxY,
   };
+}
+
+function resolveMaxBoxWidth(sourceWidth: number): number {
+  return Math.max(MAX_BOX_WIDTH_PX, Math.round(sourceWidth * MAX_BOX_WIDTH_RATIO));
+}
+
+function resolveMaxBoxHeight(sourceHeight: number): number {
+  return Math.max(MAX_BOX_HEIGHT_PX, Math.round(sourceHeight * MAX_BOX_HEIGHT_RATIO));
 }
 
 function drawRectangleOnPng(
@@ -241,6 +253,9 @@ function toMotherlodeBankingYellowBox(
   const height = candidate.maxY - candidate.minY + 1;
   const fillRatio = candidate.pixelCount / (width * height);
   const aspectRatio = width / height;
+  const maxBoxWidth = resolveMaxBoxWidth(sourceWidth);
+  const maxBoxHeight = resolveMaxBoxHeight(sourceHeight);
+  const maxAspectRatio = width >= RELAXED_MIN_BOX_WIDTH_PX ? RELAXED_MAX_ASPECT_RATIO : MAX_ASPECT_RATIO;
 
   if (candidate.pixelCount < MIN_PIXEL_COUNT) {
     return null;
@@ -249,8 +264,8 @@ function toMotherlodeBankingYellowBox(
   if (
     width < MIN_BOX_WIDTH_PX ||
     height < MIN_BOX_HEIGHT_PX ||
-    width > MAX_BOX_WIDTH_PX ||
-    height > MAX_BOX_HEIGHT_PX
+    width > maxBoxWidth ||
+    height > maxBoxHeight
   ) {
     return null;
   }
@@ -259,7 +274,7 @@ function toMotherlodeBankingYellowBox(
     return null;
   }
 
-  if (aspectRatio < MIN_ASPECT_RATIO || aspectRatio > MAX_ASPECT_RATIO) {
+  if (aspectRatio < MIN_ASPECT_RATIO || aspectRatio > maxAspectRatio) {
     return null;
   }
 
@@ -346,6 +361,9 @@ export function saveBitmapWithMotherlodeBankingYellowBoxes(
   bitmap: RobotBitmap,
   boxes: MotherlodeBankingYellowBox[],
   filename: string,
+  activeTarget?: { x: number; y: number } | null,
+  playerBox?: { x: number; y: number; width: number; height: number } | null,
+  activeTargetColor?: { r: number; g: number; b: number },
 ): void {
   const png = new PNG({
     width: bitmap.width,
@@ -369,6 +387,34 @@ export function saveBitmapWithMotherlodeBankingYellowBoxes(
 
   for (const box of boxes) {
     drawRectangleOnPng(png, box.x, box.y, box.width, box.height, { r: 0, g: 0, b: 0 }, 3);
+  }
+
+  if (activeTarget) {
+    const markerSize = 16;
+    const markerHalf = Math.floor(markerSize / 2);
+    const markerColor = activeTargetColor ?? { r: 64, g: 220, b: 255 };
+    drawRectangleOnPng(
+      png,
+      activeTarget.x - markerHalf,
+      activeTarget.y - markerHalf,
+      markerSize,
+      markerSize,
+      markerColor,
+      2,
+    );
+  }
+
+  if (playerBox) {
+    const padding = 3;
+    drawRectangleOnPng(
+      png,
+      playerBox.x - padding,
+      playerBox.y - padding,
+      playerBox.width + padding * 2,
+      playerBox.height + padding * 2,
+      { r: 0, g: 0, b: 0 },
+      2,
+    );
   }
 
   const dir = path.dirname(filename);

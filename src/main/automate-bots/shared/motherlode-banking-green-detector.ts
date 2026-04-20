@@ -59,6 +59,7 @@ const MIN_GREEN_STRENGTH = 340;
 const MAX_BOX_WIDTH_RATIO = 0.028;
 const MAX_BOX_HEIGHT_RATIO = 0.045;
 const RELAXED_MAX_ASPECT_RATIO = 1.6;
+const RELAXED_MIN_BOX_WIDTH_PX = 84;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -254,7 +255,7 @@ function toMotherlodeBankingGreenBox(
   const aspectRatio = width / height;
   const maxBoxWidth = resolveMaxBoxWidth(sourceWidth);
   const maxBoxHeight = resolveMaxBoxHeight(sourceHeight);
-  const maxAspectRatio = width >= 90 ? RELAXED_MAX_ASPECT_RATIO : MAX_ASPECT_RATIO;
+  const maxAspectRatio = width >= RELAXED_MIN_BOX_WIDTH_PX ? RELAXED_MAX_ASPECT_RATIO : MAX_ASPECT_RATIO;
 
   if (candidate.pixelCount < MIN_PIXEL_COUNT) {
     return null;

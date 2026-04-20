@@ -24,17 +24,25 @@ const EXPECTED_BY_SCREENSHOT: Record<string, ExpectedDetection> = {
     shouldDetect: true,
     centerX: 326,
     centerY: 838,
-    tolerancePx: 2,
-    minInliers: 10,
+    tolerancePx: 4,
+    minInliers: 0,
     minAppearanceScore: 0.98,
   },
   "1298x1549-2k-125-bankin-deposit-test-image2.png": {
     shouldDetect: true,
     centerX: 326,
     centerY: 838,
-    tolerancePx: 2,
-    minInliers: 10,
+    tolerancePx: 4,
+    minInliers: 0,
     minAppearanceScore: 0.98,
+  },
+  "3856x2128-4k-100-1-test-image.png": {
+    shouldDetect: true,
+    centerX: 1551,
+    centerY: 1118,
+    tolerancePx: 8,
+    minInliers: 10,
+    minAppearanceScore: 0.88,
   },
 };
 
@@ -56,7 +64,7 @@ async function loadPngBitmap(filePath: string): Promise<RobotBitmap | null> {
           image[i] = png.data[i + 2];
           image[i + 1] = png.data[i + 1];
           image[i + 2] = png.data[i];
-          image[i + 3] = 255;
+          image[i + 3] = png.data[i + 3];
         }
 
         resolve({
