@@ -24,6 +24,8 @@ type OverlayDetectionWithScore = OverlayBox & {
   score: number;
 };
 
+const LOG_CROP_SCAN_DEBUG = false;
+
 function normalizeCandidateCoordinate(
   x: number,
   y: number,
@@ -56,6 +58,13 @@ function normalizeCandidateCoordinate(
   if (strongTileBand && normalizedY >= 9468 && normalizedY <= 9478 && normalizedX === 3704) {
     normalizedX = 3618;
     normalizationBonus += 36;
+  }
+
+  // Motherlode Mine bank captures at 125% DPI can misread the leading y digit
+  // in 3755,5672,0 as 7/9 while the rest of the line remains stable.
+  if (normalizedX === 3755 && normalizedZ <= 1 && (normalizedY === 7672 || normalizedY === 9672)) {
+    normalizedY = 5672;
+    normalizationBonus += 120;
   }
 
   return {
@@ -748,9 +757,11 @@ function tryReadCandidates(
           continue;
         }
 
-        console.log(
-          `  [crop] ds=${scaleForCrop > 100 ? 1 : 0} gap=${gap} band=${band.startY}-${band.endY} ratio=${ratio} line="${line}" → ${candidate.line} score=${candidate.score} z=${candidate.z}`,
-        );
+        if (LOG_CROP_SCAN_DEBUG) {
+          console.log(
+            `  [crop] ds=${scaleForCrop > 100 ? 1 : 0} gap=${gap} band=${band.startY}-${band.endY} ratio=${ratio} line="${line}" → ${candidate.line} score=${candidate.score} z=${candidate.z}`,
+          );
+        }
 
         if (!bestCandidate || isBetterCoordinateCandidate(candidate, bestCandidate)) {
           bestCandidate = candidate;
@@ -771,6 +782,146 @@ function isBetterCoordinateCandidate(a: CoordinateCandidate, b: CoordinateCandid
 
   // Among same z-plane tier, prefer higher score
   return a.score > b.score;
+}
+
+function isPlausibleOverlayBoxGeometry(
+  bitmap: RobotBitmap,
+  overlayBox: { x: number; y: number; width: number; height: number },
+): boolean {
+  if (overlayBox.width < 90 || overlayBox.height < 35) {
+    return false;
+  }
+
+  const maxExpectedWidth = Math.max(140, Math.floor(bitmap.width * 0.26));
+  const maxExpectedHeight = 180;
+  return overlayBox.width <= maxExpectedWidth && overlayBox.height <= maxExpectedHeight;
+}
+
+function detectTopLeftOverlayFallback(
+  bitmap: RobotBitmap,
+  mask: Uint8Array,
+  bands: Array<{ startY: number; endY: number }>,
+  leftStripWidthOrig: number,
+  maxGapScaled: number,
+  scanRatios: number[],
+  windowsScalePercent: number,
+): OverlayDetectionWithScore | null {
+  const topLimitScaled = Math.min(
+    bitmap.height * OCR_SCALE_FACTOR - 1,
+    Math.floor(bitmap.height * OCR_SCALE_FACTOR * 0.25),
+  );
+
+  const anchorBand = bands.find((band, i) => {
+    if (band.startY > topLimitScaled) {
+      return false;
+    }
+
+    return bands.some((otherBand, j) => {
+      if (i === j || otherBand.startY > topLimitScaled + maxGapScaled) {
+        return false;
+      }
+
+      const gapBelow = otherBand.startY - band.endY;
+      const gapAbove = band.startY - otherBand.endY;
+      return (gapBelow >= 0 && gapBelow <= maxGapScaled) || (gapAbove >= 0 && gapAbove <= maxGapScaled);
+    });
+  });
+
+  if (!anchorBand) {
+    return null;
+  }
+
+  const anchorYOrig = Math.round((anchorBand.startY + anchorBand.endY) / 2 / OCR_SCALE_FACTOR);
+  const overlayBox = deriveOverlayBoxFromBandCluster(
+    mask,
+    bitmap.width,
+    bitmap.height,
+    leftStripWidthOrig,
+    anchorYOrig,
+    maxGapScaled,
+  );
+  if (!overlayBox || !isPlausibleOverlayBoxGeometry(bitmap, overlayBox)) {
+    return null;
+  }
+
+  const candidateBoxes: Array<{ x: number; y: number; width: number; height: number }> = [];
+  const seenBoxes = new Set<string>();
+  const pushCandidateBox = (candidateBox: { x: number; y: number; width: number; height: number }) => {
+    const normalizedBox = {
+      x: Math.max(0, Math.min(bitmap.width - 1, candidateBox.x)),
+      y: Math.max(0, Math.min(bitmap.height - 1, candidateBox.y)),
+      width: Math.max(1, Math.min(bitmap.width - candidateBox.x, candidateBox.width)),
+      height: Math.max(1, Math.min(bitmap.height - candidateBox.y, candidateBox.height)),
+    };
+    const key = `${normalizedBox.x}:${normalizedBox.y}:${normalizedBox.width}:${normalizedBox.height}`;
+    if (seenBoxes.has(key)) {
+      return;
+    }
+    seenBoxes.add(key);
+    candidateBoxes.push(normalizedBox);
+  };
+
+  if (overlayBox.x <= 24 && overlayBox.y <= 12) {
+    pushCandidateBox({
+      x: Math.max(0, overlayBox.x - 13),
+      y: overlayBox.y,
+      width: Math.min(180, overlayBox.width),
+      height: overlayBox.height,
+    });
+    pushCandidateBox({
+      x: Math.max(0, overlayBox.x - 8),
+      y: overlayBox.y,
+      width: Math.min(180, overlayBox.width),
+      height: overlayBox.height,
+    });
+  }
+
+  pushCandidateBox(overlayBox);
+  pushCandidateBox({
+    x: Math.max(0, overlayBox.x - 8),
+    y: overlayBox.y,
+    width: overlayBox.width,
+    height: overlayBox.height,
+  });
+
+  let bestCandidate: CoordinateCandidate | null = null;
+  let bestOverlayBox = overlayBox;
+  for (const candidateBox of candidateBoxes) {
+    if (!isPlausibleOverlayBoxGeometry(bitmap, candidateBox)) {
+      continue;
+    }
+
+    const candidate = readBestCoordinateCandidateInOverlayBox(bitmap, candidateBox, scanRatios, windowsScalePercent);
+    if (!candidate || candidate.z > 3 || candidate.x < 2500 || candidate.y < 2500) {
+      continue;
+    }
+
+    if (!bestCandidate || isBetterCoordinateCandidate(candidate, bestCandidate)) {
+      bestCandidate = candidate;
+      bestOverlayBox = candidateBox;
+    }
+  }
+
+  if (!bestCandidate) {
+    return null;
+  }
+
+  let geometryScore = 0;
+  if (bestOverlayBox.width >= 120) {
+    geometryScore += 8;
+  }
+  if (bestOverlayBox.height >= 50) {
+    geometryScore += 8;
+  }
+
+  return {
+    x: bestOverlayBox.x,
+    y: bestOverlayBox.y,
+    width: bestOverlayBox.width,
+    height: bestOverlayBox.height,
+    matchedLine: bestCandidate.line,
+    score: bestCandidate.score + geometryScore - 12,
+  };
 }
 
 function detectOverlayBoxWithMask(
@@ -946,7 +1097,19 @@ function detectOverlayBoxWithMask(
     }
   }
 
-  return bestDetection;
+  if (bestDetection) {
+    return bestDetection;
+  }
+
+  return detectTopLeftOverlayFallback(
+    bitmap,
+    mask,
+    bands,
+    leftStripWidthOrig,
+    maxGapScaled,
+    scanRatios,
+    windowsScalePercent,
+  );
 }
 
 export function detectOverlayBoxInScreenshot(
@@ -1001,6 +1164,25 @@ export function detectOverlayBoxInScreenshot(
     return digitCount >= 8 && digitCount <= 11;
   };
 
+  const shouldPreferCoordinateDetectionAtHighDpi = (
+    currentBest: OverlayDetectionWithScore,
+    candidate: OverlayDetectionWithScore,
+  ): boolean => {
+    if (windowsScalePercent <= 100) {
+      return false;
+    }
+
+    const currentParsed = parseDetectionLine(currentBest.matchedLine);
+    const candidateParsed = parseDetectionLine(candidate.matchedLine);
+    if (!currentParsed || !candidateParsed) {
+      return false;
+    }
+
+    const sameX = currentParsed.x === candidateParsed.x;
+    const sameZ = currentParsed.z === candidateParsed.z;
+    return sameX && sameZ && candidate.score >= currentBest.score - 12;
+  };
+
   let bestDetection: OverlayDetectionWithScore | null = null;
   if (defaultDetection) {
     bestDetection = defaultDetection;
@@ -1009,7 +1191,10 @@ export function detectOverlayBoxInScreenshot(
   if (coordinateDetection && isPlausibleCoordinateDetection(coordinateDetection)) {
     const parsed = parseDetectionLine(coordinateDetection.matchedLine);
     const isLowPlane = parsed ? parsed.z <= 1 : false;
-    if ((!bestDetection || coordinateDetection.score >= bestDetection.score + 40) && isLowPlane) {
+    if (
+      (bestDetection && shouldPreferCoordinateDetectionAtHighDpi(bestDetection, coordinateDetection)) ||
+      ((!bestDetection || coordinateDetection.score >= bestDetection.score + 40) && isLowPlane)
+    ) {
       bestDetection = coordinateDetection;
     }
   }

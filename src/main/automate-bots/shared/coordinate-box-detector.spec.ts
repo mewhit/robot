@@ -18,6 +18,12 @@ type ExpectedCoordinates = {
   z: number;
 };
 
+type CliOptions = {
+  expectedCoordinates: ExpectedCoordinates | null;
+  screenshotArgs: string[];
+  windowsScalePercent: number | null;
+};
+
 function cropBitmap(
   bitmap: RobotBitmap,
   cropX: number,
@@ -113,6 +119,22 @@ function parseDetectedCoordinates(matchedLine: string): ExpectedCoordinates | nu
   return { x, y, z };
 }
 
+function parseExpectedCoordinates(value: string): ExpectedCoordinates | null {
+  const match = value.match(/^\s*(\d+),(\d+),(\d)\s*$/);
+  if (!match) {
+    return null;
+  }
+
+  const x = Number(match[1]);
+  const y = Number(match[2]);
+  const z = Number(match[3]);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+    return null;
+  }
+
+  return { x, y, z };
+}
+
 function patternToRegex(pattern: string): RegExp {
   const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
   return new RegExp(`^${escaped}$`, "i");
@@ -166,7 +188,40 @@ function parseWindowsScalePercentFromFilename(screenshotPath: string): number {
   return Number.isFinite(scale) && scale > 0 ? scale : 100;
 }
 
-async function testDetection(screenshotPath: string): Promise<boolean> {
+function parseCliOptions(args: string[]): CliOptions {
+  const screenshotArgs: string[] = [];
+  let expectedCoordinates: ExpectedCoordinates | null = null;
+  let windowsScalePercent: number | null = null;
+
+  for (const arg of args) {
+    if (arg.startsWith("--expected=")) {
+      expectedCoordinates = parseExpectedCoordinates(arg.slice("--expected=".length));
+      if (!expectedCoordinates) {
+        throw new Error(`Invalid --expected value: ${arg}`);
+      }
+      continue;
+    }
+
+    if (arg.startsWith("--windows-scale=")) {
+      const scale = Number(arg.slice("--windows-scale=".length));
+      if (!Number.isFinite(scale) || scale <= 0) {
+        throw new Error(`Invalid --windows-scale value: ${arg}`);
+      }
+      windowsScalePercent = scale;
+      continue;
+    }
+
+    screenshotArgs.push(arg);
+  }
+
+  return {
+    expectedCoordinates,
+    screenshotArgs,
+    windowsScalePercent,
+  };
+}
+
+async function testDetection(screenshotPath: string, options: CliOptions): Promise<boolean> {
   console.log(`\nTesting: ${screenshotPath}`);
   console.log("-".repeat(60));
 
@@ -180,12 +235,12 @@ async function testDetection(screenshotPath: string): Promise<boolean> {
 
   const debugOutputDir = "./test-image-debug";
   const basename = path.basename(screenshotPath, path.extname(screenshotPath));
-  const windowsScalePercent = parseWindowsScalePercentFromFilename(screenshotPath);
+  const windowsScalePercent = options.windowsScalePercent ?? parseWindowsScalePercentFromFilename(screenshotPath);
   console.log(`Windows scale: ${windowsScalePercent}%`);
 
   try {
     const result = detectOverlayBoxInScreenshot(bitmap, windowsScalePercent);
-    const expectedCoordinates = parseExpectedCoordinatesFromFilename(screenshotPath);
+    const expectedCoordinates = options.expectedCoordinates ?? parseExpectedCoordinatesFromFilename(screenshotPath);
 
     if (!result) {
       console.log("NO DETECTION - overlay not found in image");
@@ -239,7 +294,8 @@ async function testDetection(screenshotPath: string): Promise<boolean> {
 }
 
 async function main(): Promise<void> {
-  const args = expandScreenshotArgs(process.argv.slice(2));
+  const cliOptions = parseCliOptions(process.argv.slice(2));
+  const args = expandScreenshotArgs(cliOptions.screenshotArgs);
   const screenshots = args.length > 0 ? args : ["test-images/coordinate-box/*r-*.png"];
   const expandedScreenshots = expandScreenshotArgs(screenshots);
 
@@ -256,7 +312,7 @@ async function main(): Promise<void> {
   let failureCount = 0;
 
   for (const screenshotPath of expandedScreenshots) {
-    const success = await testDetection(screenshotPath);
+    const success = await testDetection(screenshotPath, cliOptions);
     if (success) {
       successCount += 1;
     } else {

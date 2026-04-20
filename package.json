@@ -14,6 +14,8 @@
     "test:screenshot:attack": "ts-node src/main/automate-bots/shared/attack-box-detector.spec.ts test-images/attack-box/*.png",
     "test:screenshot:motherlode-mine": "ts-node src/main/automate-bots/shared/motherlode-mine-box-detector.spec.ts test-images/motherlode-mine-box/*.png",
     "test:screenshot:motherlode-deposit": "ts-node src/main/automate-bots/shared/motherlode-deposit-box-detector.spec.ts test-images/motherlode-mine-upstair-deposit/*.png",
+    "test:screenshot:motherlode-banking-green": "ts-node src/main/automate-bots/shared/motherlode-banking-green-detector.spec.ts test-images/motherlode-banking-green/*.png",
+    "test:screenshot:motherlode-banking-yellow": "ts-node src/main/automate-bots/shared/motherlode-banking-yellow-detector.spec.ts test-images/motherlode-banking-yellow/*.png",
     "test:screenshot:motherlode-bag-full": "ts-node src/main/automate-bots/shared/motherlode-bag-full-box-detector.spec.ts test-images/motherlode-bag-full-box/*.png",
     "test:screenshot:motherlode-obstacle-red": "ts-node src/main/automate-bots/shared/motherlode-obstacle-red-detector.spec.ts test-images/motherload-obstacle/*.png",
     "test:screenshot:motherlode-collision": "ts-node src/main/automate-bots/shared/player-obstacle-collision.spec.ts test-images/colide/*.png",

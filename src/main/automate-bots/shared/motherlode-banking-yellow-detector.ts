@@ -3,7 +3,7 @@ import path from "path";
 import { PNG } from "pngjs";
 import { RobotBitmap } from "./ocr-engine";
 
-export type MotherlodeObstacleRedBox = {
+export type MotherlodeBankingYellowBox = {
   x: number;
   y: number;
   width: number;
@@ -16,8 +16,7 @@ export type MotherlodeObstacleRedBox = {
   avgRed: number;
   avgGreen: number;
   avgBlue: number;
-  redDominance: number;
-  profile: "compact" | "tall-pure-red";
+  yellowStrength: number;
   score: number;
 };
 
@@ -39,47 +38,31 @@ type SearchBounds = {
   maxY: number;
 };
 
-const SEARCH_LEFT_RATIO = 0.14;
-const SEARCH_RIGHT_RATIO = 0.78;
-const SEARCH_TOP_RATIO = 0.18;
-const SEARCH_BOTTOM_RATIO = 0.78;
+const SEARCH_LEFT_RATIO = 0.03;
+const SEARCH_RIGHT_RATIO = 0.8;
+const SEARCH_TOP_RATIO = 0.24;
+const SEARCH_BOTTOM_RATIO = 0.9;
 
-const COMPACT_MIN_PIXEL_COUNT = 220;
-const COMPACT_MIN_BOX_SIDE_PX = 30;
-const COMPACT_MAX_BOX_SIDE_PX = 70;
-const COMPACT_MIN_FILL_RATIO = 0.2;
-const COMPACT_MAX_FILL_RATIO = 0.98;
-const COMPACT_MIN_ASPECT_RATIO = 0.75;
-const COMPACT_MAX_ASPECT_RATIO = 1.32;
-const COMPACT_MIN_AVG_RED = 145;
-const COMPACT_MAX_AVG_GREEN = 95;
-const COMPACT_MAX_AVG_BLUE = 95;
-const COMPACT_MIN_RED_DOMINANCE = 34;
-const COMPACT_MIN_RED_MINUS_GREEN = 55;
-
-// Deposit blockers can render as a taller pure-red slab. Keep this profile stricter on
-// color purity so we do not start preferring the orange ladder or other warm UI elements.
-const TALL_MIN_PIXEL_COUNT = 700;
-const TALL_MIN_WIDTH_PX = 28;
-const TALL_MAX_WIDTH_PX = 72;
-const TALL_MIN_HEIGHT_PX = 60;
-const TALL_MAX_HEIGHT_PX = 136;
-const TALL_MIN_FILL_RATIO = 0.22;
-const TALL_MAX_FILL_RATIO = 0.92;
-const TALL_MIN_ASPECT_RATIO = 0.38;
-const TALL_MAX_ASPECT_RATIO = 0.82;
-const TALL_MIN_AVG_RED = 180;
-const TALL_MAX_AVG_GREEN = 42;
-const TALL_MAX_AVG_BLUE = 42;
-const TALL_MIN_RED_DOMINANCE = 150;
-const TALL_MIN_RED_MINUS_GREEN = 150;
+const MIN_PIXEL_COUNT = 280;
+const MIN_BOX_WIDTH_PX = 24;
+const MIN_BOX_HEIGHT_PX = 24;
+const MAX_BOX_WIDTH_PX = 92;
+const MAX_BOX_HEIGHT_PX = 92;
+const MIN_FILL_RATIO = 0.12;
+const MAX_FILL_RATIO = 0.82;
+const MIN_ASPECT_RATIO = 0.62;
+const MAX_ASPECT_RATIO = 1.45;
+const MIN_AVG_RED = 190;
+const MIN_AVG_GREEN = 176;
+const MAX_AVG_BLUE = 72;
+const MIN_YELLOW_STRENGTH = 138;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-function isMotherlodeObstacleRedPixel(r: number, g: number, b: number): boolean {
-  return r >= 115 && r - g >= 24 && r - b >= 18 && b <= 140;
+function isMotherlodeBankingYellowPixel(r: number, g: number, b: number): boolean {
+  return r >= 170 && g >= 140 && b <= 90 && r + g >= 350 && r - b >= 110 && g - b >= 80;
 }
 
 function resolveSearchBounds(bitmap: RobotBitmap): SearchBounds {
@@ -157,7 +140,7 @@ function buildMask(bitmap: RobotBitmap, bounds: SearchBounds): Uint8Array {
       const b = bitmap.image[offset];
       const g = bitmap.image[offset + 1];
       const r = bitmap.image[offset + 2];
-      if (!isMotherlodeObstacleRedPixel(r, g, b)) {
+      if (!isMotherlodeBankingYellowPixel(r, g, b)) {
         continue;
       }
 
@@ -249,66 +232,50 @@ function collectConnectedComponents(mask: Uint8Array, bitmap: RobotBitmap): BoxC
   return components;
 }
 
-function toMotherlodeObstacleRedBox(
+function toMotherlodeBankingYellowBox(
   candidate: BoxCandidate,
   sourceWidth: number,
   sourceHeight: number,
-): MotherlodeObstacleRedBox | null {
+): MotherlodeBankingYellowBox | null {
   const width = candidate.maxX - candidate.minX + 1;
   const height = candidate.maxY - candidate.minY + 1;
   const fillRatio = candidate.pixelCount / (width * height);
   const aspectRatio = width / height;
 
-  const avgRed = candidate.redSum / candidate.pixelCount;
-  const avgGreen = candidate.greenSum / candidate.pixelCount;
-  const avgBlue = candidate.blueSum / candidate.pixelCount;
-  const redDominance = avgRed - (avgGreen + avgBlue) / 2;
-  const redMinusGreen = avgRed - avgGreen;
-
-  const compactGeometryOk =
-    candidate.pixelCount >= COMPACT_MIN_PIXEL_COUNT &&
-    width >= COMPACT_MIN_BOX_SIDE_PX &&
-    height >= COMPACT_MIN_BOX_SIDE_PX &&
-    width <= COMPACT_MAX_BOX_SIDE_PX &&
-    height <= COMPACT_MAX_BOX_SIDE_PX &&
-    fillRatio >= COMPACT_MIN_FILL_RATIO &&
-    fillRatio <= COMPACT_MAX_FILL_RATIO &&
-    aspectRatio >= COMPACT_MIN_ASPECT_RATIO &&
-    aspectRatio <= COMPACT_MAX_ASPECT_RATIO;
-
-  const compactColorOk =
-    avgRed >= COMPACT_MIN_AVG_RED &&
-    avgGreen <= COMPACT_MAX_AVG_GREEN &&
-    avgBlue <= COMPACT_MAX_AVG_BLUE &&
-    redDominance >= COMPACT_MIN_RED_DOMINANCE &&
-    redMinusGreen >= COMPACT_MIN_RED_MINUS_GREEN;
-
-  const tallGeometryOk =
-    candidate.pixelCount >= TALL_MIN_PIXEL_COUNT &&
-    width >= TALL_MIN_WIDTH_PX &&
-    width <= TALL_MAX_WIDTH_PX &&
-    height >= TALL_MIN_HEIGHT_PX &&
-    height <= TALL_MAX_HEIGHT_PX &&
-    fillRatio >= TALL_MIN_FILL_RATIO &&
-    fillRatio <= TALL_MAX_FILL_RATIO &&
-    aspectRatio >= TALL_MIN_ASPECT_RATIO &&
-    aspectRatio <= TALL_MAX_ASPECT_RATIO;
-
-  const tallColorOk =
-    avgRed >= TALL_MIN_AVG_RED &&
-    avgGreen <= TALL_MAX_AVG_GREEN &&
-    avgBlue <= TALL_MAX_AVG_BLUE &&
-    redDominance >= TALL_MIN_RED_DOMINANCE &&
-    redMinusGreen >= TALL_MIN_RED_MINUS_GREEN;
-
-  const compactOk = compactGeometryOk && compactColorOk;
-  const tallOk = tallGeometryOk && tallColorOk;
-
-  if (!compactOk && !tallOk) {
+  if (candidate.pixelCount < MIN_PIXEL_COUNT) {
     return null;
   }
 
-  const profile: MotherlodeObstacleRedBox["profile"] = compactOk ? "compact" : "tall-pure-red";
+  if (
+    width < MIN_BOX_WIDTH_PX ||
+    height < MIN_BOX_HEIGHT_PX ||
+    width > MAX_BOX_WIDTH_PX ||
+    height > MAX_BOX_HEIGHT_PX
+  ) {
+    return null;
+  }
+
+  if (fillRatio < MIN_FILL_RATIO || fillRatio > MAX_FILL_RATIO) {
+    return null;
+  }
+
+  if (aspectRatio < MIN_ASPECT_RATIO || aspectRatio > MAX_ASPECT_RATIO) {
+    return null;
+  }
+
+  const avgRed = candidate.redSum / candidate.pixelCount;
+  const avgGreen = candidate.greenSum / candidate.pixelCount;
+  const avgBlue = candidate.blueSum / candidate.pixelCount;
+  const yellowStrength = avgRed + avgGreen - avgBlue * 2;
+
+  if (
+    avgRed < MIN_AVG_RED ||
+    avgGreen < MIN_AVG_GREEN ||
+    avgBlue > MAX_AVG_BLUE ||
+    yellowStrength < MIN_YELLOW_STRENGTH
+  ) {
+    return null;
+  }
 
   const centerX = Math.round(candidate.minX + width / 2);
   const centerY = Math.round(candidate.minY + height / 2);
@@ -319,17 +286,12 @@ function toMotherlodeObstacleRedBox(
   const maxDistance = Math.sqrt((sourceWidth / 2) ** 2 + (sourceHeight / 2) ** 2);
   const normalizedDistance = maxDistance > 0 ? distanceFromCenter / maxDistance : 0;
 
-  const targetAspect = profile === "compact" ? 1 : 0.56;
-  const aspectPenalty = profile === "compact" ? 120 : 42;
-  const profileBias = profile === "compact" ? 0 : 260;
   const score =
     candidate.pixelCount +
-    fillRatio * 280 +
-    redDominance * 3 +
-    redMinusGreen * (profile === "compact" ? 0.4 : 1.8) +
-    profileBias -
-    Math.abs(aspectRatio - targetAspect) * aspectPenalty -
-    normalizedDistance * 180;
+    fillRatio * 260 +
+    yellowStrength * 1.8 -
+    Math.abs(aspectRatio - 1) * 120 -
+    normalizedDistance * 70;
 
   return {
     x: candidate.minX,
@@ -344,13 +306,12 @@ function toMotherlodeObstacleRedBox(
     avgRed,
     avgGreen,
     avgBlue,
-    redDominance,
-    profile,
+    yellowStrength,
     score,
   };
 }
 
-function sortBoxes(boxes: MotherlodeObstacleRedBox[]): MotherlodeObstacleRedBox[] {
+function sortBoxes(boxes: MotherlodeBankingYellowBox[]): MotherlodeBankingYellowBox[] {
   return boxes.sort((a, b) => {
     if (b.score !== a.score) {
       return b.score - a.score;
@@ -364,24 +325,26 @@ function sortBoxes(boxes: MotherlodeObstacleRedBox[]): MotherlodeObstacleRedBox[
   });
 }
 
-export function detectMotherlodeObstacleRedBoxesInScreenshot(bitmap: RobotBitmap): MotherlodeObstacleRedBox[] {
+export function detectMotherlodeBankingYellowBoxesInScreenshot(bitmap: RobotBitmap): MotherlodeBankingYellowBox[] {
   const bounds = resolveSearchBounds(bitmap);
   const mask = buildMask(bitmap, bounds);
   const components = collectConnectedComponents(mask, bitmap).filter((candidate) => candidate.pixelCount >= 10);
   const boxes = components
-    .map((candidate) => toMotherlodeObstacleRedBox(candidate, bitmap.width, bitmap.height))
-    .filter((box): box is MotherlodeObstacleRedBox => box !== null);
+    .map((candidate) => toMotherlodeBankingYellowBox(candidate, bitmap.width, bitmap.height))
+    .filter((box): box is MotherlodeBankingYellowBox => box !== null);
 
   return sortBoxes(boxes);
 }
 
-export function detectBestMotherlodeObstacleRedBoxInScreenshot(bitmap: RobotBitmap): MotherlodeObstacleRedBox | null {
-  return detectMotherlodeObstacleRedBoxesInScreenshot(bitmap)[0] ?? null;
+export function detectBestMotherlodeBankingYellowBoxInScreenshot(
+  bitmap: RobotBitmap,
+): MotherlodeBankingYellowBox | null {
+  return detectMotherlodeBankingYellowBoxesInScreenshot(bitmap)[0] ?? null;
 }
 
-export function saveBitmapWithMotherlodeObstacleRedBoxes(
+export function saveBitmapWithMotherlodeBankingYellowBoxes(
   bitmap: RobotBitmap,
-  boxes: MotherlodeObstacleRedBox[],
+  boxes: MotherlodeBankingYellowBox[],
   filename: string,
 ): void {
   const png = new PNG({
@@ -405,8 +368,6 @@ export function saveBitmapWithMotherlodeObstacleRedBoxes(
   }
 
   for (const box of boxes) {
-    // Draw a visible black frame around each detection (outside + edge ring).
-    drawRectangleOnPng(png, box.x - 4, box.y - 4, box.width + 8, box.height + 8, { r: 0, g: 0, b: 0 }, 4);
     drawRectangleOnPng(png, box.x, box.y, box.width, box.height, { r: 0, g: 0, b: 0 }, 3);
   }
 
