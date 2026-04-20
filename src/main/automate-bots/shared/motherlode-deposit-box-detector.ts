@@ -40,8 +40,10 @@ const SEARCH_BOTTOM_RATIO = 0.82;
 const COMPACT_MIN_PIXEL_COUNT = 120;
 const COMPACT_MIN_WIDTH_PX = 16;
 const COMPACT_MIN_HEIGHT_PX = 16;
-const COMPACT_MAX_WIDTH_PX = 90;
-const COMPACT_MAX_HEIGHT_PX = 90;
+// 4k captures can render the upstairs deposit hopper slightly larger while
+// still matching the same square-ish cyan silhouette.
+const COMPACT_MAX_WIDTH_PX = 104;
+const COMPACT_MAX_HEIGHT_PX = 96;
 const COMPACT_MIN_FILL_RATIO = 0.1;
 const COMPACT_MAX_FILL_RATIO = 0.88;
 const COMPACT_MIN_ASPECT_RATIO = 0.5;

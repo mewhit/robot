@@ -115,7 +115,39 @@ function expectedStateFromScreenshotPath(screenshotPath: string): MotherlodeBagF
     return "native";
   }
 
+  if (file.includes("[-3777]-[140]")) {
+    return "red";
+  }
+
   return null;
+}
+
+function shiftBitmapDown(bitmap: RobotBitmap, shiftY: number): RobotBitmap {
+  const clampedShift = Math.max(0, Math.min(bitmap.height - 1, Math.floor(shiftY)));
+  if (clampedShift <= 0) {
+    return {
+      ...bitmap,
+      image: Buffer.from(bitmap.image),
+    };
+  }
+
+  const shifted = Buffer.alloc(bitmap.image.length);
+
+  for (let y = 0; y < bitmap.height; y += 1) {
+    const sourceY = y - clampedShift;
+    const effectiveSourceY = sourceY >= 0 ? sourceY : 0;
+    const sourceOffset = effectiveSourceY * bitmap.byteWidth;
+    const targetOffset = y * bitmap.byteWidth;
+    bitmap.image.copy(shifted, targetOffset, sourceOffset, sourceOffset + bitmap.byteWidth);
+  }
+
+  return {
+    width: bitmap.width,
+    height: bitmap.height,
+    byteWidth: bitmap.byteWidth,
+    bytesPerPixel: bitmap.bytesPerPixel,
+    image: shifted,
+  };
 }
 
 async function testDetection(screenshotPath: string): Promise<boolean> {
@@ -152,8 +184,34 @@ async function testDetection(screenshotPath: string): Promise<boolean> {
     return true;
   }
 
-  const isMatch = detection.state === expectedState;
-  if (!isMatch) {
+  const shiftCandidates = [
+    Math.max(40, Math.round(bitmap.height * 0.05)),
+    Math.max(80, Math.round(bitmap.height * 0.1)),
+  ]
+    .filter((shift, index, values) => shift < bitmap.height / 3 && values.indexOf(shift) === index)
+    .sort((a, b) => a - b);
+
+  let shiftsMatch = true;
+  for (const shiftY of shiftCandidates) {
+    const shiftedBitmap = shiftBitmapDown(bitmap, shiftY);
+    const shiftedDetection = detectMotherlodeBagFullBoxInScreenshot(shiftedBitmap);
+    console.log(
+      `Shift +${shiftY}px: state=${shiftedDetection.state} roi=(${shiftedDetection.x}, ${shiftedDetection.y}) ${shiftedDetection.width}x${shiftedDetection.height} confidence=${shiftedDetection.confidence.toFixed(3)}`,
+    );
+
+    if (shiftedDetection.state !== expectedState) {
+      shiftsMatch = false;
+      const shiftedDebugPath = path.join(debugOutputDir, `${basename}-shift-${shiftY}-motherlode-bag-full-box.png`);
+      saveBitmapWithMotherlodeBagFullBox(shiftedBitmap, shiftedDetection, shiftedDebugPath);
+      console.error(
+        `Shifted state mismatch for ${screenshotPath} at +${shiftY}px: expected=${expectedState} actual=${shiftedDetection.state}`,
+      );
+      console.error(`Shifted debug image: ${shiftedDebugPath}`);
+    }
+  }
+
+  const isMatch = detection.state === expectedState && shiftsMatch;
+  if (detection.state !== expectedState) {
     console.error(`State mismatch for ${screenshotPath}: expected=${expectedState} actual=${detection.state}`);
   }
 

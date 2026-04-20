@@ -56,6 +56,9 @@ const MAX_AVG_RED = 42;
 const MIN_AVG_GREEN = 195;
 const MAX_AVG_BLUE = 40;
 const MIN_GREEN_STRENGTH = 340;
+const MAX_BOX_WIDTH_RATIO = 0.028;
+const MAX_BOX_HEIGHT_RATIO = 0.045;
+const RELAXED_MAX_ASPECT_RATIO = 1.6;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -77,6 +80,14 @@ function resolveSearchBounds(bitmap: RobotBitmap): SearchBounds {
     maxX,
     maxY,
   };
+}
+
+function resolveMaxBoxWidth(sourceWidth: number): number {
+  return Math.max(MAX_BOX_WIDTH_PX, Math.round(sourceWidth * MAX_BOX_WIDTH_RATIO));
+}
+
+function resolveMaxBoxHeight(sourceHeight: number): number {
+  return Math.max(MAX_BOX_HEIGHT_PX, Math.round(sourceHeight * MAX_BOX_HEIGHT_RATIO));
 }
 
 function drawRectangleOnPng(
@@ -241,6 +252,9 @@ function toMotherlodeBankingGreenBox(
   const height = candidate.maxY - candidate.minY + 1;
   const fillRatio = candidate.pixelCount / (width * height);
   const aspectRatio = width / height;
+  const maxBoxWidth = resolveMaxBoxWidth(sourceWidth);
+  const maxBoxHeight = resolveMaxBoxHeight(sourceHeight);
+  const maxAspectRatio = width >= 90 ? RELAXED_MAX_ASPECT_RATIO : MAX_ASPECT_RATIO;
 
   if (candidate.pixelCount < MIN_PIXEL_COUNT) {
     return null;
@@ -249,8 +263,8 @@ function toMotherlodeBankingGreenBox(
   if (
     width < MIN_BOX_WIDTH_PX ||
     height < MIN_BOX_HEIGHT_PX ||
-    width > MAX_BOX_WIDTH_PX ||
-    height > MAX_BOX_HEIGHT_PX
+    width > maxBoxWidth ||
+    height > maxBoxHeight
   ) {
     return null;
   }
@@ -259,7 +273,7 @@ function toMotherlodeBankingGreenBox(
     return null;
   }
 
-  if (aspectRatio < MIN_ASPECT_RATIO || aspectRatio > MAX_ASPECT_RATIO) {
+  if (aspectRatio < MIN_ASPECT_RATIO || aspectRatio > maxAspectRatio) {
     return null;
   }
 

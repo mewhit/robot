@@ -34,16 +34,64 @@ type Roi = {
   height: number;
 };
 
-// The panel is in the top-left and scales with client size.
+type TextBand = {
+  startY: number;
+  endY: number;
+};
+
+type CandidateRoiMetrics = {
+  roi: Roi;
+  totalPixelCount: number;
+  textPixelCount: number;
+  counts: ColorCounts;
+  activePixelCount: number;
+  activeScore: number;
+  nativeScore: number;
+};
+
+// The sack panel always lives in the left-side overlay strip, but other
+// RuneLite plugins can move it vertically. Scan the full strip instead of
+// assuming a fixed y-ratio.
+const SEARCH_LEFT_RATIO = 0;
+const SEARCH_TOP_RATIO = 0;
+const SEARCH_RIGHT_RATIO = 0.14;
+const SEARCH_BOTTOM_RATIO = 0.4;
+
 const ROI_LEFT_RATIO = 0.0283;
 const ROI_RIGHT_RATIO = 0.0605;
 const ROI_TOP_RATIO = 0.0813;
 const ROI_BOTTOM_RATIO = 0.0904;
 
-const MIN_STATE_FILL_RATIO = 0.07;
+const TEXT_ROW_THRESHOLD_RATIO = 0.012;
+const MAX_TEXT_BAND_HEIGHT_RATIO = 0.06;
+const MAX_CANDIDATE_BAND_GAP_RATIO = 0.015;
+const CANDIDATE_TEXT_GROUP_SIZE = 3;
+
+const ACTIVE_SELECTION_MIN_PIXEL_COUNT = 80;
+const ACTIVE_SELECTION_MIN_SCORE = 18;
+const MIN_STATE_FILL_RATIO = 0.04;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+function resolveStatusPanelSearchBounds(bitmap: RobotBitmap): Roi {
+  const x0 = Math.round(bitmap.width * SEARCH_LEFT_RATIO);
+  const x1 = Math.round(bitmap.width * SEARCH_RIGHT_RATIO);
+  const y0 = Math.round(bitmap.height * SEARCH_TOP_RATIO);
+  const y1 = Math.round(bitmap.height * SEARCH_BOTTOM_RATIO);
+
+  const x = clamp(x0, 0, bitmap.width - 1);
+  const y = clamp(y0, 0, bitmap.height - 1);
+  const maxX = clamp(Math.max(x0 + 30, x1), 0, bitmap.width - 1);
+  const maxY = clamp(Math.max(y0 + 30, y1), 0, bitmap.height - 1);
+
+  return {
+    x,
+    y,
+    width: maxX - x + 1,
+    height: maxY - y + 1,
+  };
 }
 
 function resolveStatusPanelRoi(bitmap: RobotBitmap): Roi {
@@ -81,6 +129,116 @@ function isNativeStatusPixel(r: number, g: number, b: number): boolean {
   return r >= 50 && r <= 120 && g >= 40 && g <= 105 && b >= 25 && b <= 80 && r >= g && g >= b - 5;
 }
 
+function isStatusPanelTextPixel(r: number, g: number, b: number): boolean {
+  const maxChannel = Math.max(r, g, b);
+  const minChannel = Math.min(r, g, b);
+  const saturation = maxChannel - minChannel;
+  const luminance = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+
+  const isNeutralBrightText = luminance >= 150 && saturation <= 170;
+  const isYellowishText = luminance >= 110 && r >= 140 && g >= 100 && b <= 120;
+  const isGreenText = luminance >= 90 && g >= 140 && r <= 190 && b <= 160;
+  const isRedText = luminance >= 80 && r >= 150 && g <= 140 && b <= 120;
+
+  return isNeutralBrightText || isYellowishText || isGreenText || isRedText;
+}
+
+function findTextBands(bitmap: RobotBitmap, searchBounds: Roi): TextBand[] {
+  const bands: TextBand[] = [];
+  const rowThreshold = Math.max(3, Math.floor(searchBounds.width * TEXT_ROW_THRESHOLD_RATIO));
+  const maxBandHeight = Math.max(16, Math.round(bitmap.height * MAX_TEXT_BAND_HEIGHT_RATIO));
+  let activeStart = -1;
+
+  for (let y = searchBounds.y; y < searchBounds.y + searchBounds.height; y += 1) {
+    let rowCount = 0;
+
+    for (let x = searchBounds.x; x < searchBounds.x + searchBounds.width; x += 1) {
+      const offset = y * bitmap.byteWidth + x * bitmap.bytesPerPixel;
+      const b = bitmap.image[offset];
+      const g = bitmap.image[offset + 1];
+      const r = bitmap.image[offset + 2];
+
+      if (isStatusPanelTextPixel(r, g, b)) {
+        rowCount += 1;
+      }
+    }
+
+    if (rowCount >= rowThreshold) {
+      if (activeStart < 0) {
+        activeStart = y;
+      }
+      continue;
+    }
+
+    if (activeStart >= 0) {
+      const endY = y - 1;
+      const bandHeight = endY - activeStart + 1;
+      if (bandHeight >= 3 && bandHeight <= maxBandHeight) {
+        bands.push({ startY: activeStart, endY });
+      }
+      activeStart = -1;
+    }
+  }
+
+  if (activeStart >= 0) {
+    const endY = searchBounds.y + searchBounds.height - 1;
+    const bandHeight = endY - activeStart + 1;
+    if (bandHeight >= 3 && bandHeight <= maxBandHeight) {
+      bands.push({ startY: activeStart, endY });
+    }
+  }
+
+  return bands;
+}
+
+function resolveTextBounds(bitmap: RobotBitmap, searchBounds: Roi, bands: TextBand[]): Roi | null {
+  let minX = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+
+  for (const band of bands) {
+    for (let y = band.startY; y <= band.endY; y += 1) {
+      for (let x = searchBounds.x; x < searchBounds.x + searchBounds.width; x += 1) {
+        const offset = y * bitmap.byteWidth + x * bitmap.bytesPerPixel;
+        const b = bitmap.image[offset];
+        const g = bitmap.image[offset + 1];
+        const r = bitmap.image[offset + 2];
+
+        if (!isStatusPanelTextPixel(r, g, b)) {
+          continue;
+        }
+
+        minX = Math.min(minX, x);
+        maxX = Math.max(maxX, x);
+      }
+    }
+  }
+
+  if (!Number.isFinite(minX) || !Number.isFinite(maxX)) {
+    return null;
+  }
+
+  return {
+    x: minX,
+    y: bands[0].startY,
+    width: maxX - minX + 1,
+    height: bands[bands.length - 1].endY - bands[0].startY + 1,
+  };
+}
+
+function expandRoi(bitmap: RobotBitmap, roi: Roi, padX: number, padY: number): Roi {
+  const x = clamp(roi.x - padX, 0, bitmap.width - 1);
+  const y = clamp(roi.y - padY, 0, bitmap.height - 1);
+  const maxX = clamp(roi.x + roi.width - 1 + padX, 0, bitmap.width - 1);
+  const maxY = clamp(roi.y + roi.height - 1 + padY, 0, bitmap.height - 1);
+
+  return {
+    x,
+    y,
+    width: maxX - x + 1,
+    height: maxY - y + 1,
+  };
+}
+
 function collectColorCounts(bitmap: RobotBitmap, roi: Roi): ColorCounts {
   const counts: ColorCounts = {
     native: 0,
@@ -115,6 +273,121 @@ function collectColorCounts(bitmap: RobotBitmap, roi: Roi): ColorCounts {
   }
 
   return counts;
+}
+
+function collectCandidateRoiMetrics(bitmap: RobotBitmap, roi: Roi): CandidateRoiMetrics {
+  const counts: ColorCounts = {
+    native: 0,
+    green: 0,
+    yellow: 0,
+    red: 0,
+  };
+  let textPixelCount = 0;
+
+  for (let y = roi.y; y < roi.y + roi.height; y += 1) {
+    for (let x = roi.x; x < roi.x + roi.width; x += 1) {
+      const offset = y * bitmap.byteWidth + x * bitmap.bytesPerPixel;
+      const b = bitmap.image[offset];
+      const g = bitmap.image[offset + 1];
+      const r = bitmap.image[offset + 2];
+
+      if (isStatusPanelTextPixel(r, g, b)) {
+        textPixelCount += 1;
+      }
+
+      if (isGreenStatusPixel(r, g, b)) {
+        counts.green += 1;
+      }
+
+      if (isYellowStatusPixel(r, g, b)) {
+        counts.yellow += 1;
+      }
+
+      if (isRedStatusPixel(r, g, b)) {
+        counts.red += 1;
+      }
+
+      if (isNativeStatusPixel(r, g, b)) {
+        counts.native += 1;
+      }
+    }
+  }
+
+  const totalPixelCount = roi.width * roi.height;
+  const activePixelCount = Math.max(counts.green, counts.yellow, counts.red);
+  const activeScore = (activePixelCount * activePixelCount) / Math.max(1, totalPixelCount);
+  const nativeScore = (counts.native * counts.native) / Math.max(1, totalPixelCount) + roi.y * 0.5 + textPixelCount * 0.05;
+
+  return {
+    roi,
+    totalPixelCount,
+    textPixelCount,
+    counts,
+    activePixelCount,
+    activeScore,
+    nativeScore,
+  };
+}
+
+function resolveDynamicStatusPanelRoi(bitmap: RobotBitmap): CandidateRoiMetrics | null {
+  const searchBounds = resolveStatusPanelSearchBounds(bitmap);
+  const bands = findTextBands(bitmap, searchBounds);
+  if (bands.length < CANDIDATE_TEXT_GROUP_SIZE) {
+    return null;
+  }
+
+  const maxBandGap = Math.max(12, Math.round(bitmap.height * MAX_CANDIDATE_BAND_GAP_RATIO));
+  const padX = clamp(Math.round(bitmap.width * 0.004), 8, 16);
+  const padY = clamp(Math.round(bitmap.height * 0.004), 6, 12);
+  const seen = new Set<string>();
+
+  let bestActive: CandidateRoiMetrics | null = null;
+  let bestNative: CandidateRoiMetrics | null = null;
+
+  for (let index = 0; index + CANDIDATE_TEXT_GROUP_SIZE - 1 < bands.length; index += 1) {
+    const candidateBands = bands.slice(index, index + CANDIDATE_TEXT_GROUP_SIZE);
+    let hasLargeGap = false;
+
+    for (let bandIndex = 1; bandIndex < candidateBands.length; bandIndex += 1) {
+      const gap = candidateBands[bandIndex].startY - candidateBands[bandIndex - 1].endY;
+      if (gap < 0 || gap > maxBandGap) {
+        hasLargeGap = true;
+        break;
+      }
+    }
+
+    if (hasLargeGap) {
+      continue;
+    }
+
+    const textBounds = resolveTextBounds(bitmap, searchBounds, candidateBands);
+    if (!textBounds) {
+      continue;
+    }
+
+    const roi = expandRoi(bitmap, textBounds, padX, padY);
+    const key = `${roi.x}:${roi.y}:${roi.width}:${roi.height}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+
+    const metrics = collectCandidateRoiMetrics(bitmap, roi);
+
+    if (!bestActive || metrics.activeScore > bestActive.activeScore) {
+      bestActive = metrics;
+    }
+
+    if (!bestNative || metrics.nativeScore > bestNative.nativeScore) {
+      bestNative = metrics;
+    }
+  }
+
+  if (bestActive && bestActive.activePixelCount >= ACTIVE_SELECTION_MIN_PIXEL_COUNT && bestActive.activeScore >= ACTIVE_SELECTION_MIN_SCORE) {
+    return bestActive;
+  }
+
+  return bestNative;
 }
 
 function classifyState(counts: ColorCounts, totalPixelCount: number): {
@@ -155,9 +428,10 @@ function classifyState(counts: ColorCounts, totalPixelCount: number): {
 }
 
 export function detectMotherlodeBagFullBoxInScreenshot(bitmap: RobotBitmap): MotherlodeBagFullBox {
-  const roi = resolveStatusPanelRoi(bitmap);
-  const totalPixelCount = roi.width * roi.height;
-  const colorCounts = collectColorCounts(bitmap, roi);
+  const dynamicCandidate = resolveDynamicStatusPanelRoi(bitmap);
+  const roi = dynamicCandidate?.roi ?? resolveStatusPanelRoi(bitmap);
+  const totalPixelCount = dynamicCandidate?.totalPixelCount ?? roi.width * roi.height;
+  const colorCounts = dynamicCandidate?.counts ?? collectColorCounts(bitmap, roi);
   const classification = classifyState(colorCounts, totalPixelCount);
 
   return {

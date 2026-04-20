@@ -25,7 +25,7 @@ type BoxCandidate = {
 
 const MIN_PIXEL_COUNT = 15;
 const MIN_BOX_SIZE_PX = 1;
-const MIN_FILL_RATIO = 0.08;
+const MIN_FILL_RATIO = 0.06;
 const MAX_FILL_RATIO = 0.95;
 const MERGE_GAP_PX = 1;
 
