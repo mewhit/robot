@@ -62,8 +62,15 @@ const BANK_CLICK_LOCK_TICKS = 1;
 const BANK_POST_ORANGE_WAIT_TICKS = 3;
 const BANK_SOUTH_CLICK_LOCK_TICKS = 1;
 const BANK_YELLOW_TILE_CLICK_LOCK_TICKS = 2;
-const BANK_SOUTH_CLICK_OFFSET_PX = 120;
+const BANK_PLAYER_SPEED_TILES_PER_TICK = 2;
+const BANK_TILE_PX_FALLBACK = 64;
+const BANK_TILE_PX_MIN = 24;
+const BANK_TILE_PX_MAX = 96;
 const BANK_SOUTH_CLICK_RANDOM_RADIUS_PX = 14;
+const BANK_SOUTH_RECLICK_WAIT_MAX_TICKS = 5;
+const BANK_SOUTHWEST_CLICK_OFFSET_TILES_X = -1.15;
+const BANK_SOUTHWEST_CLICK_OFFSET_TILES_Y = 2.25;
+const BANK_SOUTHWEST_CLICK_RANDOM_TILE_RADIUS = 0.28;
 const BANK_EXPECTED_LADDER_DOWN_X = 3755;
 const BANK_EXPECTED_LADDER_DOWN_Y = 5672;
 const BANK_SOUTH_CLICKS_BEFORE_YELLOW_CHECK = 6;
@@ -113,6 +120,15 @@ type HoverTileReadResult = {
   rawLine: string | null;
 };
 
+type BankSouthMovePlan = {
+  point: { x: number; y: number };
+  tilePx: number;
+  dxPx: number;
+  dyPx: number;
+  distanceTiles: number;
+  etaTicks: number;
+};
+
 type BotState = {
   phase: BotPhase;
   activeTile: TileCoord | null;
@@ -129,6 +145,7 @@ type BotState = {
   actionLockTicks: number;
   bankingStep: BankingStep;
   bankSouthClicks: number;
+  bankSouthWaitTicks: number;
   bankLadderRecheckCount: number;
   loopIndex: number;
 };
@@ -763,24 +780,60 @@ function clickScreenPoint(screenX: number, screenY: number): void {
 function toSouthMoveScreenPoint(
   captureBounds: ScreenCaptureBounds,
   playerAnchorInCapture: { x: number; y: number } | null,
-): { x: number; y: number } {
+  playerBoxInCapture: PlayerBox | null,
+): BankSouthMovePlan {
   const anchorX = playerAnchorInCapture?.x ?? Math.round(captureBounds.width / 2);
   const anchorY = playerAnchorInCapture?.y ?? Math.round(captureBounds.height / 2);
+  const tilePx = estimateBankTilePxFromPlayerBox(playerBoxInCapture);
 
   const minLocalX = BANK_MOVE_MARGIN_PX;
   const minLocalY = BANK_MOVE_MARGIN_PX;
   const maxLocalX = captureBounds.width - 1 - BANK_MOVE_MARGIN_PX;
   const maxLocalY = captureBounds.height - 1 - BANK_MOVE_MARGIN_PX;
 
-  const baseLocalX = clamp(anchorX, minLocalX, maxLocalX);
-  const baseLocalY = clamp(anchorY + BANK_SOUTH_CLICK_OFFSET_PX, minLocalY, maxLocalY);
+  const baseOffsetX = Math.round(tilePx * BANK_SOUTHWEST_CLICK_OFFSET_TILES_X);
+  const baseOffsetY = Math.round(tilePx * BANK_SOUTHWEST_CLICK_OFFSET_TILES_Y);
+  const baseLocalX = clamp(anchorX + baseOffsetX, minLocalX, maxLocalX);
+  const baseLocalY = clamp(anchorY + baseOffsetY, minLocalY, maxLocalY);
 
-  const randomMinX = clamp(baseLocalX - BANK_SOUTH_CLICK_RANDOM_RADIUS_PX, minLocalX, maxLocalX);
-  const randomMaxX = clamp(baseLocalX + BANK_SOUTH_CLICK_RANDOM_RADIUS_PX, minLocalX, maxLocalX);
-  const randomMinY = clamp(baseLocalY - BANK_SOUTH_CLICK_RANDOM_RADIUS_PX, minLocalY, maxLocalY);
-  const randomMaxY = clamp(baseLocalY + BANK_SOUTH_CLICK_RANDOM_RADIUS_PX, minLocalY, maxLocalY);
+  const randomRadiusPx = Math.max(
+    BANK_SOUTH_CLICK_RANDOM_RADIUS_PX,
+    Math.round(tilePx * BANK_SOUTHWEST_CLICK_RANDOM_TILE_RADIUS),
+  );
+  const randomMinX = clamp(baseLocalX - randomRadiusPx, minLocalX, maxLocalX);
+  const randomMaxX = clamp(baseLocalX + randomRadiusPx, minLocalX, maxLocalX);
+  const randomMinY = clamp(baseLocalY - randomRadiusPx, minLocalY, maxLocalY);
+  const randomMaxY = clamp(baseLocalY + randomRadiusPx, minLocalY, maxLocalY);
 
-  return pickDistinctScreenPointInLocalRange(randomMinX, randomMaxX, randomMinY, randomMaxY, captureBounds);
+  const point = pickDistinctScreenPointInLocalRange(randomMinX, randomMaxX, randomMinY, randomMaxY, captureBounds);
+  const anchorScreenX = captureBounds.x + anchorX;
+  const anchorScreenY = captureBounds.y + anchorY;
+  const dxPx = point.x - anchorScreenX;
+  const dyPx = point.y - anchorScreenY;
+  const distanceTiles = Math.max(Math.abs(dxPx) / tilePx, Math.abs(dyPx) / tilePx);
+  const etaTicks = clamp(
+    Math.ceil(distanceTiles / BANK_PLAYER_SPEED_TILES_PER_TICK),
+    BANK_SOUTH_CLICK_LOCK_TICKS,
+    BANK_SOUTH_RECLICK_WAIT_MAX_TICKS,
+  );
+
+  return {
+    point,
+    tilePx,
+    dxPx,
+    dyPx,
+    distanceTiles,
+    etaTicks,
+  };
+}
+
+function estimateBankTilePxFromPlayerBox(playerBoxInCapture: PlayerBox | null): number {
+  if (!playerBoxInCapture) {
+    return BANK_TILE_PX_FALLBACK;
+  }
+
+  const estimatedTilePx = Math.round((playerBoxInCapture.width + playerBoxInCapture.height) / 2);
+  return clamp(estimatedTilePx, BANK_TILE_PX_MIN, BANK_TILE_PX_MAX);
 }
 
 function isPlayerNearDepositBox(
@@ -837,6 +890,7 @@ function resetToSearching(current: BotState): BotState {
     depositLastDistancePx: null,
     bankingStep: "find-orange",
     bankSouthClicks: 0,
+    bankSouthWaitTicks: 0,
     bankLadderRecheckCount: 0,
   };
 }
@@ -856,6 +910,7 @@ function resetToDepositing(current: BotState): BotState {
     depositLastDistancePx: null,
     bankingStep: "find-orange",
     bankSouthClicks: 0,
+    bankSouthWaitTicks: 0,
     bankLadderRecheckCount: 0,
   };
 }
@@ -875,6 +930,7 @@ function resetToBanking(current: BotState): BotState {
     depositLastDistancePx: null,
     bankingStep: "find-orange",
     bankSouthClicks: 0,
+    bankSouthWaitTicks: 0,
     bankLadderRecheckCount: 0,
   };
 }
@@ -1123,8 +1179,13 @@ function maybeDecrementActionLock(current: BotState): BotState {
   return { ...current, actionLockTicks: current.actionLockTicks - 1 };
 }
 
+function maybeDecrementBankSouthWait(current: BotState): BotState {
+  if (current.bankSouthWaitTicks <= 0) return current;
+  return { ...current, bankSouthWaitTicks: current.bankSouthWaitTicks - 1 };
+}
+
 async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Promise<BotState> {
-  let current = maybeDecrementActionLock({ ...state, loopIndex: state.loopIndex + 1 });
+  let current = maybeDecrementBankSouthWait(maybeDecrementActionLock({ ...state, loopIndex: state.loopIndex + 1 }));
 
   if (current.phase === "depositing") {
     const capture = captureDepositState(captureBounds, "deposit");
@@ -1415,6 +1476,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
           ...current,
           bankingStep: "wait-after-orange",
           bankSouthClicks: 0,
+          bankSouthWaitTicks: 0,
           bankLadderRecheckCount: 0,
           actionLockTicks: Math.max(BANK_CLICK_LOCK_TICKS, BANK_POST_ORANGE_WAIT_TICKS),
         };
@@ -1447,6 +1509,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
         ...current,
         bankingStep: "wait-after-orange",
         bankSouthClicks: 0,
+        bankSouthWaitTicks: 0,
         bankLadderRecheckCount: 0,
         actionLockTicks: Math.max(BANK_CLICK_LOCK_TICKS, BANK_POST_ORANGE_WAIT_TICKS),
       };
@@ -1463,7 +1526,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
         warn(
           `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking start tile mismatch before first south click (tile=${capture.playerTileFromOverlay.x},${capture.playerTileFromOverlay.y},${capture.playerTileFromOverlay.z}). Returning to ladder.`,
         );
-        return { ...current, bankingStep: "find-orange", bankSouthClicks: 0 };
+        return { ...current, bankingStep: "find-orange", bankSouthClicks: 0, bankSouthWaitTicks: 0 };
       }
     }
 
@@ -1486,25 +1549,34 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
         return {
           ...current,
           bankingStep: "yellow-clicked",
+          bankSouthWaitTicks: 0,
           actionLockTicks: BANK_YELLOW_TILE_CLICK_LOCK_TICKS,
         };
       }
-    } else {
+    } else if (current.bankSouthWaitTicks === 0) {
       log(
         `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking south warmup ${current.bankSouthClicks}/${BANK_SOUTH_CLICKS_BEFORE_YELLOW_CHECK}; delaying yellow check.`,
       );
     }
 
-    const southPoint = toSouthMoveScreenPoint(captureBounds, capture.playerAnchorInCapture);
+    if (current.bankSouthWaitTicks > 0) {
+      log(
+        `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking south movement still in flight; waiting ${current.bankSouthWaitTicks} more tick(s) before re-click.`,
+      );
+      return current;
+    }
+
+    const southMove = toSouthMoveScreenPoint(captureBounds, capture.playerAnchorInCapture, capture.playerBoxInCapture);
     log(
-      `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking yellow tile not visible; clicking south at (${southPoint.x},${southPoint.y}).`,
+      `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking yellow tile not visible; clicking south-west at (${southMove.point.x},${southMove.point.y}) dx=${southMove.dxPx} dy=${southMove.dyPx} tilePx~${southMove.tilePx} eta=${southMove.etaTicks} tick(s) distance~${southMove.distanceTiles.toFixed(2)} tile(s).`,
     );
-    clickScreenPoint(southPoint.x, southPoint.y);
-    moveMouseAwayFromClickedNode(southPoint.x, southPoint.y, captureBounds);
+    clickScreenPoint(southMove.point.x, southMove.point.y);
+    moveMouseAwayFromClickedNode(southMove.point.x, southMove.point.y, captureBounds);
     return {
       ...current,
       bankingStep: "move-south-until-yellow",
       bankSouthClicks: current.bankSouthClicks + 1,
+      bankSouthWaitTicks: southMove.etaTicks,
       actionLockTicks: BANK_SOUTH_CLICK_LOCK_TICKS,
     };
   }
@@ -1630,6 +1702,7 @@ async function runLoop(captureBounds: ScreenCaptureBounds): Promise<void> {
     actionLockTicks: 0,
     bankingStep: "find-orange",
     bankSouthClicks: 0,
+    bankSouthWaitTicks: 0,
     bankLadderRecheckCount: 0,
     loopIndex: 0,
   };
