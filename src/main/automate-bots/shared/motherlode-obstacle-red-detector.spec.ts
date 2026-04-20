@@ -77,6 +77,15 @@ const EXPECTED_BY_SCREENSHOT: Record<string, ExpectedDetection> = {
     minWidth: 20,
     minHeight: 22,
   },
+  "3856x2128-4k-100-colision.png": {
+    shouldDetect: true,
+    centerX: 1792,
+    centerY: 1144,
+    tolerancePx: 30,
+    minPixelCount: 4000,
+    minWidth: 70,
+    minHeight: 80,
+  },
 };
 
 async function loadScreenshot(filePath: string): Promise<RobotBitmap | null> {

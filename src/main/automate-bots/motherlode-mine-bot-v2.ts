@@ -49,7 +49,8 @@ const CAMERA_SCROLL_TICKS = 35;
 const CAMERA_SCROLL_DELTA_Y = 120;
 const NORTH_KEY_HOLD_MS = 100;
 
-const BASE_TICK_MS = 600;
+const GAME_TICK_MS = 600;
+const BASE_TICK_MS = GAME_TICK_MS;
 const TOOLTIP_SETTLE_MS = 400;
 const ENABLE_TILE_LOCATION_DETECTION = false;
 const ENABLE_NODE_HOVER_BEFORE_TILE_READ = true;
@@ -177,10 +178,10 @@ type BotState = {
   depositRetryTicks: number;
   depositInFlight: boolean;
   depositLastDistancePx: number | null;
-  actionLockTicks: number;
+  actionLockUntilMs: number;
   bankingStep: BankingStep;
   bankSouthClicks: number;
-  bankSouthWaitTicks: number;
+  bankSouthWaitUntilMs: number;
   bankLadderRecheckCount: number;
   bankOrbClickCount: number;
   loopIndex: number;
@@ -594,6 +595,37 @@ function isAtBankLadderDownTile(tile: TileCoord | null): boolean {
   return tile?.x === BANK_EXPECTED_LADDER_DOWN_X && tile?.y === BANK_EXPECTED_LADDER_DOWN_Y;
 }
 
+function ticksToMs(ticks: number): number {
+  if (!Number.isFinite(ticks) || ticks <= 0) {
+    return 0;
+  }
+  return Math.ceil(ticks * GAME_TICK_MS);
+}
+
+function deadlineFromNowTicks(ticks: number): number {
+  const durationMs = ticksToMs(ticks);
+  return durationMs > 0 ? Date.now() + durationMs : 0;
+}
+
+function isDeadlineActive(deadlineMs: number, nowMs: number): boolean {
+  return deadlineMs > nowMs;
+}
+
+function remainingDeadlineTicks(deadlineMs: number, nowMs: number): number {
+  if (!isDeadlineActive(deadlineMs, nowMs)) {
+    return 0;
+  }
+  return Math.ceil((deadlineMs - nowMs) / GAME_TICK_MS);
+}
+
+function isActionLocked(state: BotState, nowMs: number): boolean {
+  return isDeadlineActive(state.actionLockUntilMs, nowMs);
+}
+
+function isBankSouthWaitActive(state: BotState, nowMs: number): boolean {
+  return isDeadlineActive(state.bankSouthWaitUntilMs, nowMs);
+}
+
 function createInitialBotState(): BotState {
   return {
     phase: "searching",
@@ -608,10 +640,10 @@ function createInitialBotState(): BotState {
     depositRetryTicks: 0,
     depositInFlight: false,
     depositLastDistancePx: null,
-    actionLockTicks: 0,
+    actionLockUntilMs: 0,
     bankingStep: "find-orange",
     bankSouthClicks: 0,
-    bankSouthWaitTicks: 0,
+    bankSouthWaitUntilMs: 0,
     bankLadderRecheckCount: 0,
     bankOrbClickCount: 0,
     loopIndex: 0,
@@ -1216,10 +1248,10 @@ function resetToSearching(current: BotState): BotState {
     depositRetryTicks: 0,
     depositInFlight: false,
     depositLastDistancePx: null,
-    actionLockTicks: 0,
+    actionLockUntilMs: 0,
     bankingStep: "find-orange",
     bankSouthClicks: 0,
-    bankSouthWaitTicks: 0,
+    bankSouthWaitUntilMs: 0,
     bankLadderRecheckCount: 0,
     bankOrbClickCount: 0,
   };
@@ -1238,10 +1270,10 @@ function resetToDepositing(current: BotState): BotState {
     depositRetryTicks: 0,
     depositInFlight: false,
     depositLastDistancePx: null,
-    actionLockTicks: 0,
+    actionLockUntilMs: 0,
     bankingStep: "find-orange",
     bankSouthClicks: 0,
-    bankSouthWaitTicks: 0,
+    bankSouthWaitUntilMs: 0,
     bankLadderRecheckCount: 0,
     bankOrbClickCount: 0,
   };
@@ -1260,10 +1292,10 @@ function resetToBanking(current: BotState): BotState {
     depositRetryTicks: 0,
     depositInFlight: false,
     depositLastDistancePx: null,
-    actionLockTicks: 0,
+    actionLockUntilMs: 0,
     bankingStep: "move-south-until-yellow",
     bankSouthClicks: 0,
-    bankSouthWaitTicks: 0,
+    bankSouthWaitUntilMs: 0,
     bankLadderRecheckCount: 0,
     bankOrbClickCount: 0,
   };
@@ -1282,10 +1314,10 @@ function resetToDescendingToBank(current: BotState): BotState {
     depositRetryTicks: 0,
     depositInFlight: false,
     depositLastDistancePx: null,
-    actionLockTicks: 0,
+    actionLockUntilMs: 0,
     bankingStep: "find-orange",
     bankSouthClicks: 0,
-    bankSouthWaitTicks: 0,
+    bankSouthWaitUntilMs: 0,
     bankLadderRecheckCount: 0,
     bankOrbClickCount: 0,
   };
@@ -1557,18 +1589,9 @@ function updateBagState(current: BotState, nextState: MotherlodeBagFullState): B
   };
 }
 
-function maybeDecrementActionLock(current: BotState): BotState {
-  if (current.actionLockTicks <= 0) return current;
-  return { ...current, actionLockTicks: current.actionLockTicks - 1 };
-}
-
-function maybeDecrementBankSouthWait(current: BotState): BotState {
-  if (current.bankSouthWaitTicks <= 0) return current;
-  return { ...current, bankSouthWaitTicks: current.bankSouthWaitTicks - 1 };
-}
-
 async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Promise<BotState> {
-  let current = maybeDecrementBankSouthWait(maybeDecrementActionLock({ ...state, loopIndex: state.loopIndex + 1 }));
+  const nowMs = Date.now();
+  let current = { ...state, loopIndex: state.loopIndex + 1 };
 
   if (current.phase === "depositing") {
     const capture = captureDepositState(captureBounds, "deposit");
@@ -1611,7 +1634,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
       return resetToSearching(current);
     }
 
-    if (current.actionLockTicks > 0) {
+    if (isActionLocked(current, nowMs)) {
       return current;
     }
 
@@ -1648,7 +1671,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
         depositInFlight: false,
         depositRetryTicks: 0,
         depositLastDistancePx: depositDistancePx,
-        actionLockTicks: OBSTACLE_CLICK_LOCK_TICKS,
+        actionLockUntilMs: deadlineFromNowTicks(OBSTACLE_CLICK_LOCK_TICKS),
       };
     }
 
@@ -1679,7 +1702,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
         depositInFlight: true,
         depositRetryTicks: 0,
         depositLastDistancePx: depositDistancePx,
-        actionLockTicks: DEPOSIT_CLICK_LOCK_TICKS,
+        actionLockUntilMs: deadlineFromNowTicks(DEPOSIT_CLICK_LOCK_TICKS),
       };
     }
 
@@ -1706,7 +1729,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
       ...current,
       depositRetryTicks: 0,
       depositLastDistancePx: depositDistancePx,
-      actionLockTicks: DEPOSIT_CLICK_LOCK_TICKS,
+      actionLockUntilMs: deadlineFromNowTicks(DEPOSIT_CLICK_LOCK_TICKS),
     };
   }
 
@@ -1721,7 +1744,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
   // Overlay OCR is expensive; only read it on banking sub-steps that actually consume tile text.
   const shouldReadOverlayTile =
     (current.phase === "banking" || current.phase === "descending-to-bank") &&
-    current.actionLockTicks === 0 &&
+    !isActionLocked(current, nowMs) &&
     (current.bankingStep === "wait-after-orange" || (current.bankingStep === "move-south-until-yellow" && current.bankSouthClicks === 0));
   const capture = captureMineState(
     captureBounds,
@@ -1744,7 +1767,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
   if (
     current.phase !== "banking" &&
     current.phase !== "descending-to-bank" &&
-    current.actionLockTicks === 0 &&
+    !isActionLocked(current, nowMs) &&
     shouldClearRedObstacle(capture.playerBoxInCapture, capture.obstacleBox)
   ) {
     const point = toObstacleInteractionScreenPoint(capture.obstacleBox, captureBounds);
@@ -1766,12 +1789,12 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
       ...resetToSearching(current),
       bagFullState: current.bagFullState,
       depositTriggerStableTicks: current.depositTriggerStableTicks,
-      actionLockTicks: OBSTACLE_CLICK_LOCK_TICKS,
+      actionLockUntilMs: deadlineFromNowTicks(OBSTACLE_CLICK_LOCK_TICKS),
     };
   }
 
   if (current.phase === "descending-to-bank" || current.phase === "banking") {
-    if (current.actionLockTicks === 0 && shouldClearRedObstacle(capture.playerBoxInCapture, capture.obstacleBox)) {
+    if (!isActionLocked(current, nowMs) && shouldClearRedObstacle(capture.playerBoxInCapture, capture.obstacleBox)) {
       const point = toObstacleInteractionScreenPoint(capture.obstacleBox, captureBounds);
       warn(`Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking collision with red obstacle at (${point.x},${point.y}). Clearing.`);
       warn(
@@ -1789,12 +1812,12 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
       moveMouseAwayFromClickedNode(point.x, point.y, captureBounds);
       return {
         ...current,
-        actionLockTicks: OBSTACLE_CLICK_LOCK_TICKS,
+        actionLockUntilMs: deadlineFromNowTicks(OBSTACLE_CLICK_LOCK_TICKS),
       };
     }
 
     if (current.phase === "descending-to-bank" && current.bankingStep === "wait-after-orange") {
-      if (current.actionLockTicks > 0) {
+      if (isActionLocked(current, nowMs)) {
         return current;
       }
       const tileText = capture.playerTileFromOverlay
@@ -1810,7 +1833,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
           return {
             ...current,
             bankLadderRecheckCount: nextRecheckCount,
-            actionLockTicks: waitTicks,
+            actionLockUntilMs: deadlineFromNowTicks(waitTicks),
           };
         }
 
@@ -1831,13 +1854,14 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
     }
 
     if (current.bankingStep === "yellow-clicked") {
-      if (current.actionLockTicks > 0) {
+      if (isActionLocked(current, nowMs)) {
         return current;
       }
 
-      if (current.bankSouthWaitTicks > 0) {
+      if (isBankSouthWaitActive(current, nowMs)) {
+        const remainingTicks = remainingDeadlineTicks(current.bankSouthWaitUntilMs, nowMs);
         log(
-          `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking yellow travel in flight; waiting ${current.bankSouthWaitTicks} more tick(s) before green click.`,
+          `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking yellow travel in flight; waiting ${remainingTicks} more tick(s) before green click.`,
         );
         return current;
       }
@@ -1870,20 +1894,21 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
       return {
         ...current,
         bankingStep: "green-clicked",
-        bankSouthWaitTicks: greenTravel.etaTicks,
+        bankSouthWaitUntilMs: deadlineFromNowTicks(greenTravel.etaTicks),
         bankOrbClickCount: 0,
-        actionLockTicks: BANK_GREEN_CLICK_LOCK_TICKS,
+        actionLockUntilMs: deadlineFromNowTicks(BANK_GREEN_CLICK_LOCK_TICKS),
       };
     }
 
     if (current.bankingStep === "green-clicked") {
-      if (current.actionLockTicks > 0) {
+      if (isActionLocked(current, nowMs)) {
         return current;
       }
 
-      if (current.bankSouthWaitTicks > 0) {
+      if (isBankSouthWaitActive(current, nowMs)) {
+        const remainingTicks = remainingDeadlineTicks(current.bankSouthWaitUntilMs, nowMs);
         log(
-          `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking green travel in flight; waiting ${current.bankSouthWaitTicks} more tick(s) before bank orb detection.`,
+          `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking green travel in flight; waiting ${remainingTicks} more tick(s) before bank orb detection.`,
         );
         return current;
       }
@@ -1896,7 +1921,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
     }
 
     if (current.bankingStep === "wait-for-orb") {
-      if (current.actionLockTicks > 0) {
+      if (isActionLocked(current, nowMs)) {
         return current;
       }
 
@@ -1940,11 +1965,11 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
       return {
         ...current,
         bankOrbClickCount: nextBankOrbClickCount,
-        actionLockTicks: BANK_ORB_CLICK_LOCK_TICKS,
+        actionLockUntilMs: deadlineFromNowTicks(BANK_ORB_CLICK_LOCK_TICKS),
       };
     }
 
-    if (current.actionLockTicks > 0) {
+    if (isActionLocked(current, nowMs)) {
       return current;
     }
 
@@ -1961,9 +1986,9 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
           ...current,
           bankingStep: "wait-after-orange",
           bankSouthClicks: 0,
-          bankSouthWaitTicks: 0,
+          bankSouthWaitUntilMs: 0,
           bankLadderRecheckCount: 0,
-          actionLockTicks: Math.max(BANK_CLICK_LOCK_TICKS, BANK_POST_ORANGE_WAIT_TICKS),
+          actionLockUntilMs: deadlineFromNowTicks(Math.max(BANK_CLICK_LOCK_TICKS, BANK_POST_ORANGE_WAIT_TICKS)),
         };
       }
 
@@ -2007,14 +2032,15 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
       return {
         ...current,
         bankingStep: "yellow-clicked",
-        bankSouthWaitTicks: yellowTravel.etaTicks,
-        actionLockTicks: BANK_YELLOW_TILE_CLICK_LOCK_TICKS,
+        bankSouthWaitUntilMs: deadlineFromNowTicks(yellowTravel.etaTicks),
+        actionLockUntilMs: deadlineFromNowTicks(BANK_YELLOW_TILE_CLICK_LOCK_TICKS),
       };
     }
 
-    if (current.bankSouthWaitTicks > 0) {
+    if (isBankSouthWaitActive(current, nowMs)) {
+      const remainingTicks = remainingDeadlineTicks(current.bankSouthWaitUntilMs, nowMs);
       log(
-        `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking south movement still in flight; waiting ${current.bankSouthWaitTicks} more tick(s) before re-click.`,
+        `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking south movement still in flight; waiting ${remainingTicks} more tick(s) before re-click.`,
       );
       return current;
     }
@@ -2029,8 +2055,8 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
       ...current,
       bankingStep: "move-south-until-yellow",
       bankSouthClicks: current.bankSouthClicks + 1,
-      bankSouthWaitTicks: southMove.etaTicks + BANK_SOUTH_POST_CLICK_SETTLE_TICKS,
-      actionLockTicks: BANK_SOUTH_CLICK_LOCK_TICKS,
+      bankSouthWaitUntilMs: deadlineFromNowTicks(southMove.etaTicks + BANK_SOUTH_POST_CLICK_SETTLE_TICKS),
+      actionLockUntilMs: deadlineFromNowTicks(BANK_SOUTH_CLICK_LOCK_TICKS),
     };
   }
 
@@ -2044,7 +2070,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
       return current;
     }
 
-    if (current.actionLockTicks > 0) {
+    if (isActionLocked(current, nowMs)) {
       return current;
     }
 
@@ -2072,7 +2098,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
       missingActiveTicks: 0,
       miningWaitTicks: 0,
       activeNodeMaxWaitTicks: randomIntInclusive(ACTIVE_NODE_MAX_WAIT_TICKS_MIN, ACTIVE_NODE_MAX_WAIT_TICKS_MAX),
-      actionLockTicks: NODE_CLICK_LOCK_TICKS,
+      actionLockUntilMs: deadlineFromNowTicks(NODE_CLICK_LOCK_TICKS),
     };
   }
 

@@ -46,7 +46,9 @@ const SEARCH_BOTTOM_RATIO = 0.78;
 
 const COMPACT_MIN_PIXEL_COUNT = 220;
 const COMPACT_MIN_BOX_SIDE_PX = 30;
-const COMPACT_MAX_BOX_SIDE_PX = 70;
+// 4K captures can render the same close red blocker ~15-20% larger than the
+// older 2K samples while still keeping the same compact shape.
+const COMPACT_MAX_BOX_SIDE_PX = 88;
 const COMPACT_MIN_FILL_RATIO = 0.2;
 const COMPACT_MAX_FILL_RATIO = 0.98;
 const COMPACT_MIN_ASPECT_RATIO = 0.75;
