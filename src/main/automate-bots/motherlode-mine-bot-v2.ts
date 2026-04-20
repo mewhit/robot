@@ -825,9 +825,7 @@ function resolvePostClickMouseTarget(
 }
 
 function moveMouseAwayFromClickedNode(clickedScreenX: number, clickedScreenY: number, captureBounds: ScreenCaptureBounds): void {
-  const target = resolvePostClickMouseTarget(clickedScreenX, clickedScreenY, captureBounds);
-  if (!target) return;
-  moveMouse(target.x, target.y);
+  return;
 }
 
 function clickScreenPoint(screenX: number, screenY: number): void {
