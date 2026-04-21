@@ -58,7 +58,7 @@ const MIN_AVG_GREEN = 176;
 const MAX_AVG_BLUE = 72;
 const MIN_YELLOW_STRENGTH = 138;
 const MAX_BOX_WIDTH_RATIO = 0.03;
-const MAX_BOX_HEIGHT_RATIO = 0.045;
+const MAX_BOX_HEIGHT_RATIO = 0.055;
 const RELAXED_MIN_BOX_WIDTH_PX = 100;
 
 function clamp(value: number, min: number, max: number): number {
@@ -261,12 +261,7 @@ function toMotherlodeBankingYellowBox(
     return null;
   }
 
-  if (
-    width < MIN_BOX_WIDTH_PX ||
-    height < MIN_BOX_HEIGHT_PX ||
-    width > maxBoxWidth ||
-    height > maxBoxHeight
-  ) {
+  if (width < MIN_BOX_WIDTH_PX || height < MIN_BOX_HEIGHT_PX || width > maxBoxWidth || height > maxBoxHeight) {
     return null;
   }
 
@@ -283,12 +278,7 @@ function toMotherlodeBankingYellowBox(
   const avgBlue = candidate.blueSum / candidate.pixelCount;
   const yellowStrength = avgRed + avgGreen - avgBlue * 2;
 
-  if (
-    avgRed < MIN_AVG_RED ||
-    avgGreen < MIN_AVG_GREEN ||
-    avgBlue > MAX_AVG_BLUE ||
-    yellowStrength < MIN_YELLOW_STRENGTH
-  ) {
+  if (avgRed < MIN_AVG_RED || avgGreen < MIN_AVG_GREEN || avgBlue > MAX_AVG_BLUE || yellowStrength < MIN_YELLOW_STRENGTH) {
     return null;
   }
 
@@ -301,12 +291,7 @@ function toMotherlodeBankingYellowBox(
   const maxDistance = Math.sqrt((sourceWidth / 2) ** 2 + (sourceHeight / 2) ** 2);
   const normalizedDistance = maxDistance > 0 ? distanceFromCenter / maxDistance : 0;
 
-  const score =
-    candidate.pixelCount +
-    fillRatio * 260 +
-    yellowStrength * 1.8 -
-    Math.abs(aspectRatio - 1) * 120 -
-    normalizedDistance * 70;
+  const score = candidate.pixelCount + fillRatio * 260 + yellowStrength * 1.8 - Math.abs(aspectRatio - 1) * 120 - normalizedDistance * 70;
 
   return {
     x: candidate.minX,
@@ -351,9 +336,7 @@ export function detectMotherlodeBankingYellowBoxesInScreenshot(bitmap: RobotBitm
   return sortBoxes(boxes);
 }
 
-export function detectBestMotherlodeBankingYellowBoxInScreenshot(
-  bitmap: RobotBitmap,
-): MotherlodeBankingYellowBox | null {
+export function detectBestMotherlodeBankingYellowBoxInScreenshot(bitmap: RobotBitmap): MotherlodeBankingYellowBox | null {
   return detectMotherlodeBankingYellowBoxesInScreenshot(bitmap)[0] ?? null;
 }
 
@@ -393,15 +376,7 @@ export function saveBitmapWithMotherlodeBankingYellowBoxes(
     const markerSize = 16;
     const markerHalf = Math.floor(markerSize / 2);
     const markerColor = activeTargetColor ?? { r: 64, g: 220, b: 255 };
-    drawRectangleOnPng(
-      png,
-      activeTarget.x - markerHalf,
-      activeTarget.y - markerHalf,
-      markerSize,
-      markerSize,
-      markerColor,
-      2,
-    );
+    drawRectangleOnPng(png, activeTarget.x - markerHalf, activeTarget.y - markerHalf, markerSize, markerSize, markerColor, 2);
   }
 
   if (playerBox) {

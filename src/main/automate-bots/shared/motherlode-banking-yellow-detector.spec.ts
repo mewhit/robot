@@ -35,6 +35,24 @@ const EXPECTED_BY_SCREENSHOT: Record<string, ExpectedDetection> = {
     minWidth: 56,
     minHeight: 56,
   },
+  "3856x2128-4k-100-[-2221]-[1343].png": {
+    shouldDetect: true,
+    centerX: 1628,
+    centerY: 1353,
+    tolerancePx: 24,
+    minPixelCount: 1600,
+    minWidth: 88,
+    minHeight: 100,
+  },
+  "3856x2128-4k-100-[-2431]-[1715].png": {
+    shouldDetect: true,
+    centerX: 1420,
+    centerY: 1733,
+    tolerancePx: 24,
+    minPixelCount: 1800,
+    minWidth: 100,
+    minHeight: 108,
+  },
   "3856x2128-4k-100-[-2481]-[1889].png": {
     shouldDetect: true,
     centerX: 1366,
@@ -175,9 +193,7 @@ function validateBestBox(screenshotPath: string, best: MotherlodeBankingYellowBo
   }
 
   if (!pixelsOk) {
-    console.error(
-      `Pixel count too low for ${basename}: expected >=${expected.minPixelCount}, actual ${best.pixelCount}`,
-    );
+    console.error(`Pixel count too low for ${basename}: expected >=${expected.minPixelCount}, actual ${best.pixelCount}`);
     return false;
   }
 

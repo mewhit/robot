@@ -13,10 +13,7 @@ import {
   detectMotherlodeMineBoxesInScreenshot,
   saveBitmapWithMotherlodeMineBoxes,
 } from "./shared/motherlode-mine-box-detector";
-import {
-  MotherlodeBagFullState,
-  detectMotherlodeBagFullBoxInScreenshot,
-} from "./shared/motherlode-bag-full-box-detector";
+import { MotherlodeBagFullState, detectMotherlodeBagFullBoxInScreenshot } from "./shared/motherlode-bag-full-box-detector";
 import { MotherlodeBagStats, detectMotherlodeBagStatsInScreenshot } from "./shared/motherlode-bag-stats-detector";
 import {
   MotherlodeDepositBox,
@@ -33,10 +30,7 @@ import {
   detectMotherlodeBankingYellowBoxesInScreenshot,
   saveBitmapWithMotherlodeBankingYellowBoxes,
 } from "./shared/motherlode-banking-yellow-detector";
-import {
-  MotherlodeBankingGreenBox,
-  detectMotherlodeBankingGreenBoxesInScreenshot,
-} from "./shared/motherlode-banking-green-detector";
+import { MotherlodeBankingGreenBox, detectMotherlodeBankingGreenBoxesInScreenshot } from "./shared/motherlode-banking-green-detector";
 import {
   BankDepositOrbDetection,
   BankDepositOrbDetectorResult,
@@ -83,13 +77,14 @@ const BANK_SOUTH_POST_CLICK_SETTLE_TICKS = 1;
 const BANK_YELLOW_TILE_CLICK_LOCK_TICKS = 2;
 const BANK_YELLOW_POST_CLICK_EXTRA_TICKS = 1;
 const BANK_YELLOW_WALK_WAIT_MAX_TICKS = 10;
-const BANK_YELLOW_INVENTORY_WAIT_MAX_TICKS = 8;
+const BANK_YELLOW_SACK_WAIT_MAX_TICKS = 8;
 const BANK_GREEN_CLICK_LOCK_TICKS = 1;
 const BANK_GREEN_POST_CLICK_EXTRA_TICKS = 1;
 const BANK_GREEN_WALK_WAIT_MAX_TICKS = 10;
 const BANK_ORB_CLICK_LOCK_TICKS = 2;
 const BANK_ORB_CONFIRM_CLICK_COUNT = 3;
 const BANK_ORB_CACHED_RETRY_MAX = 2;
+const BANK_ORB_BAG_STATS_FAIL_MAX_TICKS = 10;
 const BANK_ORB_STABLE_TICKS = 2;
 const BANK_ORB_STABLE_DISTANCE_PX = 32;
 const BANK_ORB_MIN_CENTER_Y_RATIO = 0.45;
@@ -107,6 +102,11 @@ const BANK_EXPECTED_LADDER_DOWN_Y = 5672;
 const BANK_LADDER_RECHECK_MAX = 2;
 const BANK_LADDER_RECHECK_WAIT_MIN_TICKS = 2;
 const BANK_LADDER_RECHECK_WAIT_MAX_TICKS = 4;
+const BANK_EXPECTED_LADDER_UP_X = 3755;
+const BANK_EXPECTED_LADDER_UP_Y = 5675;
+const BANK_LADDER_UP_RECHECK_MAX = 2;
+const BANK_LADDER_UP_RECHECK_WAIT_MIN_TICKS = 2;
+const BANK_LADDER_UP_RECHECK_WAIT_MAX_TICKS = 4;
 const BANK_RETURN_TO_SEARCH_AFTER_ORANGE_TICKS = 4;
 const BANK_RETURN_TO_SEARCH_WAIT_MAX_TICKS = 16;
 const BANK_MOVE_MARGIN_PX = 8;
@@ -144,7 +144,7 @@ interface TileCoord {
 
 type HoverTileReadSource = "tile-location" | "overlay" | "none";
 type PostClickMouseMoveMode = "off" | "top-left" | "offset-200";
-type BotPhase = "searching" | "mining" | "depositing" | "descending-to-bank" | "banking";
+type BotPhase = "searching" | "mining" | "depositing" | "descending-to-bank" | "banking" | "ascending-to-mine";
 type MineTickDebugCaptureLabel = "search" | "mine" | "bank" | "bank-ladder";
 type TickDebugCaptureLabel = MineTickDebugCaptureLabel | "deposit";
 type BankingStep =
@@ -210,8 +210,8 @@ type BotState = {
   bankValidateStartTile: boolean;
   bankSouthClicks: number;
   bankSouthWaitUntilMs: number;
-  bankYellowPreClickInventorySpace: number | null;
-  bankYellowInventoryWaitTicks: number;
+  bankYellowPreClickSackCount: number | null;
+  bankYellowSackWaitTicks: number;
   bankLadderRecheckCount: number;
   bankOrbClickCount: number;
   bankOrbCandidateCenter: { x: number; y: number } | null;
@@ -219,6 +219,7 @@ type BotState = {
   bankOrbCachedLocalPoint: { x: number; y: number } | null;
   bankOrbCachedRetryCount: number;
   bankOrbLastClickUsedCache: boolean;
+  bankOrbBagStatsFailTicks: number;
   loopIndex: number;
 };
 
@@ -501,20 +502,14 @@ function saveDepositDebugArtifacts(eventName: string, loopIndex: number, capture
   const playerPath = `${base}-player.png`;
 
   saveBitmapWithMotherlodeDepositBoxes(capture.bitmap, capture.depositBox ? [capture.depositBox] : [], depositPath);
-  saveBitmapWithMotherlodeObstacleRedBoxes(
-    capture.bitmap,
-    capture.obstacleBox ? [capture.obstacleBox] : [],
-    obstaclePath,
+  saveBitmapWithMotherlodeObstacleRedBoxes(capture.bitmap, capture.obstacleBox ? [capture.obstacleBox] : [], obstaclePath);
+  void saveBitmapWithPlayerBoxes(capture.bitmap, capture.playerBoxInCapture ? [capture.playerBoxInCapture] : [], playerPath).catch(
+    (error) => {
+      warn(
+        `Automate Bot (${BOT_NAME}): deposit debug player screenshot failed for loop #${loopIndex}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    },
   );
-  void saveBitmapWithPlayerBoxes(
-    capture.bitmap,
-    capture.playerBoxInCapture ? [capture.playerBoxInCapture] : [],
-    playerPath,
-  ).catch((error) => {
-    warn(
-      `Automate Bot (${BOT_NAME}): deposit debug player screenshot failed for loop #${loopIndex}: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  });
 
   warn(
     `Automate Bot (${BOT_NAME}): deposit debug screenshots saved (${eventName}) deposit=${depositPath}, obstacle=${obstaclePath}, player=${playerPath}.`,
@@ -562,14 +557,11 @@ function saveBankYellowDebugArtifacts(
     );
   } else {
     const mineYellowBoxes = capture.boxes.filter((box) => box.color === "yellow");
-    saveBitmapWithMotherlodeMineBoxes(
-      capture.bitmap,
-      mineYellowBoxes,
-      yellowPath,
-      localClickPoint,
-      capture.playerBoxInCapture,
-      { r: 255, g: 220, b: 64 },
-    );
+    saveBitmapWithMotherlodeMineBoxes(capture.bitmap, mineYellowBoxes, yellowPath, localClickPoint, capture.playerBoxInCapture, {
+      r: 255,
+      g: 220,
+      b: 64,
+    });
   }
 
   warn(
@@ -662,6 +654,10 @@ function isAtBankLadderDownTile(tile: TileCoord | null): boolean {
   return tile?.x === BANK_EXPECTED_LADDER_DOWN_X && tile?.y === BANK_EXPECTED_LADDER_DOWN_Y;
 }
 
+function isAtLadderUpTile(tile: TileCoord | null): boolean {
+  return tile?.x === BANK_EXPECTED_LADDER_UP_X && tile?.y === BANK_EXPECTED_LADDER_UP_Y;
+}
+
 function ticksToMs(ticks: number): number {
   if (!Number.isFinite(ticks) || ticks <= 0) {
     return 0;
@@ -728,8 +724,8 @@ function createInitialBotState(): BotState {
     bankValidateStartTile: false,
     bankSouthClicks: 0,
     bankSouthWaitUntilMs: 0,
-    bankYellowPreClickInventorySpace: null,
-    bankYellowInventoryWaitTicks: 0,
+    bankYellowPreClickSackCount: null,
+    bankYellowSackWaitTicks: 0,
     bankLadderRecheckCount: 0,
     bankOrbClickCount: 0,
     bankOrbCandidateCenter: null,
@@ -737,6 +733,7 @@ function createInitialBotState(): BotState {
     bankOrbCachedLocalPoint: null,
     bankOrbCachedRetryCount: 0,
     bankOrbLastClickUsedCache: false,
+    bankOrbBagStatsFailTicks: 0,
     loopIndex: 0,
   };
 }
@@ -841,11 +838,7 @@ function pickDistinctScreenPointInBox(
   return pickDistinctScreenPointInLocalRange(innerX.min, innerX.max, innerY.min, innerY.max, captureBounds);
 }
 
-function toScreenPointFromLocalPoint(
-  localX: number,
-  localY: number,
-  captureBounds: ScreenCaptureBounds,
-): { x: number; y: number } {
+function toScreenPointFromLocalPoint(localX: number, localY: number, captureBounds: ScreenCaptureBounds): { x: number; y: number } {
   return {
     x: captureBounds.x + Math.round(localX),
     y: captureBounds.y + Math.round(localY),
@@ -970,8 +963,7 @@ function findNodeNearActiveScreen(
 
     if (
       box.color === "yellow" &&
-      (distance < bestYellowDistance ||
-        (Math.abs(distance - bestYellowDistance) < 0.001 && centerDistance < bestYellowCenterDistance))
+      (distance < bestYellowDistance || (Math.abs(distance - bestYellowDistance) < 0.001 && centerDistance < bestYellowCenterDistance))
     ) {
       bestYellowDistance = distance;
       bestYellowCenterDistance = centerDistance;
@@ -1030,8 +1022,7 @@ function detectYellowTransitionNearActivePoint(
 
   // Require a meaningful yellow presence and dominance over green so we
   // don't treat warm cave pixels as node transitions.
-  const transitioned =
-    yellowPixels >= 26 && (yellowPixels >= greenPixels + 10 || yellowPixels * 2 >= Math.max(1, samplePixels / 4));
+  const transitioned = yellowPixels >= 26 && (yellowPixels >= greenPixels + 10 || yellowPixels * 2 >= Math.max(1, samplePixels / 4));
 
   return {
     transitioned,
@@ -1046,10 +1037,7 @@ function getNodeUpperBiasedLocalY(node: MotherlodeMineBox): number {
   return Math.max(node.y + 1, node.centerY - upwardBiasPx);
 }
 
-function toNodeInteractionScreenPoint(
-  node: MotherlodeMineBox,
-  captureBounds: ScreenCaptureBounds,
-): { x: number; y: number } {
+function toNodeInteractionScreenPoint(node: MotherlodeMineBox, captureBounds: ScreenCaptureBounds): { x: number; y: number } {
   const innerX = getInnerRange(node.x, node.width, BOX_CLICK_INNER_RATIO);
   const innerY = getInnerRange(node.y, node.height, BOX_CLICK_INNER_RATIO);
 
@@ -1061,10 +1049,7 @@ function toNodeInteractionScreenPoint(
   return pickDistinctScreenPointInLocalRange(innerX.min, innerX.max, yMin, yMax, captureBounds);
 }
 
-function toDepositInteractionScreenPoint(
-  depositBox: MotherlodeDepositBox,
-  captureBounds: ScreenCaptureBounds,
-): { x: number; y: number } {
+function toDepositInteractionScreenPoint(depositBox: MotherlodeDepositBox, captureBounds: ScreenCaptureBounds): { x: number; y: number } {
   return pickDistinctScreenPointInBox(depositBox.x, depositBox.y, depositBox.width, depositBox.height, captureBounds);
 }
 
@@ -1072,26 +1057,14 @@ function toObstacleInteractionScreenPoint(
   obstacleBox: MotherlodeObstacleRedBox,
   captureBounds: ScreenCaptureBounds,
 ): { x: number; y: number } {
-  return pickDistinctScreenPointInBox(
-    obstacleBox.x,
-    obstacleBox.y,
-    obstacleBox.width,
-    obstacleBox.height,
-    captureBounds,
-  );
+  return pickDistinctScreenPointInBox(obstacleBox.x, obstacleBox.y, obstacleBox.width, obstacleBox.height, captureBounds);
 }
 
-function toOrangeInteractionScreenPoint(
-  orangeBox: OrangeTargetBox,
-  captureBounds: ScreenCaptureBounds,
-): { x: number; y: number } {
+function toOrangeInteractionScreenPoint(orangeBox: OrangeTargetBox, captureBounds: ScreenCaptureBounds): { x: number; y: number } {
   return pickDistinctScreenPointInBox(orangeBox.x, orangeBox.y, orangeBox.width, orangeBox.height, captureBounds);
 }
 
-function toOrangeTopInteractionScreenPoint(
-  orangeBox: OrangeTargetBox,
-  captureBounds: ScreenCaptureBounds,
-): { x: number; y: number } {
+function toOrangeTopInteractionScreenPoint(orangeBox: OrangeTargetBox, captureBounds: ScreenCaptureBounds): { x: number; y: number } {
   const innerX = getInnerRange(orangeBox.x, orangeBox.width, BOX_CLICK_INNER_RATIO);
   const innerY = getInnerRange(orangeBox.y, orangeBox.height, BOX_CLICK_INNER_RATIO);
   const topBandHeight = Math.max(1, Math.ceil((innerY.max - innerY.min + 1) * 0.2));
@@ -1128,11 +1101,7 @@ function resolvePostClickMouseTarget(
   return null;
 }
 
-function moveMouseAwayFromClickedNode(
-  clickedScreenX: number,
-  clickedScreenY: number,
-  captureBounds: ScreenCaptureBounds,
-): void {
+function moveMouseAwayFromClickedNode(clickedScreenX: number, clickedScreenY: number, captureBounds: ScreenCaptureBounds): void {
   return;
 }
 
@@ -1161,10 +1130,7 @@ function toSouthMoveScreenPoint(
   const baseLocalX = clamp(anchorX + baseOffsetX, minLocalX, maxLocalX);
   const baseLocalY = clamp(anchorY + baseOffsetY, minLocalY, maxLocalY);
 
-  const randomRadiusPx = Math.max(
-    BANK_SOUTH_CLICK_RANDOM_RADIUS_PX,
-    Math.round(tilePx * BANK_SOUTHWEST_CLICK_RANDOM_TILE_RADIUS),
-  );
+  const randomRadiusPx = Math.max(BANK_SOUTH_CLICK_RANDOM_RADIUS_PX, Math.round(tilePx * BANK_SOUTHWEST_CLICK_RANDOM_TILE_RADIUS));
   const randomMinX = clamp(baseLocalX - randomRadiusPx, minLocalX, maxLocalX);
   const randomMaxX = clamp(baseLocalX + randomRadiusPx, minLocalX, maxLocalX);
   const randomMinY = clamp(baseLocalY - randomRadiusPx, minLocalY, maxLocalY);
@@ -1335,21 +1301,14 @@ function shouldClearDepositObstacle(
     return { shouldClear: true, reason: "collision" };
   }
 
-  if (
-    depositInFlight &&
-    depositRetryTicks >= 1 &&
-    isObstacleRelevantToDepositPath(playerAnchorInCapture, depositBox, obstacleBox)
-  ) {
+  if (depositInFlight && depositRetryTicks >= 1 && isObstacleRelevantToDepositPath(playerAnchorInCapture, depositBox, obstacleBox)) {
     return { shouldClear: true, reason: `stalled-${depositRetryTicks}` };
   }
 
   return { shouldClear: false, reason: null };
 }
 
-function isPlayerCollidingWithObstacle(
-  playerBoxInCapture: PlayerBox | null,
-  obstacleBox: MotherlodeObstacleRedBox | null,
-): boolean {
+function isPlayerCollidingWithObstacle(playerBoxInCapture: PlayerBox | null, obstacleBox: MotherlodeObstacleRedBox | null): boolean {
   return isPlayerCollidingWithObstacleBox(playerBoxInCapture, obstacleBox, OBSTACLE_PLAYER_COLLISION_PADDING_PX);
 }
 
@@ -1382,14 +1341,15 @@ function resetToSearching(current: BotState): BotState {
     bankValidateStartTile: false,
     bankSouthClicks: 0,
     bankSouthWaitUntilMs: 0,
-    bankYellowPreClickInventorySpace: null,
-    bankYellowInventoryWaitTicks: 0,
+    bankYellowPreClickSackCount: null,
+    bankYellowSackWaitTicks: 0,
     bankLadderRecheckCount: 0,
     bankOrbClickCount: 0,
     bankOrbCandidateCenter: null,
     bankOrbStableTicks: 0,
     bankOrbCachedRetryCount: 0,
     bankOrbLastClickUsedCache: false,
+    bankOrbBagStatsFailTicks: 0,
   };
 }
 
@@ -1411,14 +1371,15 @@ function resetToDepositing(current: BotState): BotState {
     bankValidateStartTile: false,
     bankSouthClicks: 0,
     bankSouthWaitUntilMs: 0,
-    bankYellowPreClickInventorySpace: null,
-    bankYellowInventoryWaitTicks: 0,
+    bankYellowPreClickSackCount: null,
+    bankYellowSackWaitTicks: 0,
     bankLadderRecheckCount: 0,
     bankOrbClickCount: 0,
     bankOrbCandidateCenter: null,
     bankOrbStableTicks: 0,
     bankOrbCachedRetryCount: 0,
     bankOrbLastClickUsedCache: false,
+    bankOrbBagStatsFailTicks: 0,
   };
 }
 
@@ -1440,14 +1401,15 @@ function resetToBanking(current: BotState): BotState {
     bankValidateStartTile: true,
     bankSouthClicks: 0,
     bankSouthWaitUntilMs: 0,
-    bankYellowPreClickInventorySpace: null,
-    bankYellowInventoryWaitTicks: 0,
+    bankYellowPreClickSackCount: null,
+    bankYellowSackWaitTicks: 0,
     bankLadderRecheckCount: 0,
     bankOrbClickCount: 0,
     bankOrbCandidateCenter: null,
     bankOrbStableTicks: 0,
     bankOrbCachedRetryCount: 0,
     bankOrbLastClickUsedCache: false,
+    bankOrbBagStatsFailTicks: 0,
   };
 }
 
@@ -1469,14 +1431,15 @@ function resetToDescendingToBank(current: BotState): BotState {
     bankValidateStartTile: false,
     bankSouthClicks: 0,
     bankSouthWaitUntilMs: 0,
-    bankYellowPreClickInventorySpace: null,
-    bankYellowInventoryWaitTicks: 0,
+    bankYellowPreClickSackCount: null,
+    bankYellowSackWaitTicks: 0,
     bankLadderRecheckCount: 0,
     bankOrbClickCount: 0,
     bankOrbCandidateCenter: null,
     bankOrbStableTicks: 0,
     bankOrbCachedRetryCount: 0,
     bankOrbLastClickUsedCache: false,
+    bankOrbBagStatsFailTicks: 0,
   };
 }
 
@@ -1524,10 +1487,7 @@ function findNearestOrangeBox(
     const centerDy = anchorY - box.centerY;
     const centerDistance = axisDistance(centerDx, centerDy);
 
-    if (
-      edgeDistance < bestEdgeDistance ||
-      (Math.abs(edgeDistance - bestEdgeDistance) < 0.001 && centerDistance < bestCenterDistance)
-    ) {
+    if (edgeDistance < bestEdgeDistance || (Math.abs(edgeDistance - bestEdgeDistance) < 0.001 && centerDistance < bestCenterDistance)) {
       best = box;
       bestEdgeDistance = edgeDistance;
       bestCenterDistance = centerDistance;
@@ -1565,10 +1525,7 @@ function findNearestYellowNode(
     const centerDy = anchorY - box.centerY;
     const centerDistance = axisDistance(centerDx, centerDy);
 
-    if (
-      edgeDistance < bestEdgeDistance ||
-      (Math.abs(edgeDistance - bestEdgeDistance) < 0.001 && centerDistance < bestCenterDistance)
-    ) {
+    if (edgeDistance < bestEdgeDistance || (Math.abs(edgeDistance - bestEdgeDistance) < 0.001 && centerDistance < bestCenterDistance)) {
       best = box;
       bestEdgeDistance = edgeDistance;
       bestCenterDistance = centerDistance;
@@ -1605,10 +1562,7 @@ function findNearestBankingYellowBox(
     const centerDy = anchorY - box.centerY;
     const centerDistance = axisDistance(centerDx, centerDy);
 
-    if (
-      edgeDistance < bestEdgeDistance ||
-      (Math.abs(edgeDistance - bestEdgeDistance) < 0.001 && centerDistance < bestCenterDistance)
-    ) {
+    if (edgeDistance < bestEdgeDistance || (Math.abs(edgeDistance - bestEdgeDistance) < 0.001 && centerDistance < bestCenterDistance)) {
       best = box;
       bestEdgeDistance = edgeDistance;
       bestCenterDistance = centerDistance;
@@ -1645,10 +1599,7 @@ function findNearestBankingGreenBox(
     const centerDy = anchorY - box.centerY;
     const centerDistance = axisDistance(centerDx, centerDy);
 
-    if (
-      edgeDistance < bestEdgeDistance ||
-      (Math.abs(edgeDistance - bestEdgeDistance) < 0.001 && centerDistance < bestCenterDistance)
-    ) {
+    if (edgeDistance < bestEdgeDistance || (Math.abs(edgeDistance - bestEdgeDistance) < 0.001 && centerDistance < bestCenterDistance)) {
       best = box;
       bestEdgeDistance = edgeDistance;
       bestCenterDistance = centerDistance;
@@ -1724,11 +1675,7 @@ function captureDepositState(captureBounds: ScreenCaptureBounds, label: "deposit
   };
 }
 
-async function hoverAndReadTile(
-  screenX: number,
-  screenY: number,
-  captureBounds: ScreenCaptureBounds,
-): Promise<HoverTileReadResult> {
+async function hoverAndReadTile(screenX: number, screenY: number, captureBounds: ScreenCaptureBounds): Promise<HoverTileReadResult> {
   if (ENABLE_NODE_HOVER_BEFORE_TILE_READ) {
     moveMouse(screenX, screenY);
     await sleepWithAbort(TOOLTIP_SETTLE_MS);
@@ -1786,6 +1733,10 @@ function getBagInventorySpaceValue(bagStats: MotherlodeBagStats | null): number 
   return bagStats?.row3.value ?? null;
 }
 
+function getBagSackCountValue(bagStats: MotherlodeBagStats | null): number | null {
+  return bagStats?.sackRow.sackCount ?? null;
+}
+
 function formatBagDecisionState(state: BotState, bagStats: MotherlodeBagStats | null = null): string {
   const base = `bagFull=${state.bagFullState ?? "none"}, depositStableTicks=${state.depositTriggerStableTicks}`;
   if (!bagStats) {
@@ -1805,11 +1756,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
     current = updateBagState(current, capture.bagFullState);
 
     const depositDistancePx = getPlayerDistanceToDepositBox(capture.playerAnchorInCapture, capture.depositBox);
-    const nearDeposit = isPlayerNearDepositBox(
-      capture.playerAnchorInCapture,
-      capture.depositBox,
-      DEPOSIT_PLAYER_NEAR_RADIUS_PX,
-    );
+    const nearDeposit = isPlayerNearDepositBox(capture.playerAnchorInCapture, capture.depositBox, DEPOSIT_PLAYER_NEAR_RADIUS_PX);
     const depositNearStableTicks = nearDeposit ? current.depositNearStableTicks + 1 : 0;
     let depositRetryTicks = current.depositRetryTicks;
     let depositLastDistancePx = current.depositLastDistancePx;
@@ -1823,10 +1770,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
     } else if (depositDistancePx === null) {
       depositRetryTicks += 1;
       depositLastDistancePx = null;
-    } else if (
-      depositLastDistancePx === null ||
-      depositDistancePx < depositLastDistancePx - DEPOSIT_PROGRESS_EPSILON_PX
-    ) {
+    } else if (depositLastDistancePx === null || depositDistancePx < depositLastDistancePx - DEPOSIT_PROGRESS_EPSILON_PX) {
       depositRetryTicks = 0;
       depositLastDistancePx = depositDistancePx;
     } else {
@@ -1954,21 +1898,20 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
       ? "mine"
       : current.phase === "banking"
         ? "bank"
-        : current.phase === "descending-to-bank"
+        : current.phase === "descending-to-bank" || current.phase === "ascending-to-mine"
           ? "bank-ladder"
           : "search";
   // Overlay OCR is expensive; only read it on banking sub-steps that actually consume tile text.
   const shouldReadOverlayTile =
-    (current.phase === "banking" || current.phase === "descending-to-bank") &&
+    (current.phase === "banking" || current.phase === "descending-to-bank" || current.phase === "ascending-to-mine") &&
     !isActionLocked(current, nowMs) &&
-    (current.bankingStep === "wait-after-orange" ||
-      (current.bankingStep === "move-south-until-yellow" && current.bankSouthClicks === 0));
+    (current.bankingStep === "wait-after-orange" || (current.bankingStep === "move-south-until-yellow" && current.bankSouthClicks === 0));
   const capture = captureMineState(
     captureBounds,
     captureLabel,
     current.activeScreen,
     shouldReadOverlayTile,
-    current.phase === "banking" || current.phase === "descending-to-bank",
+    current.phase === "banking" || current.phase === "descending-to-bank" || current.phase === "ascending-to-mine",
     current.phase === "banking",
   );
   current = updateBagState(current, capture.bagFullState);
@@ -1976,6 +1919,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
   if (
     current.phase !== "banking" &&
     current.phase !== "descending-to-bank" &&
+    current.phase !== "ascending-to-mine" &&
     current.depositTriggerStableTicks >= DEPOSIT_TRIGGER_STABLE_TICKS
   ) {
     if (current.phase !== "depositing") {
@@ -1989,6 +1933,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
   if (
     current.phase !== "banking" &&
     current.phase !== "descending-to-bank" &&
+    current.phase !== "ascending-to-mine" &&
     !isActionLocked(current, nowMs) &&
     shouldClearRedObstacle(capture.playerBoxInCapture, capture.obstacleBox)
   ) {
@@ -2015,12 +1960,10 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
     };
   }
 
-  if (current.phase === "descending-to-bank" || current.phase === "banking") {
+  if (current.phase === "descending-to-bank" || current.phase === "banking" || current.phase === "ascending-to-mine") {
     if (!isActionLocked(current, nowMs) && shouldClearRedObstacle(capture.playerBoxInCapture, capture.obstacleBox)) {
       const point = toObstacleInteractionScreenPoint(capture.obstacleBox, captureBounds);
-      warn(
-        `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking collision with red obstacle at (${point.x},${point.y}). Clearing.`,
-      );
+      warn(`Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking collision with red obstacle at (${point.x},${point.y}). Clearing.`);
       warn(
         `Automate Bot (${BOT_NAME}): #${current.loopIndex} Collision detail (${current.phase}/collision): ${buildCollisionDebugSummary(capture.playerBoxInCapture, capture.obstacleBox, OBSTACLE_PLAYER_COLLISION_PADDING_PX)}.`,
       );
@@ -2083,7 +2026,50 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
       }
 
       log(
-        `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking return-orange wait complete. Returning to mining search.`,
+        `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking return-orange wait complete. Transitioning to ascending-to-mine phase.`,
+      );
+      return {
+        ...current,
+        phase: "ascending-to-mine",
+        bankingStep: "wait-after-orange",
+        bankLadderRecheckCount: 0,
+        actionLockUntilMs: 0,
+      };
+    }
+
+    if (current.phase === "ascending-to-mine" && current.bankingStep === "wait-after-orange") {
+      if (isActionLocked(current, nowMs)) {
+        return current;
+      }
+      const tileText = capture.playerTileFromOverlay
+        ? `${capture.playerTileFromOverlay.x},${capture.playerTileFromOverlay.y},${capture.playerTileFromOverlay.z}`
+        : "unavailable";
+      if (!isAtLadderUpTile(capture.playerTileFromOverlay)) {
+        const nextRecheckCount = current.bankLadderRecheckCount + 1;
+        if (nextRecheckCount <= BANK_LADDER_UP_RECHECK_MAX) {
+          const waitTicks = randomIntInclusive(BANK_LADDER_UP_RECHECK_WAIT_MIN_TICKS, BANK_LADDER_UP_RECHECK_WAIT_MAX_TICKS);
+          warn(
+            `Automate Bot (${BOT_NAME}): #${current.loopIndex} Ladder ascent not confirmed (tile=${tileText}, expected=${BANK_EXPECTED_LADDER_UP_X},${BANK_EXPECTED_LADDER_UP_Y},*). Waiting ${waitTicks} ticks before re-check (${nextRecheckCount}/${BANK_LADDER_UP_RECHECK_MAX}).`,
+          );
+          return {
+            ...current,
+            bankLadderRecheckCount: nextRecheckCount,
+            actionLockUntilMs: deadlineFromNowTicks(waitTicks),
+          };
+        }
+
+        warn(
+          `Automate Bot (${BOT_NAME}): #${current.loopIndex} Ladder ascent still not confirmed after ${current.bankLadderRecheckCount} re-checks (tile=${tileText}). Retrying orange click.`,
+        );
+        return {
+          ...current,
+          bankingStep: "find-orange",
+          bankLadderRecheckCount: 0,
+        };
+      }
+
+      log(
+        `Automate Bot (${BOT_NAME}): #${current.loopIndex} Ladder ascent confirmed at tile ${BANK_EXPECTED_LADDER_UP_X},${BANK_EXPECTED_LADDER_UP_Y}. Returning to mining search.`,
       );
       return {
         ...resetToSearching(current),
@@ -2092,17 +2078,53 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
       };
     }
 
+    if (current.phase === "ascending-to-mine" && current.bankingStep === "find-orange") {
+      const nearestOrangeBox = findNearestOrangeBox(capture.orangeBoxes, captureBounds, capture.playerAnchorInCapture);
+      if (nearestOrangeBox) {
+        const point = toOrangeTopInteractionScreenPoint(nearestOrangeBox, captureBounds);
+        log(`Automate Bot (${BOT_NAME}): #${current.loopIndex} Ascending-to-mine re-clicking orange box at (${point.x},${point.y}).`);
+        clickScreenPoint(point.x, point.y);
+        moveMouseAwayFromClickedNode(point.x, point.y, captureBounds);
+        return {
+          ...current,
+          bankingStep: "wait-after-orange",
+          bankLadderRecheckCount: 0,
+          actionLockUntilMs: deadlineFromNowTicks(Math.max(BANK_CLICK_LOCK_TICKS, BANK_POST_ORANGE_WAIT_TICKS)),
+        };
+      }
+
+      warn(`Automate Bot (${BOT_NAME}): #${current.loopIndex} Ascending-to-mine phase active but orange box was not found.`);
+      return current;
+    }
+
     if (current.phase === "banking" && current.bankingStep === "wait-after-orb-click") {
       if (isActionLocked(current, nowMs)) {
         return current;
       }
 
       if (!capture.bagStats) {
+        const nextFailTicks = current.bankOrbBagStatsFailTicks + 1;
+        if (nextFailTicks >= BANK_ORB_BAG_STATS_FAIL_MAX_TICKS) {
+          warn(
+            `Automate Bot (${BOT_NAME}): #${current.loopIndex} Post-orb banking bag stats unreadable for ${nextFailTicks} consecutive ticks; falling back to orb re-detect (${formatBagDecisionState(current)}).`,
+          );
+          return {
+            ...current,
+            bankingStep: "wait-for-orb",
+            bankOrbCandidateCenter: null,
+            bankOrbStableTicks: 0,
+            bankOrbCachedLocalPoint: null,
+            bankOrbCachedRetryCount: 0,
+            bankOrbLastClickUsedCache: false,
+            bankOrbBagStatsFailTicks: 0,
+          };
+        }
         warn(
-          `Automate Bot (${BOT_NAME}): #${current.loopIndex} Post-orb banking check could not read bag stats yet. Waiting 1 tick before re-check (${formatBagDecisionState(current)}).`,
+          `Automate Bot (${BOT_NAME}): #${current.loopIndex} Post-orb banking check could not read bag stats yet. Waiting 1 tick before re-check (${nextFailTicks}/${BANK_ORB_BAG_STATS_FAIL_MAX_TICKS}, ${formatBagDecisionState(current)}).`,
         );
         return {
           ...current,
+          bankOrbBagStatsFailTicks: nextFailTicks,
           actionLockUntilMs: deadlineFromNowTicks(1),
         };
       }
@@ -2110,11 +2132,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
       const row3InventorySpace = capture.bagStats.row3.value;
 
       if (shouldExitBankingToMiningSearch(capture.bagStats)) {
-        const nearestOrangeBox = findNearestOrangeBox(
-          capture.orangeBoxes,
-          captureBounds,
-          capture.playerAnchorInCapture,
-        );
+        const nearestOrangeBox = findNearestOrangeBox(capture.orangeBoxes, captureBounds, capture.playerAnchorInCapture);
         if (!nearestOrangeBox) {
           warn(
             `Automate Bot (${BOT_NAME}): #${current.loopIndex} Post-orb banking exit condition met (sack=0, row3=28) but orange box was not found (${formatBagDecisionState(current, capture.bagStats)}).`,
@@ -2153,8 +2171,8 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
           bankValidateStartTile: false,
           bankSouthClicks: 0,
           bankSouthWaitUntilMs: 0,
-          bankYellowPreClickInventorySpace: null,
-          bankYellowInventoryWaitTicks: 0,
+          bankYellowPreClickSackCount: null,
+          bankYellowSackWaitTicks: 0,
           bankOrbClickCount: 0,
           bankOrbCandidateCenter: null,
           bankOrbStableTicks: 0,
@@ -2205,72 +2223,126 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
         return current;
       }
 
-      const preYellowInventorySpace = current.bankYellowPreClickInventorySpace;
-      const currentInventorySpace = getBagInventorySpaceValue(capture.bagStats);
-      if (preYellowInventorySpace !== null) {
-        if (currentInventorySpace === null) {
-          const nextWaitTicks = current.bankYellowInventoryWaitTicks + 1;
-          if (nextWaitTicks <= BANK_YELLOW_INVENTORY_WAIT_MAX_TICKS) {
+      const preYellowSackCount = current.bankYellowPreClickSackCount;
+      const currentSackCount = getBagSackCountValue(capture.bagStats);
+      if (preYellowSackCount !== null) {
+        if (currentSackCount === null) {
+          const nextWaitTicks = current.bankYellowSackWaitTicks + 1;
+          if (nextWaitTicks <= BANK_YELLOW_SACK_WAIT_MAX_TICKS) {
+            const nearestRetryBankingYellow = findNearestBankingYellowBox(
+              capture.bankingYellowBoxes,
+              captureBounds,
+              capture.playerAnchorInCapture,
+            );
+            const nearestRetryMineYellow = findNearestYellowNode(capture.boxes, captureBounds, capture.playerAnchorInCapture);
+            const retryYellowTarget = nearestRetryBankingYellow ?? nearestRetryMineYellow;
+            if (retryYellowTarget) {
+              const retryYellowPoint = toYellowInteractionScreenPoint(retryYellowTarget, captureBounds);
+              const retryYellowSource = nearestRetryBankingYellow ? "banking-yellow" : "mine-yellow";
+              const retryYellowTravel = estimateBankTravelToScreenPoint(
+                retryYellowPoint,
+                captureBounds,
+                capture.playerAnchorInCapture,
+                capture.playerBoxInCapture,
+                BANK_YELLOW_POST_CLICK_EXTRA_TICKS,
+                BANK_YELLOW_WALK_WAIT_MAX_TICKS,
+              );
+              log(
+                `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking waiting for row1 sackCount OCR (left of '+') after yellow click (pre=${preYellowSackCount}, now=missing, wait=${nextWaitTicks}/${BANK_YELLOW_SACK_WAIT_MAX_TICKS}); re-clicking yellow (${retryYellowSource}) at (${retryYellowPoint.x},${retryYellowPoint.y}) (eta=${retryYellowTravel.etaTicks} tick(s), distance~${retryYellowTravel.distanceTiles.toFixed(2)} tile(s)) before green click.`,
+              );
+              clickScreenPoint(retryYellowPoint.x, retryYellowPoint.y);
+              moveMouseAwayFromClickedNode(retryYellowPoint.x, retryYellowPoint.y, captureBounds);
+              return {
+                ...current,
+                bankSouthWaitUntilMs: deadlineFromNowTicks(retryYellowTravel.etaTicks),
+                bankYellowSackWaitTicks: nextWaitTicks,
+                actionLockUntilMs: deadlineFromNowTicks(BANK_YELLOW_TILE_CLICK_LOCK_TICKS),
+              };
+            }
+
             log(
-              `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking waiting for row3 inventorySpace OCR after yellow click (pre=${preYellowInventorySpace}, now=missing, wait=${nextWaitTicks}/${BANK_YELLOW_INVENTORY_WAIT_MAX_TICKS}) before green click.`,
+              `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking waiting for row1 sackCount OCR (left of '+') after yellow click (pre=${preYellowSackCount}, now=missing, wait=${nextWaitTicks}/${BANK_YELLOW_SACK_WAIT_MAX_TICKS}); yellow tile not visible for re-click, waiting before green click.`,
             );
             return {
               ...current,
-              bankYellowInventoryWaitTicks: nextWaitTicks,
+              bankYellowSackWaitTicks: nextWaitTicks,
             };
           }
 
           warn(
-            `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking row3 inventorySpace OCR still missing after ${current.bankYellowInventoryWaitTicks} tick(s) post-yellow click (pre=${preYellowInventorySpace}); retrying yellow click flow.`,
+            `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking row1 sackCount OCR (left of '+') still missing after ${current.bankYellowSackWaitTicks} tick(s) post-yellow click (pre=${preYellowSackCount}); retrying yellow click flow.`,
           );
           return {
             ...current,
             bankingStep: "move-south-until-yellow",
             bankSouthWaitUntilMs: 0,
-            bankYellowPreClickInventorySpace: null,
-            bankYellowInventoryWaitTicks: 0,
+            bankYellowPreClickSackCount: null,
+            bankYellowSackWaitTicks: 0,
             actionLockUntilMs: deadlineFromNowTicks(1),
           };
-        } else if (currentInventorySpace >= preYellowInventorySpace) {
-          const nextWaitTicks = current.bankYellowInventoryWaitTicks + 1;
-          if (nextWaitTicks <= BANK_YELLOW_INVENTORY_WAIT_MAX_TICKS) {
+        } else if (currentSackCount >= preYellowSackCount) {
+          const nextWaitTicks = current.bankYellowSackWaitTicks + 1;
+          if (nextWaitTicks <= BANK_YELLOW_SACK_WAIT_MAX_TICKS) {
+            const nearestRetryBankingYellow = findNearestBankingYellowBox(
+              capture.bankingYellowBoxes,
+              captureBounds,
+              capture.playerAnchorInCapture,
+            );
+            const nearestRetryMineYellow = findNearestYellowNode(capture.boxes, captureBounds, capture.playerAnchorInCapture);
+            const retryYellowTarget = nearestRetryBankingYellow ?? nearestRetryMineYellow;
+            if (retryYellowTarget) {
+              const retryYellowPoint = toYellowInteractionScreenPoint(retryYellowTarget, captureBounds);
+              const retryYellowSource = nearestRetryBankingYellow ? "banking-yellow" : "mine-yellow";
+              const retryYellowTravel = estimateBankTravelToScreenPoint(
+                retryYellowPoint,
+                captureBounds,
+                capture.playerAnchorInCapture,
+                capture.playerBoxInCapture,
+                BANK_YELLOW_POST_CLICK_EXTRA_TICKS,
+                BANK_YELLOW_WALK_WAIT_MAX_TICKS,
+              );
+              log(
+                `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking row1 sackCount (left of '+') has not dropped yet after yellow click (pre=${preYellowSackCount}, now=${currentSackCount}, wait=${nextWaitTicks}/${BANK_YELLOW_SACK_WAIT_MAX_TICKS}); re-clicking yellow (${retryYellowSource}) at (${retryYellowPoint.x},${retryYellowPoint.y}) (eta=${retryYellowTravel.etaTicks} tick(s), distance~${retryYellowTravel.distanceTiles.toFixed(2)} tile(s)) before green click.`,
+              );
+              clickScreenPoint(retryYellowPoint.x, retryYellowPoint.y);
+              moveMouseAwayFromClickedNode(retryYellowPoint.x, retryYellowPoint.y, captureBounds);
+              return {
+                ...current,
+                bankSouthWaitUntilMs: deadlineFromNowTicks(retryYellowTravel.etaTicks),
+                bankYellowSackWaitTicks: nextWaitTicks,
+                actionLockUntilMs: deadlineFromNowTicks(BANK_YELLOW_TILE_CLICK_LOCK_TICKS),
+              };
+            }
+
             log(
-              `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking row3 inventorySpace has not dropped yet after yellow click (pre=${preYellowInventorySpace}, now=${currentInventorySpace}, wait=${nextWaitTicks}/${BANK_YELLOW_INVENTORY_WAIT_MAX_TICKS}); waiting before green click.`,
+              `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking row1 sackCount (left of '+') has not dropped yet after yellow click (pre=${preYellowSackCount}, now=${currentSackCount}, wait=${nextWaitTicks}/${BANK_YELLOW_SACK_WAIT_MAX_TICKS}); yellow tile not visible for re-click, waiting before green click.`,
             );
             return {
               ...current,
-              bankYellowInventoryWaitTicks: nextWaitTicks,
+              bankYellowSackWaitTicks: nextWaitTicks,
             };
           }
 
           warn(
-            `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking row3 inventorySpace did not drop after ${current.bankYellowInventoryWaitTicks} tick(s) post-yellow click (pre=${preYellowInventorySpace}, now=${currentInventorySpace}); retrying yellow click flow.`,
+            `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking row1 sackCount (left of '+') did not drop after ${current.bankYellowSackWaitTicks} tick(s) post-yellow click (pre=${preYellowSackCount}, now=${currentSackCount}); retrying yellow click flow.`,
           );
           return {
             ...current,
             bankingStep: "move-south-until-yellow",
             bankSouthWaitUntilMs: 0,
-            bankYellowPreClickInventorySpace: null,
-            bankYellowInventoryWaitTicks: 0,
+            bankYellowPreClickSackCount: null,
+            bankYellowSackWaitTicks: 0,
             actionLockUntilMs: deadlineFromNowTicks(1),
           };
         } else {
           log(
-            `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking row3 inventorySpace dropped after yellow click (${preYellowInventorySpace} -> ${currentInventorySpace}). Proceeding to green click.`,
+            `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking row1 sackCount (left of '+') dropped after yellow click (${preYellowSackCount} -> ${currentSackCount}). Proceeding to green click.`,
           );
         }
       }
 
-      const nearestBankingGreen = findNearestBankingGreenBox(
-        capture.bankingGreenBoxes,
-        captureBounds,
-        capture.playerAnchorInCapture,
-      );
-      const nearestMineGreen = selectNearestGreenMotherlodeNode(
-        capture.greenBoxes,
-        captureBounds,
-        capture.playerAnchorInCapture,
-      );
+      const nearestBankingGreen = findNearestBankingGreenBox(capture.bankingGreenBoxes, captureBounds, capture.playerAnchorInCapture);
+      const nearestMineGreen = selectNearestGreenMotherlodeNode(capture.greenBoxes, captureBounds, capture.playerAnchorInCapture);
       const greenTarget = nearestBankingGreen ?? nearestMineGreen;
       if (!greenTarget) {
         warn(
@@ -2298,8 +2370,8 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
         ...current,
         bankingStep: "green-clicked",
         bankSouthWaitUntilMs: deadlineFromNowTicks(greenTravel.etaTicks),
-        bankYellowPreClickInventorySpace: null,
-        bankYellowInventoryWaitTicks: 0,
+        bankYellowPreClickSackCount: null,
+        bankYellowSackWaitTicks: 0,
         bankOrbClickCount: 0,
         bankOrbCandidateCenter: null,
         bankOrbStableTicks: 0,
@@ -2320,9 +2392,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
         return current;
       }
 
-      log(
-        `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking green travel settled. Starting bank orb detection.`,
-      );
+      log(`Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking green travel settled. Starting bank orb detection.`);
       current = {
         ...current,
         bankingStep: "wait-for-orb",
@@ -2349,11 +2419,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
           };
         }
 
-        const orbPoint = toScreenPointFromLocalPoint(
-          current.bankOrbCachedLocalPoint.x,
-          current.bankOrbCachedLocalPoint.y,
-          captureBounds,
-        );
+        const orbPoint = toScreenPointFromLocalPoint(current.bankOrbCachedLocalPoint.x, current.bankOrbCachedLocalPoint.y, captureBounds);
         const nextBankOrbClickCount = current.bankOrbClickCount + 1;
         log(
           `Automate Bot (${BOT_NAME}): #${current.loopIndex} Using cached bank orb click point (${orbPoint.x},${orbPoint.y}) (${nextBankOrbClickCount}/${BANK_ORB_CONFIRM_CLICK_COUNT}).`,
@@ -2370,6 +2436,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
           bankOrbCandidateCenter: null,
           bankOrbStableTicks: 0,
           bankOrbLastClickUsedCache: true,
+          bankOrbBagStatsFailTicks: 0,
           actionLockUntilMs: deadlineFromNowTicks(BANK_ORB_CLICK_LOCK_TICKS),
         };
       }
@@ -2402,23 +2469,15 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
           warn(
             `Automate Bot (${BOT_NAME}): #${current.loopIndex} Ignoring bank orb candidate at (${orbResult.detection.centerX},${orbResult.detection.centerY}) because it is above the banking UI band (minY=${minCenterY}).`,
           );
-          saveBankDepositOrbDebugArtifacts(
-            "reject-upper-screen",
-            current.loopIndex,
-            current.bankOrbClickCount,
-            capture.bitmap,
-            orbResult,
-          );
+          saveBankDepositOrbDebugArtifacts("reject-upper-screen", current.loopIndex, current.bankOrbClickCount, capture.bitmap, orbResult);
         }
-        log(
-          `Automate Bot (${BOT_NAME}): #${current.loopIndex} Re-attempting green click after rejecting upper-screen orb candidate.`,
-        );
+        log(`Automate Bot (${BOT_NAME}): #${current.loopIndex} Re-attempting green click after rejecting upper-screen orb candidate.`);
         return {
           ...current,
           bankingStep: "yellow-clicked",
           bankSouthWaitUntilMs: 0,
-          bankYellowPreClickInventorySpace: null,
-          bankYellowInventoryWaitTicks: 0,
+          bankYellowPreClickSackCount: null,
+          bankYellowSackWaitTicks: 0,
           bankOrbCandidateCenter: null,
           bankOrbStableTicks: 0,
         };
@@ -2441,11 +2500,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
         };
       }
 
-      const orbPoint = toScreenPointFromLocalPoint(
-        orbResult.detection.centerX,
-        orbResult.detection.centerY,
-        captureBounds,
-      );
+      const orbPoint = toScreenPointFromLocalPoint(orbResult.detection.centerX, orbResult.detection.centerY, captureBounds);
       const nextBankOrbClickCount = current.bankOrbClickCount + 1;
       saveBankDepositOrbDebugArtifacts("click", current.loopIndex, nextBankOrbClickCount, capture.bitmap, orbResult);
       log(
@@ -2468,6 +2523,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
         },
         bankOrbCachedRetryCount: 0,
         bankOrbLastClickUsedCache: false,
+        bankOrbBagStatsFailTicks: 0,
         actionLockUntilMs: deadlineFromNowTicks(BANK_ORB_CLICK_LOCK_TICKS),
       };
     }
@@ -2519,17 +2575,13 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
       }
     }
 
-    const nearestBankingYellow = findNearestBankingYellowBox(
-      capture.bankingYellowBoxes,
-      captureBounds,
-      capture.playerAnchorInCapture,
-    );
+    const nearestBankingYellow = findNearestBankingYellowBox(capture.bankingYellowBoxes, captureBounds, capture.playerAnchorInCapture);
     const nearestMineYellow = findNearestYellowNode(capture.boxes, captureBounds, capture.playerAnchorInCapture);
     const yellowTarget = nearestBankingYellow ?? nearestMineYellow;
     if (yellowTarget) {
       const yellowPoint = toYellowInteractionScreenPoint(yellowTarget, captureBounds);
       const yellowSource = nearestBankingYellow ? "banking-yellow" : "mine-yellow";
-      const preYellowInventorySpace = getBagInventorySpaceValue(capture.bagStats);
+      const preYellowSackCount = getBagSackCountValue(capture.bagStats);
       const yellowTravel = estimateBankTravelToScreenPoint(
         yellowPoint,
         captureBounds,
@@ -2538,9 +2590,9 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
         BANK_YELLOW_POST_CLICK_EXTRA_TICKS,
         BANK_YELLOW_WALK_WAIT_MAX_TICKS,
       );
-      if (preYellowInventorySpace === null) {
+      if (preYellowSackCount === null) {
         warn(
-          `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking row3 inventorySpace OCR missing before yellow click; row3-drop confirmation gate is unavailable for this yellow attempt.`,
+          `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking row1 sackCount OCR (left of '+') missing before yellow click; sack-drop confirmation gate is unavailable for this yellow attempt.`,
         );
       }
       log(
@@ -2553,8 +2605,8 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
         ...current,
         bankingStep: "yellow-clicked",
         bankSouthWaitUntilMs: deadlineFromNowTicks(yellowTravel.etaTicks),
-        bankYellowPreClickInventorySpace: preYellowInventorySpace,
-        bankYellowInventoryWaitTicks: 0,
+        bankYellowPreClickSackCount: preYellowSackCount,
+        bankYellowSackWaitTicks: 0,
         actionLockUntilMs: deadlineFromNowTicks(BANK_YELLOW_TILE_CLICK_LOCK_TICKS),
       };
     }
@@ -2583,11 +2635,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
   }
 
   if (current.phase === "searching") {
-    const greenNode = selectNearestGreenMotherlodeNode(
-      capture.greenBoxes,
-      captureBounds,
-      capture.playerAnchorInCapture,
-    );
+    const greenNode = selectNearestGreenMotherlodeNode(capture.greenBoxes, captureBounds, capture.playerAnchorInCapture);
 
     if (!greenNode) {
       warn(
@@ -2640,11 +2688,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
       return resetToSearching(current);
     }
 
-    const yellowTransitionFallback = detectYellowTransitionNearActivePoint(
-      capture.bitmap,
-      current.activeScreen,
-      captureBounds,
-    );
+    const yellowTransitionFallback = detectYellowTransitionNearActivePoint(capture.bitmap, current.activeScreen, captureBounds);
     if (yellowTransitionFallback.transitioned) {
       log(
         `Automate Bot (${BOT_NAME}): #${current.loopIndex} Active node yellow fallback triggered (yellow=${yellowTransitionFallback.yellowPixels}, green=${yellowTransitionFallback.greenPixels}, sample=${yellowTransitionFallback.samplePixels}). Searching next node.`,

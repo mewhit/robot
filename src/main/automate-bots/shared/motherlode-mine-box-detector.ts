@@ -124,10 +124,7 @@ function drawRectangleOnPng(
   }
 }
 
-function buildMotherlodeMask(
-  bitmap: RobotBitmap,
-  pixelDetector: (r: number, g: number, b: number) => boolean,
-): Uint8Array {
+function buildMotherlodeMask(bitmap: RobotBitmap, pixelDetector: (r: number, g: number, b: number) => boolean): Uint8Array {
   const mask = new Uint8Array(bitmap.width * bitmap.height);
 
   for (let y = 0; y < bitmap.height; y += 1) {
@@ -446,11 +443,7 @@ function splitElongatedGreenComponent(candidate: BoxCandidate, mask: Uint8Array,
   return sliced.length >= 2 ? sliced : [candidate];
 }
 
-function splitElongatedGreenComponents(
-  components: BoxCandidate[],
-  mask: Uint8Array,
-  bitmap: RobotBitmap,
-): BoxCandidate[] {
+function splitElongatedGreenComponents(components: BoxCandidate[], mask: Uint8Array, bitmap: RobotBitmap): BoxCandidate[] {
   const split: BoxCandidate[] = [];
 
   for (const candidate of components) {
@@ -542,8 +535,7 @@ function toMotherlodeMineBox(
   const normalizedDistance = maxDistance > 0 ? distanceFromCenter / maxDistance : 0;
 
   const dominance = color === "green" ? greenDominance : avgRed - (avgGreen + avgBlue) / 2;
-  const score =
-    candidate.pixelCount + fillRatio * 350 + dominance * 9 - Math.abs(aspectRatio - 1) * 140 - normalizedDistance * 170;
+  const score = candidate.pixelCount + fillRatio * 350 + dominance * 9 - Math.abs(aspectRatio - 1) * 140 - normalizedDistance * 170;
 
   return {
     x: candidate.minX,
@@ -628,9 +620,7 @@ export function detectBestGreenMotherlodeMineBoxInScreenshot(bitmap: RobotBitmap
 
 export function detectBestYellowMotherlodeMineBoxInScreenshot(bitmap: RobotBitmap): MotherlodeMineBox | null {
   const mask = buildMotherlodeYellowMask(bitmap);
-  const components = mergeNearbyComponents(
-    collectConnectedComponents(mask, bitmap).filter((candidate) => candidate.pixelCount >= 8),
-  );
+  const components = mergeNearbyComponents(collectConnectedComponents(mask, bitmap).filter((candidate) => candidate.pixelCount >= 8));
   const boxes = components
     .map((candidate) => toMotherlodeMineBox(candidate, bitmap.width, bitmap.height, "yellow"))
     .filter((box): box is MotherlodeMineBox => box !== null);
@@ -674,15 +664,7 @@ export function saveBitmapWithMotherlodeMineBoxes(
     const markerSize = 16;
     const markerHalf = Math.floor(markerSize / 2);
     const markerColor = activeTargetColor ?? { r: 64, g: 220, b: 255 };
-    drawRectangleOnPng(
-      png,
-      activeTarget.x - markerHalf,
-      activeTarget.y - markerHalf,
-      markerSize,
-      markerSize,
-      markerColor,
-      2,
-    );
+    drawRectangleOnPng(png, activeTarget.x - markerHalf, activeTarget.y - markerHalf, markerSize, markerSize, markerColor, 2);
   }
 
   if (playerBox) {
