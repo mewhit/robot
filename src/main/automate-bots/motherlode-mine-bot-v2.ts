@@ -1,7 +1,8 @@
 ﻿import fs from "fs";
 import path from "path";
 import { PNG } from "pngjs";
-import { keyToggle, mouseClick, moveMouse, screen, scrollMouse } from "robotjs";
+import { keyToggle, mouseClick, moveMouse, scrollMouse } from "robotjs";
+import { Monitor } from "node-screenshots";
 import { setAutomateBotCurrentStep, stopAutomateBot } from "../automateBotManager";
 import { AppState } from "../global-state";
 import { CHANNELS } from "../ipcChannels";
@@ -326,6 +327,64 @@ function toRobotBitmapFromPng(png: PNG): RobotBitmap {
     bytesPerPixel: 4,
     image,
   };
+}
+
+function toRobotBitmapFromRgbaRaw(rawImage: Buffer | Uint8Array, width: number, height: number): RobotBitmap {
+  const expectedMinBytes = width * height * 4;
+  if (rawImage.length < expectedMinBytes) {
+    throw new Error("node-screenshots raw image returned an unexpected buffer size.");
+  }
+
+  const image = Buffer.alloc(expectedMinBytes);
+  for (let i = 0; i < width * height; i += 1) {
+    const sourceOffset = i * 4;
+    const targetOffset = i * 4;
+    const r = rawImage[sourceOffset];
+    const g = rawImage[sourceOffset + 1];
+    const b = rawImage[sourceOffset + 2];
+    const a = rawImage[sourceOffset + 3];
+
+    // Keep downstream compatibility with RobotJS-style BGR byte order.
+    image[targetOffset] = b;
+    image[targetOffset + 1] = g;
+    image[targetOffset + 2] = r;
+    image[targetOffset + 3] = a;
+  }
+
+  return {
+    width,
+    height,
+    byteWidth: width * 4,
+    bytesPerPixel: 4,
+    image,
+  };
+}
+
+function captureBitmapWithNodeScreenshots(captureBounds: ScreenCaptureBounds): RobotBitmap {
+  const probeX = captureBounds.x + Math.max(0, Math.floor(captureBounds.width / 2));
+  const probeY = captureBounds.y + Math.max(0, Math.floor(captureBounds.height / 2));
+  const monitor = Monitor.fromPoint(probeX, probeY) ?? Monitor.fromPoint(captureBounds.x, captureBounds.y);
+
+  if (!monitor) {
+    throw new Error("node-screenshots could not resolve monitor for capture bounds.");
+  }
+
+  const monitorX = monitor.x();
+  const monitorY = monitor.y();
+  const monitorWidth = Math.max(1, monitor.width());
+  const monitorHeight = Math.max(1, monitor.height());
+  const cropX = captureBounds.x - monitorX;
+  const cropY = captureBounds.y - monitorY;
+  const clampedX = Math.max(0, Math.min(monitorWidth - 1, cropX));
+  const clampedY = Math.max(0, Math.min(monitorHeight - 1, cropY));
+  const clampedWidth = Math.max(1, Math.min(captureBounds.width, monitorWidth - clampedX));
+  const clampedHeight = Math.max(1, Math.min(captureBounds.height, monitorHeight - clampedY));
+
+  const monitorImage = monitor.captureImageSync();
+  const croppedImage = monitorImage.cropSync(clampedX, clampedY, clampedWidth, clampedHeight);
+  const rawImage = croppedImage.toRawSync(true);
+
+  return toRobotBitmapFromRgbaRaw(rawImage, clampedWidth, clampedHeight);
 }
 
 function resolveBankDepositOrbReferencePath(): string | null {
@@ -740,7 +799,7 @@ function createInitialBotState(): BotState {
 
 function detectStartupBotState(captureBounds: ScreenCaptureBounds): BotState {
   const initialState = createInitialBotState();
-  const bitmap = screen.capture(captureBounds.x, captureBounds.y, captureBounds.width, captureBounds.height);
+  const bitmap = captureBitmapWithNodeScreenshots(captureBounds);
   const overlayBox = detectOverlayBoxInScreenshot(bitmap, currentWindowsScalePercent);
 
   if (!overlayBox) {
@@ -1617,7 +1676,7 @@ function captureMineState(
   includeBankingDetectors: boolean = false,
   includeBagStatsDetection: boolean = false,
 ): MineCaptureResult {
-  const bitmap = screen.capture(captureBounds.x, captureBounds.y, captureBounds.width, captureBounds.height);
+  const bitmap = captureBitmapWithNodeScreenshots(captureBounds);
   const boxes = detectMotherlodeMineBoxesInScreenshot(bitmap);
   const greenBoxes = boxes.filter((b) => b.color === "green");
   const orangeBoxes = detectOrangeBoxesInScreenshot(bitmap);
@@ -1656,7 +1715,7 @@ function captureMineState(
 }
 
 function captureDepositState(captureBounds: ScreenCaptureBounds, label: "deposit"): DepositCaptureResult {
-  const bitmap = screen.capture(captureBounds.x, captureBounds.y, captureBounds.width, captureBounds.height);
+  const bitmap = captureBitmapWithNodeScreenshots(captureBounds);
   const bagFullDetection = detectMotherlodeBagFullBoxInScreenshot(bitmap);
   const depositBox = detectBestMotherlodeDepositBoxInScreenshot(bitmap);
   const obstacleBox = detectBestMotherlodeObstacleRedBoxInScreenshot(bitmap);
@@ -1685,7 +1744,7 @@ async function hoverAndReadTile(screenX: number, screenY: number, captureBounds:
     return { tile: null, source: "none", rawLine: null };
   }
 
-  const bitmap = screen.capture(captureBounds.x, captureBounds.y, captureBounds.width, captureBounds.height);
+  const bitmap = captureBitmapWithNodeScreenshots(captureBounds);
   let tileBox: ReturnType<typeof detectTileLocationBoxInScreenshot> = null;
   if (ENABLE_TILE_LOCATION_DETECTION) {
     tileBox = detectTileLocationBoxInScreenshot(bitmap);
