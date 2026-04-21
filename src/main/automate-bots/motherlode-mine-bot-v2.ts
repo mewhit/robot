@@ -2,19 +2,22 @@
 import path from "path";
 import { PNG } from "pngjs";
 import { keyToggle, mouseClick, moveMouse, scrollMouse } from "robotjs";
-import { Monitor } from "node-screenshots";
 import { setAutomateBotCurrentStep, stopAutomateBot } from "../automateBotManager";
 import { AppState } from "../global-state";
 import { CHANNELS } from "../ipcChannels";
 import * as logger from "../logger";
 import { getRuneLite } from "../runeLiteWindow";
+import { captureScreenBitmap } from "../windowsScreenCapture";
 import { MINING_MOTHERLODE_MINE_V2_BOT_ID } from "./definitions";
 import {
   MotherlodeMineBox,
   detectMotherlodeMineBoxesInScreenshot,
   saveBitmapWithMotherlodeMineBoxes,
 } from "./shared/motherlode-mine-box-detector";
-import { MotherlodeBagFullState, detectMotherlodeBagFullBoxInScreenshot } from "./shared/motherlode-bag-full-box-detector";
+import {
+  MotherlodeBagFullState,
+  detectMotherlodeBagFullBoxInScreenshot,
+} from "./shared/motherlode-bag-full-box-detector";
 import { MotherlodeBagStats, detectMotherlodeBagStatsInScreenshot } from "./shared/motherlode-bag-stats-detector";
 import {
   MotherlodeDepositBox,
@@ -31,7 +34,10 @@ import {
   detectMotherlodeBankingYellowBoxesInScreenshot,
   saveBitmapWithMotherlodeBankingYellowBoxes,
 } from "./shared/motherlode-banking-yellow-detector";
-import { MotherlodeBankingGreenBox, detectMotherlodeBankingGreenBoxesInScreenshot } from "./shared/motherlode-banking-green-detector";
+import {
+  MotherlodeBankingGreenBox,
+  detectMotherlodeBankingGreenBoxesInScreenshot,
+} from "./shared/motherlode-banking-green-detector";
 import {
   BankDepositOrbDetection,
   BankDepositOrbDetectorResult,
@@ -329,64 +335,6 @@ function toRobotBitmapFromPng(png: PNG): RobotBitmap {
   };
 }
 
-function toRobotBitmapFromRgbaRaw(rawImage: Buffer | Uint8Array, width: number, height: number): RobotBitmap {
-  const expectedMinBytes = width * height * 4;
-  if (rawImage.length < expectedMinBytes) {
-    throw new Error("node-screenshots raw image returned an unexpected buffer size.");
-  }
-
-  const image = Buffer.alloc(expectedMinBytes);
-  for (let i = 0; i < width * height; i += 1) {
-    const sourceOffset = i * 4;
-    const targetOffset = i * 4;
-    const r = rawImage[sourceOffset];
-    const g = rawImage[sourceOffset + 1];
-    const b = rawImage[sourceOffset + 2];
-    const a = rawImage[sourceOffset + 3];
-
-    // Keep downstream compatibility with RobotJS-style BGR byte order.
-    image[targetOffset] = b;
-    image[targetOffset + 1] = g;
-    image[targetOffset + 2] = r;
-    image[targetOffset + 3] = a;
-  }
-
-  return {
-    width,
-    height,
-    byteWidth: width * 4,
-    bytesPerPixel: 4,
-    image,
-  };
-}
-
-function captureBitmapWithNodeScreenshots(captureBounds: ScreenCaptureBounds): RobotBitmap {
-  const probeX = captureBounds.x + Math.max(0, Math.floor(captureBounds.width / 2));
-  const probeY = captureBounds.y + Math.max(0, Math.floor(captureBounds.height / 2));
-  const monitor = Monitor.fromPoint(probeX, probeY) ?? Monitor.fromPoint(captureBounds.x, captureBounds.y);
-
-  if (!monitor) {
-    throw new Error("node-screenshots could not resolve monitor for capture bounds.");
-  }
-
-  const monitorX = monitor.x();
-  const monitorY = monitor.y();
-  const monitorWidth = Math.max(1, monitor.width());
-  const monitorHeight = Math.max(1, monitor.height());
-  const cropX = captureBounds.x - monitorX;
-  const cropY = captureBounds.y - monitorY;
-  const clampedX = Math.max(0, Math.min(monitorWidth - 1, cropX));
-  const clampedY = Math.max(0, Math.min(monitorHeight - 1, cropY));
-  const clampedWidth = Math.max(1, Math.min(captureBounds.width, monitorWidth - clampedX));
-  const clampedHeight = Math.max(1, Math.min(captureBounds.height, monitorHeight - clampedY));
-
-  const monitorImage = monitor.captureImageSync();
-  const croppedImage = monitorImage.cropSync(clampedX, clampedY, clampedWidth, clampedHeight);
-  const rawImage = croppedImage.toRawSync(true);
-
-  return toRobotBitmapFromRgbaRaw(rawImage, clampedWidth, clampedHeight);
-}
-
 function resolveBankDepositOrbReferencePath(): string | null {
   const candidates = [
     path.resolve(process.cwd(), BANK_DEPOSIT_ORB_REFERENCE_ICON),
@@ -561,14 +509,20 @@ function saveDepositDebugArtifacts(eventName: string, loopIndex: number, capture
   const playerPath = `${base}-player.png`;
 
   saveBitmapWithMotherlodeDepositBoxes(capture.bitmap, capture.depositBox ? [capture.depositBox] : [], depositPath);
-  saveBitmapWithMotherlodeObstacleRedBoxes(capture.bitmap, capture.obstacleBox ? [capture.obstacleBox] : [], obstaclePath);
-  void saveBitmapWithPlayerBoxes(capture.bitmap, capture.playerBoxInCapture ? [capture.playerBoxInCapture] : [], playerPath).catch(
-    (error) => {
-      warn(
-        `Automate Bot (${BOT_NAME}): deposit debug player screenshot failed for loop #${loopIndex}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    },
+  saveBitmapWithMotherlodeObstacleRedBoxes(
+    capture.bitmap,
+    capture.obstacleBox ? [capture.obstacleBox] : [],
+    obstaclePath,
   );
+  void saveBitmapWithPlayerBoxes(
+    capture.bitmap,
+    capture.playerBoxInCapture ? [capture.playerBoxInCapture] : [],
+    playerPath,
+  ).catch((error) => {
+    warn(
+      `Automate Bot (${BOT_NAME}): deposit debug player screenshot failed for loop #${loopIndex}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  });
 
   warn(
     `Automate Bot (${BOT_NAME}): deposit debug screenshots saved (${eventName}) deposit=${depositPath}, obstacle=${obstaclePath}, player=${playerPath}.`,
@@ -616,11 +570,18 @@ function saveBankYellowDebugArtifacts(
     );
   } else {
     const mineYellowBoxes = capture.boxes.filter((box) => box.color === "yellow");
-    saveBitmapWithMotherlodeMineBoxes(capture.bitmap, mineYellowBoxes, yellowPath, localClickPoint, capture.playerBoxInCapture, {
-      r: 255,
-      g: 220,
-      b: 64,
-    });
+    saveBitmapWithMotherlodeMineBoxes(
+      capture.bitmap,
+      mineYellowBoxes,
+      yellowPath,
+      localClickPoint,
+      capture.playerBoxInCapture,
+      {
+        r: 255,
+        g: 220,
+        b: 64,
+      },
+    );
   }
 
   warn(
@@ -799,7 +760,7 @@ function createInitialBotState(): BotState {
 
 function detectStartupBotState(captureBounds: ScreenCaptureBounds): BotState {
   const initialState = createInitialBotState();
-  const bitmap = captureBitmapWithNodeScreenshots(captureBounds);
+  const bitmap = captureScreenBitmap(captureBounds);
   const overlayBox = detectOverlayBoxInScreenshot(bitmap, currentWindowsScalePercent);
 
   if (!overlayBox) {
@@ -897,7 +858,11 @@ function pickDistinctScreenPointInBox(
   return pickDistinctScreenPointInLocalRange(innerX.min, innerX.max, innerY.min, innerY.max, captureBounds);
 }
 
-function toScreenPointFromLocalPoint(localX: number, localY: number, captureBounds: ScreenCaptureBounds): { x: number; y: number } {
+function toScreenPointFromLocalPoint(
+  localX: number,
+  localY: number,
+  captureBounds: ScreenCaptureBounds,
+): { x: number; y: number } {
   return {
     x: captureBounds.x + Math.round(localX),
     y: captureBounds.y + Math.round(localY),
@@ -1022,7 +987,8 @@ function findNodeNearActiveScreen(
 
     if (
       box.color === "yellow" &&
-      (distance < bestYellowDistance || (Math.abs(distance - bestYellowDistance) < 0.001 && centerDistance < bestYellowCenterDistance))
+      (distance < bestYellowDistance ||
+        (Math.abs(distance - bestYellowDistance) < 0.001 && centerDistance < bestYellowCenterDistance))
     ) {
       bestYellowDistance = distance;
       bestYellowCenterDistance = centerDistance;
@@ -1081,7 +1047,8 @@ function detectYellowTransitionNearActivePoint(
 
   // Require a meaningful yellow presence and dominance over green so we
   // don't treat warm cave pixels as node transitions.
-  const transitioned = yellowPixels >= 26 && (yellowPixels >= greenPixels + 10 || yellowPixels * 2 >= Math.max(1, samplePixels / 4));
+  const transitioned =
+    yellowPixels >= 26 && (yellowPixels >= greenPixels + 10 || yellowPixels * 2 >= Math.max(1, samplePixels / 4));
 
   return {
     transitioned,
@@ -1096,7 +1063,10 @@ function getNodeUpperBiasedLocalY(node: MotherlodeMineBox): number {
   return Math.max(node.y + 1, node.centerY - upwardBiasPx);
 }
 
-function toNodeInteractionScreenPoint(node: MotherlodeMineBox, captureBounds: ScreenCaptureBounds): { x: number; y: number } {
+function toNodeInteractionScreenPoint(
+  node: MotherlodeMineBox,
+  captureBounds: ScreenCaptureBounds,
+): { x: number; y: number } {
   const innerX = getInnerRange(node.x, node.width, BOX_CLICK_INNER_RATIO);
   const innerY = getInnerRange(node.y, node.height, BOX_CLICK_INNER_RATIO);
 
@@ -1108,7 +1078,10 @@ function toNodeInteractionScreenPoint(node: MotherlodeMineBox, captureBounds: Sc
   return pickDistinctScreenPointInLocalRange(innerX.min, innerX.max, yMin, yMax, captureBounds);
 }
 
-function toDepositInteractionScreenPoint(depositBox: MotherlodeDepositBox, captureBounds: ScreenCaptureBounds): { x: number; y: number } {
+function toDepositInteractionScreenPoint(
+  depositBox: MotherlodeDepositBox,
+  captureBounds: ScreenCaptureBounds,
+): { x: number; y: number } {
   return pickDistinctScreenPointInBox(depositBox.x, depositBox.y, depositBox.width, depositBox.height, captureBounds);
 }
 
@@ -1116,14 +1089,26 @@ function toObstacleInteractionScreenPoint(
   obstacleBox: MotherlodeObstacleRedBox,
   captureBounds: ScreenCaptureBounds,
 ): { x: number; y: number } {
-  return pickDistinctScreenPointInBox(obstacleBox.x, obstacleBox.y, obstacleBox.width, obstacleBox.height, captureBounds);
+  return pickDistinctScreenPointInBox(
+    obstacleBox.x,
+    obstacleBox.y,
+    obstacleBox.width,
+    obstacleBox.height,
+    captureBounds,
+  );
 }
 
-function toOrangeInteractionScreenPoint(orangeBox: OrangeTargetBox, captureBounds: ScreenCaptureBounds): { x: number; y: number } {
+function toOrangeInteractionScreenPoint(
+  orangeBox: OrangeTargetBox,
+  captureBounds: ScreenCaptureBounds,
+): { x: number; y: number } {
   return pickDistinctScreenPointInBox(orangeBox.x, orangeBox.y, orangeBox.width, orangeBox.height, captureBounds);
 }
 
-function toOrangeTopInteractionScreenPoint(orangeBox: OrangeTargetBox, captureBounds: ScreenCaptureBounds): { x: number; y: number } {
+function toOrangeTopInteractionScreenPoint(
+  orangeBox: OrangeTargetBox,
+  captureBounds: ScreenCaptureBounds,
+): { x: number; y: number } {
   const innerX = getInnerRange(orangeBox.x, orangeBox.width, BOX_CLICK_INNER_RATIO);
   const innerY = getInnerRange(orangeBox.y, orangeBox.height, BOX_CLICK_INNER_RATIO);
   const topBandHeight = Math.max(1, Math.ceil((innerY.max - innerY.min + 1) * 0.2));
@@ -1160,7 +1145,11 @@ function resolvePostClickMouseTarget(
   return null;
 }
 
-function moveMouseAwayFromClickedNode(clickedScreenX: number, clickedScreenY: number, captureBounds: ScreenCaptureBounds): void {
+function moveMouseAwayFromClickedNode(
+  clickedScreenX: number,
+  clickedScreenY: number,
+  captureBounds: ScreenCaptureBounds,
+): void {
   return;
 }
 
@@ -1189,7 +1178,10 @@ function toSouthMoveScreenPoint(
   const baseLocalX = clamp(anchorX + baseOffsetX, minLocalX, maxLocalX);
   const baseLocalY = clamp(anchorY + baseOffsetY, minLocalY, maxLocalY);
 
-  const randomRadiusPx = Math.max(BANK_SOUTH_CLICK_RANDOM_RADIUS_PX, Math.round(tilePx * BANK_SOUTHWEST_CLICK_RANDOM_TILE_RADIUS));
+  const randomRadiusPx = Math.max(
+    BANK_SOUTH_CLICK_RANDOM_RADIUS_PX,
+    Math.round(tilePx * BANK_SOUTHWEST_CLICK_RANDOM_TILE_RADIUS),
+  );
   const randomMinX = clamp(baseLocalX - randomRadiusPx, minLocalX, maxLocalX);
   const randomMaxX = clamp(baseLocalX + randomRadiusPx, minLocalX, maxLocalX);
   const randomMinY = clamp(baseLocalY - randomRadiusPx, minLocalY, maxLocalY);
@@ -1360,14 +1352,21 @@ function shouldClearDepositObstacle(
     return { shouldClear: true, reason: "collision" };
   }
 
-  if (depositInFlight && depositRetryTicks >= 1 && isObstacleRelevantToDepositPath(playerAnchorInCapture, depositBox, obstacleBox)) {
+  if (
+    depositInFlight &&
+    depositRetryTicks >= 1 &&
+    isObstacleRelevantToDepositPath(playerAnchorInCapture, depositBox, obstacleBox)
+  ) {
     return { shouldClear: true, reason: `stalled-${depositRetryTicks}` };
   }
 
   return { shouldClear: false, reason: null };
 }
 
-function isPlayerCollidingWithObstacle(playerBoxInCapture: PlayerBox | null, obstacleBox: MotherlodeObstacleRedBox | null): boolean {
+function isPlayerCollidingWithObstacle(
+  playerBoxInCapture: PlayerBox | null,
+  obstacleBox: MotherlodeObstacleRedBox | null,
+): boolean {
   return isPlayerCollidingWithObstacleBox(playerBoxInCapture, obstacleBox, OBSTACLE_PLAYER_COLLISION_PADDING_PX);
 }
 
@@ -1546,7 +1545,10 @@ function findNearestOrangeBox(
     const centerDy = anchorY - box.centerY;
     const centerDistance = axisDistance(centerDx, centerDy);
 
-    if (edgeDistance < bestEdgeDistance || (Math.abs(edgeDistance - bestEdgeDistance) < 0.001 && centerDistance < bestCenterDistance)) {
+    if (
+      edgeDistance < bestEdgeDistance ||
+      (Math.abs(edgeDistance - bestEdgeDistance) < 0.001 && centerDistance < bestCenterDistance)
+    ) {
       best = box;
       bestEdgeDistance = edgeDistance;
       bestCenterDistance = centerDistance;
@@ -1584,7 +1586,10 @@ function findNearestYellowNode(
     const centerDy = anchorY - box.centerY;
     const centerDistance = axisDistance(centerDx, centerDy);
 
-    if (edgeDistance < bestEdgeDistance || (Math.abs(edgeDistance - bestEdgeDistance) < 0.001 && centerDistance < bestCenterDistance)) {
+    if (
+      edgeDistance < bestEdgeDistance ||
+      (Math.abs(edgeDistance - bestEdgeDistance) < 0.001 && centerDistance < bestCenterDistance)
+    ) {
       best = box;
       bestEdgeDistance = edgeDistance;
       bestCenterDistance = centerDistance;
@@ -1621,7 +1626,10 @@ function findNearestBankingYellowBox(
     const centerDy = anchorY - box.centerY;
     const centerDistance = axisDistance(centerDx, centerDy);
 
-    if (edgeDistance < bestEdgeDistance || (Math.abs(edgeDistance - bestEdgeDistance) < 0.001 && centerDistance < bestCenterDistance)) {
+    if (
+      edgeDistance < bestEdgeDistance ||
+      (Math.abs(edgeDistance - bestEdgeDistance) < 0.001 && centerDistance < bestCenterDistance)
+    ) {
       best = box;
       bestEdgeDistance = edgeDistance;
       bestCenterDistance = centerDistance;
@@ -1658,7 +1666,10 @@ function findNearestBankingGreenBox(
     const centerDy = anchorY - box.centerY;
     const centerDistance = axisDistance(centerDx, centerDy);
 
-    if (edgeDistance < bestEdgeDistance || (Math.abs(edgeDistance - bestEdgeDistance) < 0.001 && centerDistance < bestCenterDistance)) {
+    if (
+      edgeDistance < bestEdgeDistance ||
+      (Math.abs(edgeDistance - bestEdgeDistance) < 0.001 && centerDistance < bestCenterDistance)
+    ) {
       best = box;
       bestEdgeDistance = edgeDistance;
       bestCenterDistance = centerDistance;
@@ -1676,7 +1687,7 @@ function captureMineState(
   includeBankingDetectors: boolean = false,
   includeBagStatsDetection: boolean = false,
 ): MineCaptureResult {
-  const bitmap = captureBitmapWithNodeScreenshots(captureBounds);
+  const bitmap = captureScreenBitmap(captureBounds);
   const boxes = detectMotherlodeMineBoxesInScreenshot(bitmap);
   const greenBoxes = boxes.filter((b) => b.color === "green");
   const orangeBoxes = detectOrangeBoxesInScreenshot(bitmap);
@@ -1715,7 +1726,7 @@ function captureMineState(
 }
 
 function captureDepositState(captureBounds: ScreenCaptureBounds, label: "deposit"): DepositCaptureResult {
-  const bitmap = captureBitmapWithNodeScreenshots(captureBounds);
+  const bitmap = captureScreenBitmap(captureBounds);
   const bagFullDetection = detectMotherlodeBagFullBoxInScreenshot(bitmap);
   const depositBox = detectBestMotherlodeDepositBoxInScreenshot(bitmap);
   const obstacleBox = detectBestMotherlodeObstacleRedBoxInScreenshot(bitmap);
@@ -1734,7 +1745,11 @@ function captureDepositState(captureBounds: ScreenCaptureBounds, label: "deposit
   };
 }
 
-async function hoverAndReadTile(screenX: number, screenY: number, captureBounds: ScreenCaptureBounds): Promise<HoverTileReadResult> {
+async function hoverAndReadTile(
+  screenX: number,
+  screenY: number,
+  captureBounds: ScreenCaptureBounds,
+): Promise<HoverTileReadResult> {
   if (ENABLE_NODE_HOVER_BEFORE_TILE_READ) {
     moveMouse(screenX, screenY);
     await sleepWithAbort(TOOLTIP_SETTLE_MS);
@@ -1744,7 +1759,7 @@ async function hoverAndReadTile(screenX: number, screenY: number, captureBounds:
     return { tile: null, source: "none", rawLine: null };
   }
 
-  const bitmap = captureBitmapWithNodeScreenshots(captureBounds);
+  const bitmap = captureScreenBitmap(captureBounds);
   let tileBox: ReturnType<typeof detectTileLocationBoxInScreenshot> = null;
   if (ENABLE_TILE_LOCATION_DETECTION) {
     tileBox = detectTileLocationBoxInScreenshot(bitmap);
@@ -1815,7 +1830,11 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
     current = updateBagState(current, capture.bagFullState);
 
     const depositDistancePx = getPlayerDistanceToDepositBox(capture.playerAnchorInCapture, capture.depositBox);
-    const nearDeposit = isPlayerNearDepositBox(capture.playerAnchorInCapture, capture.depositBox, DEPOSIT_PLAYER_NEAR_RADIUS_PX);
+    const nearDeposit = isPlayerNearDepositBox(
+      capture.playerAnchorInCapture,
+      capture.depositBox,
+      DEPOSIT_PLAYER_NEAR_RADIUS_PX,
+    );
     const depositNearStableTicks = nearDeposit ? current.depositNearStableTicks + 1 : 0;
     let depositRetryTicks = current.depositRetryTicks;
     let depositLastDistancePx = current.depositLastDistancePx;
@@ -1829,7 +1848,10 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
     } else if (depositDistancePx === null) {
       depositRetryTicks += 1;
       depositLastDistancePx = null;
-    } else if (depositLastDistancePx === null || depositDistancePx < depositLastDistancePx - DEPOSIT_PROGRESS_EPSILON_PX) {
+    } else if (
+      depositLastDistancePx === null ||
+      depositDistancePx < depositLastDistancePx - DEPOSIT_PROGRESS_EPSILON_PX
+    ) {
       depositRetryTicks = 0;
       depositLastDistancePx = depositDistancePx;
     } else {
@@ -1964,14 +1986,15 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
   const shouldReadOverlayTile =
     (current.phase === "banking" || current.phase === "descending-to-bank" || current.phase === "ascending-to-mine") &&
     !isActionLocked(current, nowMs) &&
-    (current.bankingStep === "wait-after-orange" || (current.bankingStep === "move-south-until-yellow" && current.bankSouthClicks === 0));
+    (current.bankingStep === "wait-after-orange" ||
+      (current.bankingStep === "move-south-until-yellow" && current.bankSouthClicks === 0));
   const capture = captureMineState(
     captureBounds,
     captureLabel,
     current.activeScreen,
     shouldReadOverlayTile,
     current.phase === "banking" || current.phase === "descending-to-bank" || current.phase === "ascending-to-mine",
-    current.phase === "banking",
+    current.phase === "banking" || current.phase === "descending-to-bank" || current.phase === "ascending-to-mine",
   );
   current = updateBagState(current, capture.bagFullState);
 
@@ -2022,7 +2045,9 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
   if (current.phase === "descending-to-bank" || current.phase === "banking" || current.phase === "ascending-to-mine") {
     if (!isActionLocked(current, nowMs) && shouldClearRedObstacle(capture.playerBoxInCapture, capture.obstacleBox)) {
       const point = toObstacleInteractionScreenPoint(capture.obstacleBox, captureBounds);
-      warn(`Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking collision with red obstacle at (${point.x},${point.y}). Clearing.`);
+      warn(
+        `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking collision with red obstacle at (${point.x},${point.y}). Clearing.`,
+      );
       warn(
         `Automate Bot (${BOT_NAME}): #${current.loopIndex} Collision detail (${current.phase}/collision): ${buildCollisionDebugSummary(capture.playerBoxInCapture, capture.obstacleBox, OBSTACLE_PLAYER_COLLISION_PADDING_PX)}.`,
       );
@@ -2076,7 +2101,11 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
       log(
         `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking ladder descent confirmed at tile ${BANK_EXPECTED_LADDER_DOWN_X},${BANK_EXPECTED_LADDER_DOWN_Y}. Switching to banking phase.`,
       );
-      return resetToBanking(current);
+      const preYellowSackCount = getBagSackCountValue(capture.bagStats);
+      return {
+        ...resetToBanking(current),
+        bankYellowPreClickSackCount: preYellowSackCount,
+      };
     }
 
     if (current.phase === "banking" && current.bankingStep === "wait-after-return-orange") {
@@ -2106,7 +2135,10 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
       if (!isAtLadderUpTile(capture.playerTileFromOverlay)) {
         const nextRecheckCount = current.bankLadderRecheckCount + 1;
         if (nextRecheckCount <= BANK_LADDER_UP_RECHECK_MAX) {
-          const waitTicks = randomIntInclusive(BANK_LADDER_UP_RECHECK_WAIT_MIN_TICKS, BANK_LADDER_UP_RECHECK_WAIT_MAX_TICKS);
+          const waitTicks = randomIntInclusive(
+            BANK_LADDER_UP_RECHECK_WAIT_MIN_TICKS,
+            BANK_LADDER_UP_RECHECK_WAIT_MAX_TICKS,
+          );
           warn(
             `Automate Bot (${BOT_NAME}): #${current.loopIndex} Ladder ascent not confirmed (tile=${tileText}, expected=${BANK_EXPECTED_LADDER_UP_X},${BANK_EXPECTED_LADDER_UP_Y},*). Waiting ${waitTicks} ticks before re-check (${nextRecheckCount}/${BANK_LADDER_UP_RECHECK_MAX}).`,
           );
@@ -2141,7 +2173,9 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
       const nearestOrangeBox = findNearestOrangeBox(capture.orangeBoxes, captureBounds, capture.playerAnchorInCapture);
       if (nearestOrangeBox) {
         const point = toOrangeTopInteractionScreenPoint(nearestOrangeBox, captureBounds);
-        log(`Automate Bot (${BOT_NAME}): #${current.loopIndex} Ascending-to-mine re-clicking orange box at (${point.x},${point.y}).`);
+        log(
+          `Automate Bot (${BOT_NAME}): #${current.loopIndex} Ascending-to-mine re-clicking orange box at (${point.x},${point.y}).`,
+        );
         clickScreenPoint(point.x, point.y);
         moveMouseAwayFromClickedNode(point.x, point.y, captureBounds);
         return {
@@ -2152,7 +2186,9 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
         };
       }
 
-      warn(`Automate Bot (${BOT_NAME}): #${current.loopIndex} Ascending-to-mine phase active but orange box was not found.`);
+      warn(
+        `Automate Bot (${BOT_NAME}): #${current.loopIndex} Ascending-to-mine phase active but orange box was not found.`,
+      );
       return current;
     }
 
@@ -2191,7 +2227,11 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
       const row3InventorySpace = capture.bagStats.row3.value;
 
       if (shouldExitBankingToMiningSearch(capture.bagStats)) {
-        const nearestOrangeBox = findNearestOrangeBox(capture.orangeBoxes, captureBounds, capture.playerAnchorInCapture);
+        const nearestOrangeBox = findNearestOrangeBox(
+          capture.orangeBoxes,
+          captureBounds,
+          capture.playerAnchorInCapture,
+        );
         if (!nearestOrangeBox) {
           warn(
             `Automate Bot (${BOT_NAME}): #${current.loopIndex} Post-orb banking exit condition met (sack=0, row3=28) but orange box was not found (${formatBagDecisionState(current, capture.bagStats)}).`,
@@ -2221,6 +2261,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
       }
 
       if (row3InventorySpace === 28) {
+        const preYellowSackCount = getBagSackCountValue(capture.bagStats);
         log(
           `Automate Bot (${BOT_NAME}): #${current.loopIndex} Post-orb banking click confirmed by row3=28. Restarting yellow->green->orb banking loop (${formatBagDecisionState(current, capture.bagStats)}).`,
         );
@@ -2230,7 +2271,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
           bankValidateStartTile: false,
           bankSouthClicks: 0,
           bankSouthWaitUntilMs: 0,
-          bankYellowPreClickSackCount: null,
+          bankYellowPreClickSackCount: preYellowSackCount,
           bankYellowSackWaitTicks: 0,
           bankOrbClickCount: 0,
           bankOrbCandidateCenter: null,
@@ -2293,7 +2334,11 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
               captureBounds,
               capture.playerAnchorInCapture,
             );
-            const nearestRetryMineYellow = findNearestYellowNode(capture.boxes, captureBounds, capture.playerAnchorInCapture);
+            const nearestRetryMineYellow = findNearestYellowNode(
+              capture.boxes,
+              captureBounds,
+              capture.playerAnchorInCapture,
+            );
             const retryYellowTarget = nearestRetryBankingYellow ?? nearestRetryMineYellow;
             if (retryYellowTarget) {
               const retryYellowPoint = toYellowInteractionScreenPoint(retryYellowTarget, captureBounds);
@@ -2347,7 +2392,11 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
               captureBounds,
               capture.playerAnchorInCapture,
             );
-            const nearestRetryMineYellow = findNearestYellowNode(capture.boxes, captureBounds, capture.playerAnchorInCapture);
+            const nearestRetryMineYellow = findNearestYellowNode(
+              capture.boxes,
+              captureBounds,
+              capture.playerAnchorInCapture,
+            );
             const retryYellowTarget = nearestRetryBankingYellow ?? nearestRetryMineYellow;
             if (retryYellowTarget) {
               const retryYellowPoint = toYellowInteractionScreenPoint(retryYellowTarget, captureBounds);
@@ -2400,8 +2449,16 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
         }
       }
 
-      const nearestBankingGreen = findNearestBankingGreenBox(capture.bankingGreenBoxes, captureBounds, capture.playerAnchorInCapture);
-      const nearestMineGreen = selectNearestGreenMotherlodeNode(capture.greenBoxes, captureBounds, capture.playerAnchorInCapture);
+      const nearestBankingGreen = findNearestBankingGreenBox(
+        capture.bankingGreenBoxes,
+        captureBounds,
+        capture.playerAnchorInCapture,
+      );
+      const nearestMineGreen = selectNearestGreenMotherlodeNode(
+        capture.greenBoxes,
+        captureBounds,
+        capture.playerAnchorInCapture,
+      );
       const greenTarget = nearestBankingGreen ?? nearestMineGreen;
       if (!greenTarget) {
         warn(
@@ -2451,7 +2508,9 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
         return current;
       }
 
-      log(`Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking green travel settled. Starting bank orb detection.`);
+      log(
+        `Automate Bot (${BOT_NAME}): #${current.loopIndex} Banking green travel settled. Starting bank orb detection.`,
+      );
       current = {
         ...current,
         bankingStep: "wait-for-orb",
@@ -2478,7 +2537,11 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
           };
         }
 
-        const orbPoint = toScreenPointFromLocalPoint(current.bankOrbCachedLocalPoint.x, current.bankOrbCachedLocalPoint.y, captureBounds);
+        const orbPoint = toScreenPointFromLocalPoint(
+          current.bankOrbCachedLocalPoint.x,
+          current.bankOrbCachedLocalPoint.y,
+          captureBounds,
+        );
         const nextBankOrbClickCount = current.bankOrbClickCount + 1;
         log(
           `Automate Bot (${BOT_NAME}): #${current.loopIndex} Using cached bank orb click point (${orbPoint.x},${orbPoint.y}) (${nextBankOrbClickCount}/${BANK_ORB_CONFIRM_CLICK_COUNT}).`,
@@ -2528,9 +2591,17 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
           warn(
             `Automate Bot (${BOT_NAME}): #${current.loopIndex} Ignoring bank orb candidate at (${orbResult.detection.centerX},${orbResult.detection.centerY}) because it is above the banking UI band (minY=${minCenterY}).`,
           );
-          saveBankDepositOrbDebugArtifacts("reject-upper-screen", current.loopIndex, current.bankOrbClickCount, capture.bitmap, orbResult);
+          saveBankDepositOrbDebugArtifacts(
+            "reject-upper-screen",
+            current.loopIndex,
+            current.bankOrbClickCount,
+            capture.bitmap,
+            orbResult,
+          );
         }
-        log(`Automate Bot (${BOT_NAME}): #${current.loopIndex} Re-attempting green click after rejecting upper-screen orb candidate.`);
+        log(
+          `Automate Bot (${BOT_NAME}): #${current.loopIndex} Re-attempting green click after rejecting upper-screen orb candidate.`,
+        );
         return {
           ...current,
           bankingStep: "yellow-clicked",
@@ -2559,7 +2630,11 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
         };
       }
 
-      const orbPoint = toScreenPointFromLocalPoint(orbResult.detection.centerX, orbResult.detection.centerY, captureBounds);
+      const orbPoint = toScreenPointFromLocalPoint(
+        orbResult.detection.centerX,
+        orbResult.detection.centerY,
+        captureBounds,
+      );
       const nextBankOrbClickCount = current.bankOrbClickCount + 1;
       saveBankDepositOrbDebugArtifacts("click", current.loopIndex, nextBankOrbClickCount, capture.bitmap, orbResult);
       log(
@@ -2634,13 +2709,18 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
       }
     }
 
-    const nearestBankingYellow = findNearestBankingYellowBox(capture.bankingYellowBoxes, captureBounds, capture.playerAnchorInCapture);
+    const nearestBankingYellow = findNearestBankingYellowBox(
+      capture.bankingYellowBoxes,
+      captureBounds,
+      capture.playerAnchorInCapture,
+    );
     const nearestMineYellow = findNearestYellowNode(capture.boxes, captureBounds, capture.playerAnchorInCapture);
     const yellowTarget = nearestBankingYellow ?? nearestMineYellow;
     if (yellowTarget) {
       const yellowPoint = toYellowInteractionScreenPoint(yellowTarget, captureBounds);
       const yellowSource = nearestBankingYellow ? "banking-yellow" : "mine-yellow";
-      const preYellowSackCount = getBagSackCountValue(capture.bagStats);
+      const immediateSackCount = getBagSackCountValue(capture.bagStats);
+      const preYellowSackCount = current.bankYellowPreClickSackCount ?? immediateSackCount;
       const yellowTravel = estimateBankTravelToScreenPoint(
         yellowPoint,
         captureBounds,
@@ -2694,7 +2774,11 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
   }
 
   if (current.phase === "searching") {
-    const greenNode = selectNearestGreenMotherlodeNode(capture.greenBoxes, captureBounds, capture.playerAnchorInCapture);
+    const greenNode = selectNearestGreenMotherlodeNode(
+      capture.greenBoxes,
+      captureBounds,
+      capture.playerAnchorInCapture,
+    );
 
     if (!greenNode) {
       warn(
@@ -2747,7 +2831,11 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
       return resetToSearching(current);
     }
 
-    const yellowTransitionFallback = detectYellowTransitionNearActivePoint(capture.bitmap, current.activeScreen, captureBounds);
+    const yellowTransitionFallback = detectYellowTransitionNearActivePoint(
+      capture.bitmap,
+      current.activeScreen,
+      captureBounds,
+    );
     if (yellowTransitionFallback.transitioned) {
       log(
         `Automate Bot (${BOT_NAME}): #${current.loopIndex} Active node yellow fallback triggered (yellow=${yellowTransitionFallback.yellowPixels}, green=${yellowTransitionFallback.greenPixels}, sample=${yellowTransitionFallback.samplePixels}). Searching next node.`,

@@ -1,9 +1,10 @@
-import { mouseClick, moveMouse, screen } from "robotjs";
+import { mouseClick, moveMouse } from "robotjs";
 import { screen as electronScreen } from "electron";
 import { Window } from "node-window-manager";
 import * as logger from "../../logger";
 import { getRuneLite } from "../../runeLiteWindow";
 import { stopAutomateBot } from "../../automateBotManager";
+import { captureScreenRect } from "../../windowsScreenCapture";
 import { detectBestAgilityBoxInScreenshot, AgilityBox } from "./agility-box-detector";
 import { detectOverlayBoxInScreenshot, OverlayBox } from "./coordinate-box-detector";
 import { detectTileLocationBoxInScreenshot, TileLocationBox } from "./tile-location-detection";
@@ -118,7 +119,7 @@ export async function initAgilityBotV2(): Promise<InitBotResult> {
 
   await sleep(POST_FOCUS_SETTLE_MS);
 
-  const fullBitmap = screen.capture(bounds.x, bounds.y, bounds.width, bounds.height);
+  const fullBitmap = captureScreenRect(bounds.x, bounds.y, bounds.width, bounds.height);
   const display = electronScreen.getDisplayMatching({
     x: bounds.x,
     y: bounds.y,

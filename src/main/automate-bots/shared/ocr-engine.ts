@@ -15,7 +15,7 @@
 import fs from "fs";
 import path from "path";
 import { PNG } from "pngjs";
-import * as robotModule from "robotjs";
+import { captureScreenRect } from "../../windowsScreenCapture";
 import { saveBitmap } from "./save-bitmap";
 
 const DEFAULT_OCR_DEBUG_DIR = "./ocr-debug";
@@ -144,7 +144,13 @@ export function debugSaveAllStages(bitmap: RobotBitmap, outputDir: string = "./o
 
   // Stage 4: Upscaled
   const upscaled = upscaleImage(binary, bitmap.width, bitmap.height, OCR_SCALE_FACTOR);
-  saveMask(upscaled, bitmap.width * OCR_SCALE_FACTOR, bitmap.height * OCR_SCALE_FACTOR, `${outputDir}/04_upscaled.png`, 1);
+  saveMask(
+    upscaled,
+    bitmap.width * OCR_SCALE_FACTOR,
+    bitmap.height * OCR_SCALE_FACTOR,
+    `${outputDir}/04_upscaled.png`,
+    1,
+  );
 }
 
 /**
@@ -409,7 +415,11 @@ export function buildWhiteTextMask(bitmap: RobotBitmap): Uint8Array {
  * @param origHeight - Original bitmap height
  * @returns Array of y-ranges containing text
  */
-function findTextBands(mask: Uint8Array, origWidth: number, origHeight: number): Array<{ startY: number; endY: number }> {
+function findTextBands(
+  mask: Uint8Array,
+  origWidth: number,
+  origHeight: number,
+): Array<{ startY: number; endY: number }> {
   const width = origWidth * OCR_SCALE_FACTOR;
   const height = origHeight * OCR_SCALE_FACTOR;
   const rowThreshold = Math.max(4, Math.floor(width * 0.018));
@@ -558,7 +568,10 @@ export function readNumericLine(
  * @param maxGap - Maximum gap (in pixels) to merge
  * @returns Merged segments
  */
-function mergeCloseSegments(segments: Array<{ startX: number; endX: number }>, maxGap: number): Array<{ startX: number; endX: number }> {
+function mergeCloseSegments(
+  segments: Array<{ startX: number; endX: number }>,
+  maxGap: number,
+): Array<{ startX: number; endX: number }> {
   if (segments.length === 0) {
     return [];
   }
@@ -932,7 +945,6 @@ function extractGameStats(mask: Uint8Array, origWidth: number, origHeight: numbe
  * Read tile coordinate from top-left screen overlay
  * Scans multiple bands and start positions to find best match
  * @param bounds - Screen capture bounds
- * @param robotScreen - Robot screen API
  * @param overlayWidthRatio - Width as fraction of game window
  * @param overlayHeightRatio - Height as fraction of game window
  * @returns Tile coordinate and raw OCR text
@@ -944,7 +956,6 @@ export function readTileCoordinateFromOverlay(
     width: number;
     height: number;
   },
-  robotScreen: (typeof robotModule)["screen"],
   debugRawScreenshotPath: string | null = null,
 ): TileReadResult {
   // Capture only the Tile row overlay (top-left of the RuneLite window)
@@ -953,7 +964,7 @@ export function readTileCoordinateFromOverlay(
   const overlayWidth = bounds.width * 0.15;
   const overlayHeight = bounds.height * 0.15;
 
-  const bitmap = robotScreen.capture(overlayX, overlayY, overlayWidth, overlayHeight);
+  const bitmap = captureScreenRect(overlayX, overlayY, overlayWidth, overlayHeight);
 
   if (debugRawScreenshotPath) {
     saveBitmap(bitmap, debugRawScreenshotPath);

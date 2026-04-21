@@ -1,9 +1,9 @@
 import * as fs from "fs";
 import { screen as electronScreen } from "electron";
-import { screen } from "robotjs";
 import path from "path";
 import * as logger from "../../logger";
 import { getRuneLite } from "../../runeLiteWindow";
+import { captureScreenRect } from "../../windowsScreenCapture";
 import { saveBitmap } from "./save-bitmap";
 
 function getResolutionTierLabel(width: number, height: number): string {
@@ -130,10 +130,11 @@ function resolveScreenshotFilePath(
   return appendSuffixToFilePath(ensurePngExtension(trimmedTargetPath), fileNameSuffix);
 }
 
-export function runAgilityScreenshotCapture(options?: {
-  targetFilePath?: string;
-  fileNameSuffix?: string;
-}): { ok: boolean; filePath?: string; error?: string } {
+export function runAgilityScreenshotCapture(options?: { targetFilePath?: string; fileNameSuffix?: string }): {
+  ok: boolean;
+  filePath?: string;
+  error?: string;
+} {
   const window = getRuneLite();
   if (!window) {
     const message = "RuneLite window not found.";
@@ -169,7 +170,7 @@ export function runAgilityScreenshotCapture(options?: {
 
   const displayMeta = getWindowsDisplayMeta(bounds);
   const captureBounds = toPhysicalCaptureBounds(bounds, displayMeta.scaleFactor);
-  const fullBitmap = screen.capture(captureBounds.x, captureBounds.y, captureBounds.width, captureBounds.height);
+  const fullBitmap = captureScreenRect(captureBounds.x, captureBounds.y, captureBounds.width, captureBounds.height);
   const gameResolution = `${fullBitmap.width}x${fullBitmap.height}`;
   const filePath = resolveScreenshotFilePath(
     options?.targetFilePath,

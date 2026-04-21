@@ -1,10 +1,11 @@
-import { keyTap, mouseClick, moveMouse, screen } from "robotjs";
+import { keyTap, mouseClick, moveMouse } from "robotjs";
 import { Window } from "node-window-manager";
 import { setAutomateBotCurrentStep, stopAutomateBot } from "../automateBotManager";
 import { AppState } from "../global-state";
 import { CHANNELS } from "../ipcChannels";
 import * as logger from "../logger";
 import { getRuneLite } from "../runeLiteWindow";
+import { captureScreenRect } from "../windowsScreenCapture";
 import { ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID } from "./definitions";
 import { CyanBox, detectBestCyanBoxInScreenshot } from "./shared/cyan-box-detector";
 import { AttackBox, detectBestAttackBoxInScreenshot } from "./shared/attack-box-detector";
@@ -133,7 +134,7 @@ function nextDebugIndex(): number {
 }
 
 function detectCyanBoxInScene(sceneBounds: Bounds): CyanBox | null {
-  const sceneBitmap = screen.capture(sceneBounds.x, sceneBounds.y, sceneBounds.width, sceneBounds.height);
+  const sceneBitmap = captureScreenRect(sceneBounds.x, sceneBounds.y, sceneBounds.width, sceneBounds.height);
   if (DEBUG_MODE) {
     const idx = nextDebugIndex();
     saveBitmap(sceneBitmap, path.join(DEBUG_DIR, `${idx}-cyan-scene.png`));
@@ -142,7 +143,7 @@ function detectCyanBoxInScene(sceneBounds: Bounds): CyanBox | null {
 }
 
 function detectAttackBoxFullScreen(playableBounds: Bounds): AttackBox | null {
-  const bitmap = screen.capture(playableBounds.x, playableBounds.y, playableBounds.width, playableBounds.height);
+  const bitmap = captureScreenRect(playableBounds.x, playableBounds.y, playableBounds.width, playableBounds.height);
   if (DEBUG_MODE) {
     const idx = nextDebugIndex();
     saveBitmap(bitmap, path.join(DEBUG_DIR, `${idx}-attack-full.png`));

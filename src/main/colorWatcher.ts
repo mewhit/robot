@@ -1,24 +1,10 @@
-import * as robotModule from "robotjs";
 import { AppState } from "./global-state";
 import { getRunLiteWindowInfo } from "./ioHookHandlers";
 import { sendMarkerColorState } from "./recordingManager";
 import { RuneLiteWindowInfo } from "./runeLiteWindow";
+import { ScreenBitmap, captureScreenRect } from "./windowsScreenCapture";
 
-type RobotBitmap = {
-  colorAt: (x: number, y: number) => string;
-  width: number;
-  height: number;
-  byteWidth: number;
-  bytesPerPixel: number;
-  image: Buffer;
-};
-
-type RobotColorApi = {
-  getPixelColor: (x: number, y: number) => string;
-  screen: {
-    capture: (x: number, y: number, width: number, height: number) => RobotBitmap;
-  };
-};
+type RobotBitmap = ScreenBitmap;
 
 type MarkerColor = "green" | "red" | "none";
 
@@ -28,8 +14,6 @@ type MarkerDetection = {
   y: number;
   confidence: number;
 };
-
-const robot = ((robotModule as unknown as { default?: RobotColorApi }).default ?? robotModule) as unknown as RobotColorApi;
 
 const MARKER_SCAN_INTERVAL_MS = 700;
 const MARKER_SCAN_STEP_PX = 2;
@@ -122,7 +106,9 @@ async function scanAndPublishMarkerState(abortOnStop = true) {
     return;
   }
 
-  console.log(`[colorWatcher] Detected: ${detection.color} at (${detection.x}, ${detection.y}) confidence=${detection.confidence}`);
+  console.log(
+    `[colorWatcher] Detected: ${detection.color} at (${detection.x}, ${detection.y}) confidence=${detection.confidence}`,
+  );
   publishMarkerState({
     color: detection.color,
     x: detection.x,
@@ -164,11 +150,13 @@ async function detectMarkerColor(bounds: RuneLiteWindowInfo, abortOnStop: boolea
   const captureWidth = search.right - search.left + 1;
   const captureHeight = search.bottom - search.top + 1;
 
-  console.log(`[detectMarker] search region: left=${search.left} top=${search.top} w=${captureWidth} h=${captureHeight}`);
+  console.log(
+    `[detectMarker] search region: left=${search.left} top=${search.top} w=${captureWidth} h=${captureHeight}`,
+  );
 
   let bitmap: RobotBitmap;
   try {
-    bitmap = robot.screen.capture(search.left, search.top, captureWidth, captureHeight);
+    bitmap = captureScreenRect(search.left, search.top, captureWidth, captureHeight);
     console.log(
       `[detectMarker] bitmap captured: ${bitmap.width}x${bitmap.height} bpp=${bitmap.bytesPerPixel} byteWidth=${bitmap.byteWidth} imageLen=${bitmap.image?.length}`,
     );
@@ -246,7 +234,9 @@ async function detectMarkerColor(bounds: RuneLiteWindowInfo, abortOnStop: boolea
     loopError = err;
   }
 
-  console.log(`[detectMarker] scan done — greenCount=${greenCount} redCount=${redCount} scannedRows=${scannedRows} loopError=${loopError}`);
+  console.log(
+    `[detectMarker] scan done — greenCount=${greenCount} redCount=${redCount} scannedRows=${scannedRows} loopError=${loopError}`,
+  );
 
   const hasGreen = greenCount >= MIN_MATCHED_SAMPLES;
   const hasRed = redCount >= MIN_MATCHED_SAMPLES;

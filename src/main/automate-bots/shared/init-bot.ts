@@ -1,4 +1,3 @@
-import { screen } from "robotjs";
 import { screen as electronScreen } from "electron";
 import { Window } from "node-window-manager";
 import * as logger from "../../logger";
@@ -7,6 +6,7 @@ import { stopAutomateBot } from "../../automateBotManager";
 import { detectOverlayBoxInScreenshot, OverlayBox } from "./coordinate-box-detector";
 import { AppState } from "../../global-state";
 import { CHANNELS } from "../../ipcChannels";
+import { captureScreenRect } from "../../windowsScreenCapture";
 
 const RUNELIT_PLUGIN_ERROR_MESSAGE =
   "Failed to detect coordinates overlay. Please ensure you are using RuneLite Client with the 'Word Location' plugin enabled and the 'Grid Info' option turned on.";
@@ -60,7 +60,7 @@ export function initBotCoordinateDetection(): InitBotResult {
   }
 
   // Capture the full screenshot from RuneLite window
-  const fullBitmap = screen.capture(bounds.x, bounds.y, bounds.width, bounds.height);
+  const fullBitmap = captureScreenRect(bounds.x, bounds.y, bounds.width, bounds.height);
 
   const display = electronScreen.getDisplayMatching({
     x: bounds.x,

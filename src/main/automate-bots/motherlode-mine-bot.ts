@@ -1,11 +1,12 @@
 import path from "path";
 import { Effect, pipe } from "effect";
-import { keyToggle, mouseClick, moveMouse, screen, scrollMouse } from "robotjs";
+import { keyToggle, mouseClick, moveMouse, scrollMouse } from "robotjs";
 import { setAutomateBotCurrentStep, stopAutomateBot } from "../automateBotManager";
 import { AppState } from "../global-state";
 import { CHANNELS } from "../ipcChannels";
 import * as logger from "../logger";
 import { getRuneLite } from "../runeLiteWindow";
+import { captureScreenRect } from "../windowsScreenCapture";
 import { MINING_MOTHERLODE_MINE_BOT_ID } from "./definitions";
 import {
   MotherlodeMineBox,
@@ -449,7 +450,7 @@ async function runLoop(captureBounds: ScreenCaptureBounds): Promise<void> {
   ): Effect.Effect<CaptureResult, Error> =>
     Effect.try({
       try: () => {
-        const bitmap = screen.capture(captureBounds.x, captureBounds.y, captureBounds.width, captureBounds.height);
+        const bitmap = captureScreenRect(captureBounds.x, captureBounds.y, captureBounds.width, captureBounds.height);
         const boxes = detectMotherlodeMineBoxesInScreenshot(bitmap);
         const greenBoxes = boxes.filter((b) => b.color === "green");
         const obstacleBox = detectBestMotherlodeObstacleRedBoxInScreenshot(bitmap);
@@ -483,7 +484,7 @@ async function runLoop(captureBounds: ScreenCaptureBounds): Promise<void> {
   const captureDepositStateEffect = (label: string): Effect.Effect<DepositCaptureResult, Error> =>
     Effect.try({
       try: () => {
-        const bitmap = screen.capture(captureBounds.x, captureBounds.y, captureBounds.width, captureBounds.height);
+        const bitmap = captureScreenRect(captureBounds.x, captureBounds.y, captureBounds.width, captureBounds.height);
         const bagFullDetection = detectMotherlodeBagFullBoxInScreenshot(bitmap);
         const depositBox = detectBestMotherlodeDepositBoxInScreenshot(bitmap);
         const obstacleBox = detectBestMotherlodeObstacleRedBoxInScreenshot(bitmap);
@@ -535,7 +536,7 @@ async function runLoop(captureBounds: ScreenCaptureBounds): Promise<void> {
           return { tile: null, source: "none", rawLine: null };
         }
 
-        const bitmap = screen.capture(captureBounds.x, captureBounds.y, captureBounds.width, captureBounds.height);
+        const bitmap = captureScreenRect(captureBounds.x, captureBounds.y, captureBounds.width, captureBounds.height);
         let tileBox: ReturnType<typeof detectTileLocationBoxInScreenshot> = null;
         if (ENABLE_TILE_LOCATION_DETECTION) {
           tileBox = detectTileLocationBoxInScreenshot(bitmap);

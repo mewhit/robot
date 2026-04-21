@@ -1,28 +1,13 @@
-import * as robotModule from "robotjs";
 import { Coordinate, DetectColorShapesOptions, RgbColor, Shape, WatchBounds } from "./colorDetection.types";
+import { ScreenBitmap, captureScreenRect } from "./windowsScreenCapture";
 
-type RobotBitmap = {
-  width: number;
-  height: number;
-  byteWidth: number;
-  bytesPerPixel: number;
-  image: Buffer;
-};
-
-type RobotColorApi = {
-  screen: {
-    capture: (x: number, y: number, width: number, height: number) => RobotBitmap;
-  };
-};
-
-const robot = ((robotModule as unknown as { default?: RobotColorApi }).default ??
-  robotModule) as unknown as RobotColorApi;
+type RobotBitmap = ScreenBitmap;
 
 // First function for colorDetection: find connected shapes of a target color in a bounded screen region.
 export function findColorShapesInBounds(
   bounds: WatchBounds,
   color: string | RgbColor,
-  options: DetectColorShapesOptions = {}
+  options: DetectColorShapesOptions = {},
 ): Array<Shape> {
   const normalizedBounds = normalizeBounds(bounds);
   if (!normalizedBounds) {
@@ -39,11 +24,11 @@ export function findColorShapesInBounds(
   const stepPx = Math.max(1, Math.floor(options.stepPx ?? 1));
   const mergeGapPx = Math.max(0, Math.floor(options.mergeGapPx ?? 0));
 
-  const bitmap = robot.screen.capture(
+  const bitmap = captureScreenRect(
     normalizedBounds.x,
     normalizedBounds.y,
     normalizedBounds.width,
-    normalizedBounds.height
+    normalizedBounds.height,
   );
 
   const sampledMatches = collectMatchingPixels(
@@ -52,7 +37,7 @@ export function findColorShapesInBounds(
     normalizedBounds.y,
     target,
     tolerance,
-    stepPx
+    stepPx,
   );
   const groupedShapes = groupConnectedPixels(sampledMatches, minShapeSize);
   return mergeOverlappingShapes(groupedShapes, mergeGapPx, minShapeSize);
@@ -64,7 +49,7 @@ function collectMatchingPixels(
   absTop: number,
   target: RgbColor,
   tolerance: number,
-  stepPx: number
+  stepPx: number,
 ): Coordinate[] {
   const matches: Coordinate[] = [];
   const image = bitmap.image;
@@ -259,7 +244,7 @@ function constructShape(coordinates: Coordinate[]): Shape {
 function boxesOverlapOrTouch(
   a: { minX: number; maxX: number; minY: number; maxY: number },
   b: { minX: number; maxX: number; minY: number; maxY: number },
-  gap: number
+  gap: number,
 ): boolean {
   return a.minX <= b.maxX + gap && a.maxX + gap >= b.minX && a.minY <= b.maxY + gap && a.maxY + gap >= b.minY;
 }

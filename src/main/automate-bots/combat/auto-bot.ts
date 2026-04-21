@@ -1,10 +1,11 @@
-import { mouseClick, moveMouse, screen } from "robotjs";
+import { mouseClick, moveMouse } from "robotjs";
 import { Window } from "node-window-manager";
 import { setAutomateBotCurrentStep, stopAutomateBot } from "../../automateBotManager";
 import { AppState } from "../../global-state";
 import { CHANNELS } from "../../ipcChannels";
 import * as logger from "../../logger";
 import { getRuneLite } from "../../runeLiteWindow";
+import { captureScreenRect } from "../../windowsScreenCapture";
 import { COMBAT_AUTO_BOT_ID } from "../definitions";
 import { CyanBox, detectBestCyanBoxInScreenshot } from "../shared/cyan-box-detector";
 import { saveBitmap } from "../shared/save-bitmap";
@@ -129,7 +130,7 @@ function nextDebugIndex(): number {
 }
 
 function detectCyanBoxInScene(sceneBounds: Bounds): CyanBox | null {
-  const sceneBitmap = screen.capture(sceneBounds.x, sceneBounds.y, sceneBounds.width, sceneBounds.height);
+  const sceneBitmap = captureScreenRect(sceneBounds.x, sceneBounds.y, sceneBounds.width, sceneBounds.height);
   if (DEBUG_MODE) {
     const idx = nextDebugIndex();
     saveBitmap(sceneBitmap, path.join(DEBUG_DIR, `${idx}-cyan-scene.png`));

@@ -1,5 +1,5 @@
 import { windowManager, Window } from "node-window-manager";
-import { mouseClick, moveMouse, screen } from "robotjs";
+import { mouseClick, moveMouse } from "robotjs";
 import { setAutomateBotCurrentStep } from "../automateBotManager";
 import { findColorShapesInBounds } from "../colorDetection";
 import { Coordinate, Shape } from "../colorDetection.types";
@@ -288,7 +288,9 @@ async function runFaladorV2Loop(window: Window): Promise<void> {
       return;
     }
 
-    logWithDelta(`Automate Bot (Agility): initialization successful - overlay detected at '${initResult.overlay?.matchedLine}'`);
+    logWithDelta(
+      `Automate Bot (Agility): initialization successful - overlay detected at '${initResult.overlay?.matchedLine}'`,
+    );
 
     await sleepWithAbort(OCR_STARTUP_WARMUP_MS);
 
@@ -306,8 +308,10 @@ async function runFaladorV2Loop(window: Window): Promise<void> {
           warnWithDelta(`Automate Bot (Agility): loop #${loopIndex} - invalid RuneLite bounds.`);
         } else {
           // --- OCR: tile ---
-          const loopRawScreenshotPath = DEBUG_OCR_SCREENSHOTS ? `./ocr-debug/loop-${String(loopIndex).padStart(6, "0")}-raw.png` : null;
-          const playerTile = readTileCoordinateFromOverlay(bounds, screen, loopRawScreenshotPath);
+          const loopRawScreenshotPath = DEBUG_OCR_SCREENSHOTS
+            ? `./ocr-debug/loop-${String(loopIndex).padStart(6, "0")}-raw.png`
+            : null;
+          const playerTile = readTileCoordinateFromOverlay(bounds, loopRawScreenshotPath);
 
           state = applyTileRead(state, playerTile, Date.now());
 
@@ -316,7 +320,9 @@ async function runFaladorV2Loop(window: Window): Promise<void> {
           );
 
           if (state.hasMoved) {
-            logWithDelta(`Automate Bot (Agility): loop #${loopIndex} - player moved, skipping color detection and click logic.`);
+            logWithDelta(
+              `Automate Bot (Agility): loop #${loopIndex} - player moved, skipping color detection and click logic.`,
+            );
             await sleepWithAbort(GAME_TICK_MS);
             continue;
           }
@@ -335,7 +341,9 @@ async function runFaladorV2Loop(window: Window): Promise<void> {
 
           // --- Click gating (pure checks, async delays as side effects) ---
           if (!isTileReadyForClick(playerTile.tile, state.lastObservedTile, state.tileStableSinceMs, Date.now())) {
-            logWithDelta(`Automate Bot (Agility): loop #${loopIndex} - tile unavailable/unstable, waiting before click.`);
+            logWithDelta(
+              `Automate Bot (Agility): loop #${loopIndex} - tile unavailable/unstable, waiting before click.`,
+            );
             await sleepWithAbort(GAME_TICK_MS);
             continue;
           }
@@ -354,10 +362,14 @@ async function runFaladorV2Loop(window: Window): Promise<void> {
           // Re-detect after delays to avoid clicking a stale position.
           const freshShape = targetColor === "magenta" ? findStrictMagentaShape(bounds) : findStrictGreenShape(bounds);
           if (!freshShape) {
-            logWithDelta(`Automate Bot (Agility): loop #${loopIndex} - ${targetColor} shape gone after delays, skipping click.`);
+            logWithDelta(
+              `Automate Bot (Agility): loop #${loopIndex} - ${targetColor} shape gone after delays, skipping click.`,
+            );
           } else {
             const clickPoint = getRandomPointInsideShape(freshShape);
-            logWithDelta(`Automate Bot (Agility): loop #${loopIndex} - clicking ${targetColor} at (${clickPoint.x},${clickPoint.y}).`);
+            logWithDelta(
+              `Automate Bot (Agility): loop #${loopIndex} - clicking ${targetColor} at (${clickPoint.x},${clickPoint.y}).`,
+            );
             moveMouse(clickPoint.x, clickPoint.y);
             mouseClick("left", false);
             state = applyClick(state, targetColor, Date.now());
