@@ -76,6 +76,35 @@ const EXPECTED_BY_SCREENSHOT: Record<string, ExpectedActiveNode> = {
   },
 };
 
+function parseExpectedActiveNodeFromFilename(screenshotPath: string): ExpectedActiveNode | null {
+  const basename = path.basename(screenshotPath, path.extname(screenshotPath));
+  const match = basename.match(/-\[(\d+)\]-\[(\d+)\]-\[[-+]?\d+\]$/i);
+  if (!match) {
+    return null;
+  }
+
+  const activeCenterX = Number(match[1]);
+  const activeCenterY = Number(match[2]);
+  if (!Number.isFinite(activeCenterX) || !Number.isFinite(activeCenterY)) {
+    return null;
+  }
+
+  return {
+    activeCenterX,
+    activeCenterY,
+    activeTolerancePx: 20,
+  };
+}
+
+function resolveExpectedActiveNode(screenshotPath: string): ExpectedActiveNode | null {
+  const byMap = EXPECTED_BY_SCREENSHOT[path.basename(screenshotPath)];
+  if (byMap) {
+    return byMap;
+  }
+
+  return parseExpectedActiveNodeFromFilename(screenshotPath);
+}
+
 function loadScreenshot(filePath: string): Promise<RobotBitmap | null> {
   if (!fs.existsSync(filePath)) {
     console.error(`File not found: ${filePath}`);
@@ -361,7 +390,7 @@ async function testScreenshot(screenshotPath: string): Promise<boolean> {
   console.log("-".repeat(60));
 
   const basename = path.basename(screenshotPath);
-  const expected = EXPECTED_BY_SCREENSHOT[basename];
+  const expected = resolveExpectedActiveNode(screenshotPath);
   if (!expected) {
     console.error(`No expected active-node config for ${basename}`);
     return false;
