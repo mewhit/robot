@@ -95,6 +95,7 @@ const BANK_ORB_BAG_STATS_FAIL_MAX_TICKS = 10;
 const BANK_ORB_STABLE_TICKS = 2;
 const BANK_ORB_STABLE_DISTANCE_PX = 32;
 const BANK_ORB_MIN_CENTER_Y_RATIO = 0.45;
+const BANK_ORB_LOCAL_SEARCH_BOX_PX = 200;
 const BANK_PLAYER_SPEED_TILES_PER_TICK = 2;
 const BANK_TILE_PX_FALLBACK = 64;
 const BANK_TILE_PX_MIN = 24;
@@ -712,8 +713,14 @@ function saveTickDebugCapture(
     return;
   }
 
-  debugCaptureIndex += 1;
-  const filename = path.join(DEBUG_DIR, `${debugCaptureIndex}-motherlode-v2-${label}.png`);
+  const usesStaticFilename = label === "deposit" || label === "bank" || label === "bank-ladder";
+  if (!usesStaticFilename) {
+    debugCaptureIndex += 1;
+  }
+
+  const filename = usesStaticFilename
+    ? path.join(DEBUG_DIR, `motherlode-v2-${label}.png`)
+    : path.join(DEBUG_DIR, `${debugCaptureIndex}-motherlode-v2-${label}.png`);
   saveBitmapWithMotherlodeMineBoxes(bitmap, boxes, filename, activeTargetInCapture, playerBox);
 }
 
@@ -1508,6 +1515,47 @@ function isPlausibleBankOrbLocation(detection: BankDepositOrbDetection, bitmap: 
 
 function isBankOrbLocalPointInBounds(localPoint: { x: number; y: number }, bitmap: RobotBitmap): boolean {
   return localPoint.x >= 0 && localPoint.y >= 0 && localPoint.x < bitmap.width && localPoint.y < bitmap.height;
+}
+
+function resolveBankOrbLocalSearchBounds(
+  localPoint: { x: number; y: number },
+  bitmap: RobotBitmap,
+): { x: number; y: number; width: number; height: number } {
+  const boxSize = Math.max(1, BANK_ORB_LOCAL_SEARCH_BOX_PX);
+  const halfSize = Math.floor(boxSize / 2);
+  const maxStartX = Math.max(0, bitmap.width - 1);
+  const maxStartY = Math.max(0, bitmap.height - 1);
+  const startX = clamp(Math.round(localPoint.x) - halfSize, 0, maxStartX);
+  const startY = clamp(Math.round(localPoint.y) - halfSize, 0, maxStartY);
+
+  return {
+    x: startX,
+    y: startY,
+    width: Math.max(1, Math.min(boxSize, bitmap.width - startX)),
+    height: Math.max(1, Math.min(boxSize, bitmap.height - startY)),
+  };
+}
+
+function cropRobotBitmap(bitmap: RobotBitmap, x: number, y: number, width: number, height: number): RobotBitmap {
+  const clampedX = clamp(Math.round(x), 0, Math.max(0, bitmap.width - 1));
+  const clampedY = clamp(Math.round(y), 0, Math.max(0, bitmap.height - 1));
+  const cropWidth = Math.max(1, Math.min(width, bitmap.width - clampedX));
+  const cropHeight = Math.max(1, Math.min(height, bitmap.height - clampedY));
+  const image = Buffer.alloc(cropWidth * cropHeight * bitmap.bytesPerPixel);
+
+  for (let row = 0; row < cropHeight; row += 1) {
+    const sourceStart = (clampedY + row) * bitmap.byteWidth + clampedX * bitmap.bytesPerPixel;
+    const sourceEnd = sourceStart + cropWidth * bitmap.bytesPerPixel;
+    bitmap.image.copy(image, row * cropWidth * bitmap.bytesPerPixel, sourceStart, sourceEnd);
+  }
+
+  return {
+    image,
+    width: cropWidth,
+    height: cropHeight,
+    byteWidth: cropWidth * bitmap.bytesPerPixel,
+    bytesPerPixel: bitmap.bytesPerPixel,
+  };
 }
 
 function getNextBankOrbStableTicks(current: BotState, detection: BankDepositOrbDetection): number {
@@ -2524,48 +2572,73 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
         return current;
       }
 
+      const orbReferenceBitmap = getBankDepositOrbReferenceBitmap();
+      if (!orbReferenceBitmap) {
+        return current;
+      }
+
       if (current.bankOrbCachedLocalPoint) {
         if (!isBankOrbLocalPointInBounds(current.bankOrbCachedLocalPoint, capture.bitmap)) {
           warn(
             `Automate Bot (${BOT_NAME}): #${current.loopIndex} Cached bank orb point (${current.bankOrbCachedLocalPoint.x},${current.bankOrbCachedLocalPoint.y}) is outside current capture bounds (${capture.bitmap.width}x${capture.bitmap.height}); clearing cache and re-detecting.`,
           );
-          return {
+          current = {
             ...current,
             bankOrbCachedLocalPoint: null,
             bankOrbCachedRetryCount: 0,
             bankOrbLastClickUsedCache: false,
+            bankOrbCandidateCenter: null,
+            bankOrbStableTicks: 0,
+          };
+        } else {
+          const localSearch = resolveBankOrbLocalSearchBounds(current.bankOrbCachedLocalPoint, capture.bitmap);
+          const localSearchBitmap = cropRobotBitmap(
+            capture.bitmap,
+            localSearch.x,
+            localSearch.y,
+            localSearch.width,
+            localSearch.height,
+          );
+          const localOrbResult = detectBankDepositIconWithOrb(orbReferenceBitmap, localSearchBitmap);
+          if (localOrbResult.detection) {
+            const orbLocalPoint = {
+              x: localSearch.x + localOrbResult.detection.centerX,
+              y: localSearch.y + localOrbResult.detection.centerY,
+            };
+            const orbPoint = toScreenPointFromLocalPoint(orbLocalPoint.x, orbLocalPoint.y, captureBounds);
+            const nextBankOrbClickCount = current.bankOrbClickCount + 1;
+            log(
+              `Automate Bot (${BOT_NAME}): #${current.loopIndex} Cached bank-orb local scan (${localSearch.width}x${localSearch.height}) confirmed orb at (${orbLocalPoint.x},${orbLocalPoint.y}); clicking (${orbPoint.x},${orbPoint.y}) (${nextBankOrbClickCount}/${BANK_ORB_CONFIRM_CLICK_COUNT}).`,
+            );
+            clickScreenPoint(orbPoint.x, orbPoint.y);
+            moveMouseAwayFromClickedNode(orbPoint.x, orbPoint.y, captureBounds);
+            return {
+              ...current,
+              bankingStep: "wait-after-orb-click",
+              bankOrbClickCount: nextBankOrbClickCount,
+              bankOrbCandidateCenter: null,
+              bankOrbStableTicks: 0,
+              bankOrbCachedLocalPoint: orbLocalPoint,
+              bankOrbLastClickUsedCache: true,
+              bankOrbBagStatsFailTicks: 0,
+              actionLockUntilMs: deadlineFromNowTicks(BANK_ORB_CLICK_LOCK_TICKS),
+            };
+          }
+
+          if (current.loopIndex % 2 === 0) {
+            log(
+              `Automate Bot (${BOT_NAME}): #${current.loopIndex} Cached bank-orb local scan (${localSearch.width}x${localSearch.height}) found no orb yet; clearing cache and falling back to full-scene detection.`,
+            );
+          }
+          current = {
+            ...current,
+            bankOrbCachedLocalPoint: null,
+            bankOrbCachedRetryCount: 0,
+            bankOrbLastClickUsedCache: false,
+            bankOrbCandidateCenter: null,
+            bankOrbStableTicks: 0,
           };
         }
-
-        const orbPoint = toScreenPointFromLocalPoint(
-          current.bankOrbCachedLocalPoint.x,
-          current.bankOrbCachedLocalPoint.y,
-          captureBounds,
-        );
-        const nextBankOrbClickCount = current.bankOrbClickCount + 1;
-        log(
-          `Automate Bot (${BOT_NAME}): #${current.loopIndex} Using cached bank orb click point (${orbPoint.x},${orbPoint.y}) (${nextBankOrbClickCount}/${BANK_ORB_CONFIRM_CLICK_COUNT}).`,
-        );
-        clickScreenPoint(orbPoint.x, orbPoint.y);
-        moveMouseAwayFromClickedNode(orbPoint.x, orbPoint.y, captureBounds);
-        log(
-          `Automate Bot (${BOT_NAME}): #${current.loopIndex} Cached bank orb click ${nextBankOrbClickCount}/${BANK_ORB_CONFIRM_CLICK_COUNT} complete. Waiting to verify bag/inventory state before deciding next action.`,
-        );
-        return {
-          ...current,
-          bankingStep: "wait-after-orb-click",
-          bankOrbClickCount: nextBankOrbClickCount,
-          bankOrbCandidateCenter: null,
-          bankOrbStableTicks: 0,
-          bankOrbLastClickUsedCache: true,
-          bankOrbBagStatsFailTicks: 0,
-          actionLockUntilMs: deadlineFromNowTicks(BANK_ORB_CLICK_LOCK_TICKS),
-        };
-      }
-
-      const orbReferenceBitmap = getBankDepositOrbReferenceBitmap();
-      if (!orbReferenceBitmap) {
-        return current;
       }
 
       const orbResult = detectBankDepositIconWithOrb(orbReferenceBitmap, capture.bitmap);
