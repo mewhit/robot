@@ -135,6 +135,11 @@ const MIN_INLIER_MATCHES = 2;
 const CENTER_INLIER_TOLERANCE = 28;
 const MIN_APPEARANCE_SCORE = 0.75;
 const STRONG_APPEARANCE_SCORE = 0.88;
+const MIN_APPEARANCE_SEED_MATCHES = 8;
+const MIN_DETECTION_SCALE = 0.65;
+const MAX_DETECTION_SCALE = 1.45;
+const MAX_DETECTION_SIZE_RATIO = 1.85;
+const MIN_DETECTION_CENTER_Y_RATIO = 0.35;
 const SALIENT_SAMPLE_CELL_SIZE = 3;
 const BRIEF_PAIR_COUNT = 256;
 const BRIEF_WORD_COUNT = BRIEF_PAIR_COUNT / 32;
@@ -1043,7 +1048,20 @@ function buildDetectionFromSeedMatches(
     finalRotation,
   );
 
-  if (appearanceScore < MIN_APPEARANCE_SCORE) {
+  const scaleDeviation = Math.abs(Math.log(Math.max(finalScale, 1e-6)));
+  const minAppearanceForScale = Math.min(0.93, MIN_APPEARANCE_SCORE + scaleDeviation * 0.33);
+
+  if (appearanceScore < minAppearanceForScale) {
+    return null;
+  }
+
+  if (finalScale < MIN_DETECTION_SCALE || finalScale > MAX_DETECTION_SCALE) {
+    return null;
+  }
+
+  const widthRatio = bounds.width / referenceBitmap.width;
+  const heightRatio = bounds.height / referenceBitmap.height;
+  if (widthRatio > MAX_DETECTION_SIZE_RATIO || heightRatio > MAX_DETECTION_SIZE_RATIO) {
     return null;
   }
 
@@ -1119,44 +1137,51 @@ function resolveDetection(
       referenceBitmap.height,
     );
     const localOrbMatchCount = countLocalOrbMatches(referenceBitmap, candidateCrop);
-    const bounds = computeTransformedBounds(
-      referenceBitmap.width,
-      referenceBitmap.height,
-      appearanceSeed.centerX,
-      appearanceSeed.centerY,
-      1,
-      0,
-    );
-    const candidate: BankDepositOrbDetection = {
-      x: clamp(bounds.x, 0, screenshotBitmap.width - 1),
-      y: clamp(bounds.y, 0, screenshotBitmap.height - 1),
-      width: Math.min(bounds.width, screenshotBitmap.width),
-      height: Math.min(bounds.height, screenshotBitmap.height),
-      centerX: Math.round(appearanceSeed.centerX),
-      centerY: Math.round(appearanceSeed.centerY),
-      score:
-        localOrbMatchCount * 220 +
-        appearanceSeed.appearanceScore * 2400 -
-        40,
-      appearanceScore: appearanceSeed.appearanceScore,
-      rawMatchCount: matches.length,
-      inlierCount: localOrbMatchCount,
-      medianDistance: 0,
-      scale: 1,
-      rotationDeg: 0,
-      matches: [],
-    };
+    const isReliableAppearanceSeed =
+      localOrbMatchCount >= MIN_APPEARANCE_SEED_MATCHES || appearanceSeed.appearanceScore >= STRONG_APPEARANCE_SCORE;
+    if (isReliableAppearanceSeed) {
+      const bounds = computeTransformedBounds(
+        referenceBitmap.width,
+        referenceBitmap.height,
+        appearanceSeed.centerX,
+        appearanceSeed.centerY,
+        1,
+        0,
+      );
+      const candidate: BankDepositOrbDetection = {
+        x: clamp(bounds.x, 0, screenshotBitmap.width - 1),
+        y: clamp(bounds.y, 0, screenshotBitmap.height - 1),
+        width: Math.min(bounds.width, screenshotBitmap.width),
+        height: Math.min(bounds.height, screenshotBitmap.height),
+        centerX: Math.round(appearanceSeed.centerX),
+        centerY: Math.round(appearanceSeed.centerY),
+        score:
+          localOrbMatchCount * 220 +
+          appearanceSeed.appearanceScore * 2400 -
+          40,
+        appearanceScore: appearanceSeed.appearanceScore,
+        rawMatchCount: matches.length,
+        inlierCount: localOrbMatchCount,
+        medianDistance: 0,
+        scale: 1,
+        rotationDeg: 0,
+        matches: [],
+      };
 
-    const candidateRank =
-      candidate.appearanceScore * 7000 +
-      candidate.inlierCount * 120 -
-      candidate.medianDistance * 3;
+      const candidateRank =
+        candidate.appearanceScore * 7000 +
+        candidate.inlierCount * 120 -
+        candidate.medianDistance * 3;
 
-    bestDetection = candidate;
-    bestRank = candidateRank;
+      bestDetection = candidate;
+      bestRank = candidateRank;
 
-    if (candidate.appearanceScore >= STRONG_APPEARANCE_SCORE) {
-      return candidate;
+      if (
+        candidate.appearanceScore >= STRONG_APPEARANCE_SCORE &&
+        candidate.centerY >= screenshotBitmap.height * MIN_DETECTION_CENTER_Y_RATIO
+      ) {
+        return candidate;
+      }
     }
   }
 
@@ -1176,6 +1201,10 @@ function resolveDetection(
       bestRank = rank;
       bestDetection = candidate;
     }
+  }
+
+  if (bestDetection && bestDetection.centerY < screenshotBitmap.height * MIN_DETECTION_CENTER_Y_RATIO) {
+    return null;
   }
 
   return bestDetection;

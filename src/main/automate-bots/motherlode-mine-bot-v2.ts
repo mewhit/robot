@@ -545,6 +545,32 @@ function saveBankDepositOrbDebugArtifacts(
   );
 }
 
+function mapLocalOrbResultToScene(
+  localResult: BankDepositOrbDetectorResult,
+  localSearchBounds: { x: number; y: number },
+): BankDepositOrbDetectorResult {
+  if (!localResult.detection) {
+    return localResult;
+  }
+
+  const { detection } = localResult;
+  return {
+    ...localResult,
+    detection: {
+      ...detection,
+      x: detection.x + localSearchBounds.x,
+      y: detection.y + localSearchBounds.y,
+      centerX: detection.centerX + localSearchBounds.x,
+      centerY: detection.centerY + localSearchBounds.y,
+      matches: detection.matches.map((match) => ({
+        ...match,
+        sceneX: match.sceneX + localSearchBounds.x,
+        sceneY: match.sceneY + localSearchBounds.y,
+      })),
+    },
+  };
+}
+
 function saveBankYellowDebugArtifacts(
   eventName: string,
   loopIndex: number,
@@ -1848,7 +1874,7 @@ function updateBagState(current: BotState, nextState: MotherlodeBagFullState): B
 }
 
 function shouldExitBankingToMiningSearch(bagStats: MotherlodeBagStats | null): boolean {
-  return bagStats?.sackRow.sackCount === 0 && bagStats.row3.value === 28;
+  return bagStats?.sackRow.sackCount === 0 && (bagStats.row3.value ?? 0) >= 28;
 }
 
 function getBagInventorySpaceValue(bagStats: MotherlodeBagStats | null): number | null {
@@ -2607,6 +2633,17 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
             };
             const orbPoint = toScreenPointFromLocalPoint(orbLocalPoint.x, orbLocalPoint.y, captureBounds);
             const nextBankOrbClickCount = current.bankOrbClickCount + 1;
+            const localOrbResultInScene = mapLocalOrbResultToScene(localOrbResult, {
+              x: localSearch.x,
+              y: localSearch.y,
+            });
+            saveBankDepositOrbDebugArtifacts(
+              "click-cached-local",
+              current.loopIndex,
+              nextBankOrbClickCount,
+              capture.bitmap,
+              localOrbResultInScene,
+            );
             log(
               `Automate Bot (${BOT_NAME}): #${current.loopIndex} Cached bank-orb local scan (${localSearch.width}x${localSearch.height}) confirmed orb at (${orbLocalPoint.x},${orbLocalPoint.y}); clicking (${orbPoint.x},${orbPoint.y}) (${nextBankOrbClickCount}/${BANK_ORB_CONFIRM_CLICK_COUNT}).`,
             );

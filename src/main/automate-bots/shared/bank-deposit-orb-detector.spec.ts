@@ -46,6 +46,8 @@ const EXPECTED_BY_SCREENSHOT: Record<string, ExpectedDetection> = {
   },
 };
 
+const DEFAULT_SCREENSHOT_GLOB = "test-images/icon/bank-deposit/test-image/*.png";
+
 async function loadPngBitmap(filePath: string): Promise<RobotBitmap | null> {
   if (!fs.existsSync(filePath)) {
     console.error(`File not found: ${filePath}`);
@@ -87,10 +89,29 @@ function patternToRegex(pattern: string): RegExp {
   return new RegExp(`^${escaped}$`, "i");
 }
 
+function isImageFilename(value: string): boolean {
+  return /\.(png|jpg|jpeg)$/i.test(value);
+}
+
 function expandScreenshotArgs(args: string[]): string[] {
   const expanded: string[] = [];
 
   for (const arg of args) {
+    if (fs.existsSync(arg) && fs.statSync(arg).isDirectory()) {
+      const matches = fs
+        .readdirSync(arg)
+        .filter((entry) => isImageFilename(entry))
+        .map((entry) => path.join(arg, entry));
+
+      if (matches.length === 0) {
+        expanded.push(arg);
+      } else {
+        expanded.push(...matches);
+      }
+
+      continue;
+    }
+
     if (!arg.includes("*")) {
       expanded.push(arg);
       continue;
@@ -123,14 +144,33 @@ function expandScreenshotArgs(args: string[]): string[] {
   return expanded;
 }
 
+function resolveExpectedDetection(screenshotPath: string): ExpectedDetection {
+  const basename = path.basename(screenshotPath);
+  const yesNoMatch = basename.match(/-(yes|no)\.[a-z0-9]+$/i);
+
+  if (yesNoMatch) {
+    return {
+      shouldDetect: yesNoMatch[1].toLowerCase() === "yes",
+    };
+  }
+
+  return EXPECTED_BY_SCREENSHOT[basename] ?? { shouldDetect: true };
+}
+
 function validateDetection(
   screenshotPath: string,
-  detection: BankDepositOrbDetection,
+  detection: BankDepositOrbDetection | null,
 ): boolean {
   const basename = path.basename(screenshotPath);
-  const expected = EXPECTED_BY_SCREENSHOT[basename];
+  const expected = resolveExpectedDetection(screenshotPath);
 
-  if (!expected) {
+  if (!detection) {
+    if (expected.shouldDetect) {
+      console.error(`Expected ORB detection for ${basename}, but none was found.`);
+      return false;
+    }
+
+    console.log(`Expected no detection for ${basename}, and no ORB was detected.`);
     return true;
   }
 
@@ -197,7 +237,7 @@ async function testDetection(referenceBitmap: RobotBitmap, screenshotPath: strin
 
   if (!result.detection) {
     console.log("No bank-deposit ORB match detected.");
-    return false;
+    return validateDetection(screenshotPath, null);
   }
 
   const detection = result.detection;
@@ -219,7 +259,7 @@ async function main(): Promise<void> {
   const expandedScreenshots =
     screenshotArgs.length > 0
       ? expandScreenshotArgs(screenshotArgs)
-      : expandScreenshotArgs(["test-images/icon/bank-deposit/*test-image*.png"]);
+      : expandScreenshotArgs([DEFAULT_SCREENSHOT_GLOB]);
 
   console.log("\nBank Deposit ORB Detector Test Suite");
   console.log(`Reference icon: ${referenceIconPath}`);
