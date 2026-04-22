@@ -39,7 +39,7 @@ type SearchBounds = {
 };
 
 const SEARCH_LEFT_RATIO = 0.03;
-const SEARCH_RIGHT_RATIO = 0.8;
+const SEARCH_RIGHT_RATIO = 0.9;
 const SEARCH_TOP_RATIO = 0.24;
 const SEARCH_BOTTOM_RATIO = 0.9;
 
