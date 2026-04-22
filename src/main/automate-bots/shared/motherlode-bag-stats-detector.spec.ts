@@ -23,6 +23,10 @@ type ExpectedStats = {
   row3Value: number;
 };
 
+const VALID_MOTHERLODE_CAPACITIES = [81, 108, 162, 189];
+
+type TestStatus = "passed" | "failed" | "skipped";
+
 async function loadScreenshot(filePath: string): Promise<RobotBitmap | null> {
   if (!fs.existsSync(filePath)) {
     console.error(`File not found: ${filePath}`);
@@ -105,17 +109,39 @@ function expandScreenshotArgs(args: string[]): string[] {
 }
 
 function expectedStatsFromScreenshotPath(screenshotPath: string): ExpectedStats | null {
-  const basename = path.basename(screenshotPath).toLowerCase();
+  const basename = path.basename(screenshotPath, path.extname(screenshotPath)).toLowerCase();
 
-  if (basename.includes("[168+22-189]-[1]-[-1}")) {
-    return {
-      sackCount: 168,
-      inventoryCount: 22,
-      capacityCount: 189,
-      row2Value: 1,
-      row3Value: -1,
-    };
+  // Preferred filename format:
+  // ...-[<sack>+<inventory>-<capacity>]-[<row2>]-[<row3>].png
+  // Example: 3840x2128-4k-100-[168+22-189]-[1]-[-1].png
+  // Also tolerates legacy closing brace typo on last group: ...-[-1}.png
+  const expectedFromNameMatch = basename.match(/\[(-?\d+)\+(-?\d+)-(-?\d+)\]-\[(-?\d+)\]-\[(-?\d+)[\]\}]$/i);
+  if (expectedFromNameMatch) {
+    const sackCount = Number(expectedFromNameMatch[1]);
+    const inventoryCount = Number(expectedFromNameMatch[2]);
+    const rawCapacityCount = Number(expectedFromNameMatch[3]);
+    const row2Value = Number(expectedFromNameMatch[4]);
+    const row3Value = Number(expectedFromNameMatch[5]);
+    let capacityCount = rawCapacityCount;
+
+    // Some filename fixtures use a placeholder `0` for capacity when the sack
+    // count already implies the Motherlode max-capacity tier.
+    if (capacityCount <= 0 && VALID_MOTHERLODE_CAPACITIES.includes(sackCount)) {
+      capacityCount = sackCount;
+    }
+
+    if (capacityCount > 0) {
+      return {
+        sackCount,
+        inventoryCount,
+        capacityCount,
+        row2Value,
+        row3Value,
+      };
+    }
   }
+
+  // Legacy fallback names (kept for backward compatibility).
 
   if (basename.includes("1298x1549-2k-125-3")) {
     return {
@@ -169,19 +195,20 @@ function validateDetection(detection: MotherlodeBagStats, expected: ExpectedStat
   return true;
 }
 
-async function testDetection(screenshotPath: string): Promise<boolean> {
+async function testDetection(screenshotPath: string): Promise<TestStatus> {
   console.log(`\nTesting: ${screenshotPath}`);
   console.log("-".repeat(60));
 
   const bitmap = await loadScreenshot(screenshotPath);
   if (!bitmap) {
-    return false;
+    console.warn("Skipping unreadable screenshot.");
+    return "skipped";
   }
 
   const detection = detectMotherlodeBagStatsInScreenshot(bitmap);
   if (!detection) {
     console.error("No motherlode bag stats panel detected.");
-    return false;
+    return "failed";
   }
 
   console.log(`Panel roi=(${detection.x}, ${detection.y}) ${detection.width}x${detection.height}`);
@@ -199,10 +226,14 @@ async function testDetection(screenshotPath: string): Promise<boolean> {
 
   const expected = expectedStatsFromScreenshotPath(screenshotPath);
   if (!expected) {
-    return true;
+    return "passed";
   }
 
-  return validateDetection(detection, expected);
+  console.log(
+    `Expected by filename: sack=${expected.sackCount} inventory=${expected.inventoryCount} capacity=${expected.capacityCount} row2=${expected.row2Value} row3=${expected.row3Value}`,
+  );
+
+  return validateDetection(detection, expected) ? "passed" : "failed";
 }
 
 async function main(): Promise<void> {
@@ -215,17 +246,20 @@ async function main(): Promise<void> {
 
   let successCount = 0;
   let failureCount = 0;
+  let skippedCount = 0;
 
   for (const screenshotPath of expandedScreenshots) {
-    const success = await testDetection(screenshotPath);
-    if (success) {
+    const status = await testDetection(screenshotPath);
+    if (status === "passed") {
       successCount += 1;
-    } else {
+    } else if (status === "failed") {
       failureCount += 1;
+    } else {
+      skippedCount += 1;
     }
   }
 
-  console.log(`\nResults: ${successCount} passed, ${failureCount} failed`);
+  console.log(`\nResults: ${successCount} passed, ${failureCount} failed, ${skippedCount} skipped`);
 }
 
 main().catch(console.error);

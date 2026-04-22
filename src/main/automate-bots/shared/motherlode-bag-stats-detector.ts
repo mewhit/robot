@@ -187,6 +187,22 @@ function isStatusPanelTextPixel(r: number, g: number, b: number): boolean {
   return isNeutralBrightText || isYellowishText || isGreenText || isBrightRedText || isDarkAntiAliasedRedText;
 }
 
+function isBagStatsGlyphPixel(r: number, g: number, b: number): boolean {
+  const maxChannel = Math.max(r, g, b);
+  const minChannel = Math.min(r, g, b);
+  const saturation = maxChannel - minChannel;
+  const luminance = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+
+  const isNeutralBrightText = luminance >= 150 && saturation <= 170;
+  const isYellowishText = luminance >= 110 && r >= 140 && g >= 100 && b <= 120;
+  const isGreenText = luminance >= 90 && g >= 140 && r <= 190 && b <= 160;
+
+  // The red Motherlode panel background bleeds into neighboring pixels at some
+  // RuneLite/UI scales. Keeping OCR masks biased toward the bright foreground
+  // glyphs preserves zero holes and restores natural gaps between digits.
+  return isNeutralBrightText || isYellowishText || isGreenText;
+}
+
 function findTextBands(bitmap: RobotBitmap, searchBounds: Roi): TextBand[] {
   const bands: TextBand[] = [];
   const rowThreshold = Math.max(3, Math.floor(searchBounds.width * TEXT_ROW_THRESHOLD_RATIO));
@@ -375,7 +391,7 @@ function dilateBagStatsBinaryMask(binary: Uint8Array, width: number, height: num
   return dilated;
 }
 
-function buildBagStatsTextMask(bitmap: RobotBitmap): Uint8Array {
+function buildBagStatsTextMask(bitmap: RobotBitmap, includeRedPixels: boolean = false): Uint8Array {
   const binary = new Uint8Array(bitmap.width * bitmap.height);
 
   for (let y = 0; y < bitmap.height; y += 1) {
@@ -385,7 +401,8 @@ function buildBagStatsTextMask(bitmap: RobotBitmap): Uint8Array {
       const g = bitmap.image[offset + 1];
       const r = bitmap.image[offset + 2];
 
-      if (!isStatusPanelTextPixel(r, g, b)) {
+      const isTextPixel = includeRedPixels ? isStatusPanelTextPixel(r, g, b) : isBagStatsGlyphPixel(r, g, b);
+      if (!isTextPixel) {
         continue;
       }
 
@@ -396,7 +413,7 @@ function buildBagStatsTextMask(bitmap: RobotBitmap): Uint8Array {
   return upscaleBinaryMask(repairBagStatsBinaryMask(binary, bitmap.width, bitmap.height), bitmap.width, bitmap.height);
 }
 
-function buildDenseBagStatsTextMask(bitmap: RobotBitmap): Uint8Array {
+function buildDenseBagStatsTextMask(bitmap: RobotBitmap, includeRedPixels: boolean = false): Uint8Array {
   const binary = new Uint8Array(bitmap.width * bitmap.height);
 
   for (let y = 0; y < bitmap.height; y += 1) {
@@ -406,7 +423,8 @@ function buildDenseBagStatsTextMask(bitmap: RobotBitmap): Uint8Array {
       const g = bitmap.image[offset + 1];
       const r = bitmap.image[offset + 2];
 
-      if (!isStatusPanelTextPixel(r, g, b)) {
+      const isTextPixel = includeRedPixels ? isStatusPanelTextPixel(r, g, b) : isBagStatsGlyphPixel(r, g, b);
+      if (!isTextPixel) {
         continue;
       }
 
@@ -1011,7 +1029,12 @@ function readSackRow(rowBitmap: RobotBitmap): {
   inventoryCount: number | null;
   capacityCount: number | null;
 } {
-  const mask = buildBagStatsTextMask(rowBitmap);
+  const maskVariants = [
+    buildBagStatsTextMask(rowBitmap, false),
+    buildDenseBagStatsTextMask(rowBitmap, false),
+    buildBagStatsTextMask(rowBitmap, true),
+    buildDenseBagStatsTextMask(rowBitmap, true),
+  ];
   let best = {
     rawText: null as string | null,
     sackCount: null as number | null,
@@ -1020,12 +1043,14 @@ function readSackRow(rowBitmap: RobotBitmap): {
     score: Number.NEGATIVE_INFINITY,
   };
 
-  for (const ratio of ROW1_SCAN_RATIOS) {
-    const segments = collectClassifiedSegments(mask, rowBitmap.width, rowBitmap.height, ratio, /[0-9+/]/);
-    const parsed = parseSackRowFromSegments(segments);
+  for (const mask of maskVariants) {
+    for (const ratio of ROW1_SCAN_RATIOS) {
+      const segments = collectClassifiedSegments(mask, rowBitmap.width, rowBitmap.height, ratio, /[0-9+/]/);
+      const parsed = parseSackRowFromSegments(segments);
 
-    if (parsed.score > best.score) {
-      best = parsed;
+      if (parsed.score > best.score) {
+        best = parsed;
+      }
     }
   }
 
@@ -1108,29 +1133,37 @@ function readBestRightAlignedValue(rowBitmap: RobotBitmap): {
   rawText: string | null;
   value: number | null;
 } {
-  const mask = buildBagStatsTextMask(rowBitmap);
   let bestText: string | null = null;
   let bestValue: number | null = null;
   let bestScore = Number.NEGATIVE_INFINITY;
 
-  for (const ratio of VALUE_SCAN_RATIOS) {
-    const segments = collectClassifiedSegments(mask, rowBitmap.width, rowBitmap.height, ratio, /[0-9-]/);
-    const groupedDigits = clusterTrailingDigitSegments(normalizeSignedValueSegments(segments), true);
-    if (groupedDigits.length === 0) {
-      continue;
-    }
+  const maskVariants = [
+    buildBagStatsTextMask(rowBitmap, false),
+    buildDenseBagStatsTextMask(rowBitmap, false),
+    buildBagStatsTextMask(rowBitmap, true),
+    buildDenseBagStatsTextMask(rowBitmap, true),
+  ];
 
-    const rawText = groupedDigits[groupedDigits.length - 1];
-    const value = Number(rawText);
-    if (!Number.isFinite(value)) {
-      continue;
-    }
+  for (const mask of maskVariants) {
+    for (const ratio of VALUE_SCAN_RATIOS) {
+      const segments = collectClassifiedSegments(mask, rowBitmap.width, rowBitmap.height, ratio, /[0-9-]/);
+      const groupedDigits = clusterTrailingDigitSegments(normalizeSignedValueSegments(segments), true);
+      if (groupedDigits.length === 0) {
+        continue;
+      }
 
-    const score = rawText.length * 10 - Math.max(0, segments.length - rawText.length) * 2 - ratio * 10;
-    if (score > bestScore) {
-      bestScore = score;
-      bestText = rawText;
-      bestValue = value;
+      const rawText = groupedDigits[groupedDigits.length - 1];
+      const value = Number(rawText);
+      if (!Number.isFinite(value)) {
+        continue;
+      }
+
+      const score = rawText.length * 10 - Math.max(0, segments.length - rawText.length) * 2 - ratio * 10;
+      if (score > bestScore) {
+        bestScore = score;
+        bestText = rawText;
+        bestValue = value;
+      }
     }
   }
 

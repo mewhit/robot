@@ -65,12 +65,19 @@ const ACTIVE_NODE_MATCH_RADIUS_PX = 34;
 const ACTIVE_NODE_YELLOW_PREFERENCE_MARGIN_PX = 6;
 const BOX_CLICK_INNER_RATIO = 0.75;
 const BOX_CLICK_PICK_MAX_ATTEMPTS = 12;
+const BOX_CLICK_BORDER_EXCLUSION_PX = 1;
 const MOVE_PLAYER_SPEED_TILES_PER_TICK = 2;
 const MOVE_TILE_PX_FALLBACK = 64;
 const MOVE_TILE_PX_MIN = 24;
 const MOVE_TILE_PX_MAX = 96;
 const MOVE_WAIT_MAX_TICKS = 10;
 const MOVE_WAIT_EXTRA_TICKS = 1;
+const MOVE_OBSTACLE_CHECK_MAX_REMAINING_TICKS = 2;
+const MOVE_EARLY_COMPLETE_MAX_REMAINING_TICKS = 1;
+const MOVE_EARLY_COMPLETE_RADIUS_TILES = 1.2;
+const MOVE_PREDICTIVE_RECLICK_MAX_REMAINING_TICKS = 1;
+const MOVE_PREDICTIVE_RECLICK_MAX_ATTEMPTS = 1;
+const MOVE_PREDICTIVE_RECLICK_WAIT_TICKS = 2;
 const BANK_EXPECTED_LADDER_DOWN_X = 3755;
 const BANK_EXPECTED_LADDER_DOWN_Y = 5672;
 const BANK_EXPECTED_LADDER_UP_X = 3755;
@@ -162,6 +169,7 @@ type MoveDestination = {
 type PendingMoveTarget = {
   targetScreen: { x: number; y: number };
   destination: MoveDestination;
+  retryCount: number;
 };
 
 type HoverTileReadResult = {
@@ -270,16 +278,22 @@ function stripAutomateBotPrefix(message: string): string {
     .trim();
 }
 
+function stripLeadingSubPhaseTag(message: string): string {
+  return message.replace(/^\[[^\]]+\]\s*/, "").trimStart();
+}
+
 function withLoopCountAtBeginning(message: string): string {
   const cleaned = stripAutomateBotPrefix(message);
   const prefixedLoop = cleaned.match(/^#(\d+)\s*(.*)$/);
 
   if (prefixedLoop) {
     const [, loop, rest] = prefixedLoop;
-    return `#${loop} [${currentLogPhase}] ${rest}`.trimEnd();
+    const normalized = stripLeadingSubPhaseTag(rest);
+    return `#${loop} [${currentLogPhase}] ${normalized}`.trimEnd();
   }
 
-  return `#${currentLogLoopIndex} [${currentLogPhase}] ${cleaned}`.trimEnd();
+  const normalized = stripLeadingSubPhaseTag(cleaned);
+  return `#${currentLogLoopIndex} [${currentLogPhase}] ${normalized}`.trimEnd();
 }
 
 function log(message: string): void {
@@ -568,6 +582,33 @@ function getInnerRange(start: number, size: number, ratio: number): { min: numbe
   return { min, max };
 }
 
+function getStrictInteriorRange(start: number, size: number, ratio: number): { min: number; max: number } {
+  const boundedSize = Math.max(1, size);
+  const fullMin = start;
+  const fullMax = start + boundedSize - 1;
+  const ratioRange = getInnerRange(start, size, ratio);
+
+  const strictMin = fullMin + BOX_CLICK_BORDER_EXCLUSION_PX;
+  const strictMax = fullMax - BOX_CLICK_BORDER_EXCLUSION_PX;
+  if (strictMin > strictMax) {
+    return {
+      min: clamp(ratioRange.min, fullMin, fullMax),
+      max: clamp(ratioRange.max, fullMin, fullMax),
+    };
+  }
+
+  const min = clamp(ratioRange.min, strictMin, strictMax);
+  const max = clamp(ratioRange.max, min, strictMax);
+  return { min, max };
+}
+
+function randomCenterBiasedInt(min: number, max: number): number {
+  if (max <= min) return min;
+  const a = randomIntInclusive(min, max);
+  const b = randomIntInclusive(min, max);
+  return Math.round((a + b) / 2);
+}
+
 function pickDistinctScreenPointInLocalRange(
   localMinX: number,
   localMaxX: number,
@@ -582,25 +623,33 @@ function pickDistinctScreenPointInLocalRange(
 
   let candidate = { x: minX, y: minY };
   for (let attempt = 0; attempt < BOX_CLICK_PICK_MAX_ATTEMPTS; attempt += 1) {
-    const x = randomIntInclusive(minX, maxX);
-    const y = randomIntInclusive(minY, maxY);
+    const x = randomCenterBiasedInt(minX, maxX);
+    const y = randomCenterBiasedInt(minY, maxY);
     candidate = { x, y };
     if (!lastClickPoint || x !== lastClickPoint.x || y !== lastClickPoint.y) {
       return candidate;
     }
   }
 
+  const centerCandidate = {
+    x: Math.round((minX + maxX) / 2),
+    y: Math.round((minY + maxY) / 2),
+  };
+  if (!lastClickPoint || centerCandidate.x !== lastClickPoint.x || centerCandidate.y !== lastClickPoint.y) {
+    return centerCandidate;
+  }
+
   if (minX < maxX) {
-    const nextX = candidate.x > minX ? candidate.x - 1 : candidate.x + 1;
-    return { x: nextX, y: candidate.y };
+    const nextX = centerCandidate.x > minX ? centerCandidate.x - 1 : centerCandidate.x + 1;
+    return { x: nextX, y: centerCandidate.y };
   }
 
   if (minY < maxY) {
-    const nextY = candidate.y > minY ? candidate.y - 1 : candidate.y + 1;
-    return { x: candidate.x, y: nextY };
+    const nextY = centerCandidate.y > minY ? centerCandidate.y - 1 : centerCandidate.y + 1;
+    return { x: centerCandidate.x, y: nextY };
   }
 
-  return candidate;
+  return centerCandidate;
 }
 
 function resolvePostClickMouseTarget(
@@ -664,8 +713,8 @@ function toObstacleInteractionScreenPoint(
   obstacleBox: MotherlodeObstacleRedBox,
   captureBounds: ScreenCaptureBounds,
 ): { x: number; y: number } {
-  const innerX = getInnerRange(obstacleBox.x, obstacleBox.width, BOX_CLICK_INNER_RATIO);
-  const innerY = getInnerRange(obstacleBox.y, obstacleBox.height, BOX_CLICK_INNER_RATIO);
+  const innerX = getStrictInteriorRange(obstacleBox.x, obstacleBox.width, BOX_CLICK_INNER_RATIO);
+  const innerY = getStrictInteriorRange(obstacleBox.y, obstacleBox.height, BOX_CLICK_INNER_RATIO);
   return pickDistinctScreenPointInLocalRange(innerX.min, innerX.max, innerY.min, innerY.max, captureBounds);
 }
 
@@ -673,8 +722,8 @@ function toDepositInteractionScreenPoint(
   depositBox: Pick<MotherlodeDepositBox, "x" | "y" | "width" | "height">,
   captureBounds: ScreenCaptureBounds,
 ): { x: number; y: number } {
-  const innerX = getInnerRange(depositBox.x, depositBox.width, BOX_CLICK_INNER_RATIO);
-  const innerY = getInnerRange(depositBox.y, depositBox.height, BOX_CLICK_INNER_RATIO);
+  const innerX = getStrictInteriorRange(depositBox.x, depositBox.width, BOX_CLICK_INNER_RATIO);
+  const innerY = getStrictInteriorRange(depositBox.y, depositBox.height, BOX_CLICK_INNER_RATIO);
   return pickDistinctScreenPointInLocalRange(innerX.min, innerX.max, innerY.min, innerY.max, captureBounds);
 }
 
@@ -790,6 +839,7 @@ function queueMoveState(
     pendingMove: {
       targetScreen,
       destination,
+      retryCount: 0,
     },
     actionLockUntilMs: 0,
   };
@@ -849,6 +899,41 @@ function updateBagState(current: BotState, nextState: MotherlodeBagFullState): B
   };
 }
 
+function formatBagStatsForLog(bagStats: MotherlodeBagStats | null): string {
+  if (!bagStats) {
+    return "null";
+  }
+
+  return JSON.stringify({
+    panel: {
+      x: bagStats.x,
+      y: bagStats.y,
+      width: bagStats.width,
+      height: bagStats.height,
+    },
+    rawRows: bagStats.rawRows,
+    sackRow: {
+      rawText: bagStats.sackRow.rawText,
+      value: bagStats.sackRow.value,
+      sackCount: bagStats.sackRow.sackCount,
+      inventoryCount: bagStats.sackRow.inventoryCount,
+      capacityCount: bagStats.sackRow.capacityCount,
+    },
+    row2: {
+      rawText: bagStats.row2.rawText,
+      value: bagStats.row2.value,
+    },
+    row3: {
+      rawText: bagStats.row3.rawText,
+      value: bagStats.row3.value,
+    },
+  });
+}
+
+function logBagStatsSnapshot(source: string, bagStats: MotherlodeBagStats | null): void {
+  log(`Automate Bot (${BOT_NAME}): bag-stats ${source} ${formatBagStatsForLog(bagStats)}`);
+}
+
 function getBagSackCountValue(bagStats: MotherlodeBagStats | null): number | null {
   return bagStats?.sackRow.sackCount ?? null;
 }
@@ -864,6 +949,24 @@ function isInventoryEmptyByBagStats(bagStats: MotherlodeBagStats | null): boolea
   }
 
   return bagStats.sackRow.inventoryCount === 0;
+}
+
+function isInventoryFullByBagStats(bagStats: MotherlodeBagStats | null): boolean {
+  if (!bagStats) {
+    return false;
+  }
+
+  const row3InventorySpace = bagStats.row3.value;
+  if (typeof row3InventorySpace === "number") {
+    return row3InventorySpace <= 0;
+  }
+
+  const inventoryCount = bagStats.sackRow.inventoryCount;
+  if (typeof inventoryCount === "number") {
+    return inventoryCount >= BANK_ORB_INVENTORY_EMPTY_VALUE;
+  }
+
+  return false;
 }
 
 function findNearestOrangeBox(
@@ -940,6 +1043,7 @@ function createInitialBotState(): BotState {
     const bitmap = captureScreenBitmap(captureBoundsRef);
     const bagFullDetection = detectMotherlodeBagFullBoxInScreenshot(bitmap);
     const bagStats = detectMotherlodeBagStatsInScreenshot(bitmap);
+    logBagStatsSnapshot("startup", bagStats);
     const bagFullState = bagFullDetection.state;
     const startupTile = detectPlayerTileFromOverlay(bitmap);
 
@@ -1203,6 +1307,22 @@ function estimateMoveTravelTicks(
   );
 }
 
+function estimateMoveDistanceToTargetPx(
+  screenPoint: { x: number; y: number },
+  captureBounds: ScreenCaptureBounds,
+  playerBoxInCapture: PlayerBox | null,
+): { distancePx: number; tilePx: number } {
+  const anchorScreenX = captureBounds.x + (playerBoxInCapture?.centerX ?? Math.round(captureBounds.width / 2));
+  const anchorScreenY = captureBounds.y + (playerBoxInCapture?.centerY ?? Math.round(captureBounds.height / 2));
+  const tilePx = estimateMoveTilePxFromPlayerBox(playerBoxInCapture);
+  const dxPx = screenPoint.x - anchorScreenX;
+  const dyPx = screenPoint.y - anchorScreenY;
+  return {
+    distancePx: axisDistance(dxPx, dyPx),
+    tilePx,
+  };
+}
+
 function toSouthWestMoveScreenPoint(
   captureBounds: ScreenCaptureBounds,
   playerBoxInCapture: PlayerBox | null,
@@ -1252,21 +1372,60 @@ const Osrs = {
     const currentLockUntilMs = stateWithLock.actionLockUntilMs;
 
     if (isDeadlineActive(currentLockUntilMs, nowMs)) {
-      const collisionState = Osrs.clearRedObstacle({
-        tickCapture,
-        state,
-        nowMs,
+      const playerBox = detectBestPlayerBoxInScreenshot(tickCapture.bitmap);
+      const { distancePx, tilePx } = estimateMoveDistanceToTargetPx(
+        { x: pendingMove.targetScreen.x, y: pendingMove.targetScreen.y },
         captureBounds,
-      });
-      if (collisionState !== state) {
-        return collisionState;
-      }
-
+        playerBox,
+      );
       const remainingMs = Math.max(0, currentLockUntilMs - nowMs);
       const remainingTicks = Math.max(1, Math.ceil(remainingMs / GAME_TICK_MS));
+      const nearTarget = distancePx <= Math.round(tilePx * MOVE_EARLY_COMPLETE_RADIUS_TILES);
+
+      if (remainingTicks <= MOVE_EARLY_COMPLETE_MAX_REMAINING_TICKS && nearTarget) {
+        const destination = pendingMove.destination;
+        log(
+          `Automate Bot (${BOT_NAME}): #${state.loopIndex} [move] Arrived near (${pendingMove.targetScreen.x},${pendingMove.targetScreen.y}) early (distance=${distancePx}px). Transitioning to ${destination.phase}/${destination.currentFunction}.`,
+        );
+        return buildStateAfterMove(stateWithLock);
+      }
+
+      if (remainingTicks <= MOVE_OBSTACLE_CHECK_MAX_REMAINING_TICKS) {
+        const collisionState = Osrs.clearRedObstacle({
+          tickCapture,
+          state,
+          nowMs,
+          captureBounds,
+        });
+        if (collisionState !== state) {
+          return collisionState;
+        }
+      }
+
+      if (
+        remainingTicks <= MOVE_PREDICTIVE_RECLICK_MAX_REMAINING_TICKS &&
+        !nearTarget &&
+        pendingMove.retryCount < MOVE_PREDICTIVE_RECLICK_MAX_ATTEMPTS
+      ) {
+        const nextRetryCount = pendingMove.retryCount + 1;
+        warn(
+          `Automate Bot (${BOT_NAME}): #${state.loopIndex} [move] Still far from target (distance=${distancePx}px) with ${remainingTicks} tick(s) left. Re-clicking predicted target (${pendingMove.targetScreen.x},${pendingMove.targetScreen.y}) (${nextRetryCount}/${MOVE_PREDICTIVE_RECLICK_MAX_ATTEMPTS}).`,
+        );
+        clickScreenPoint(pendingMove.targetScreen.x, pendingMove.targetScreen.y);
+        moveMouseAwayFromClickedNode(pendingMove.targetScreen.x, pendingMove.targetScreen.y, captureBounds);
+        return {
+          ...stateWithLock,
+          pendingMove: {
+            ...pendingMove,
+            retryCount: nextRetryCount,
+          },
+          actionLockUntilMs: deadlineFromNowTicks(MOVE_PREDICTIVE_RECLICK_WAIT_TICKS),
+        } as BotState;
+      }
+
       if (state.loopIndex % 2 === 0) {
         log(
-          `Automate Bot (${BOT_NAME}): #${state.loopIndex} [move] Moving to (${pendingMove.targetScreen.x},${pendingMove.targetScreen.y}); waiting ${remainingTicks} more tick(s).`,
+          `Automate Bot (${BOT_NAME}): #${state.loopIndex} [move] Moving to (${pendingMove.targetScreen.x},${pendingMove.targetScreen.y}); waiting ${remainingTicks} more tick(s) (distance=${distancePx}px).`,
         );
       }
 
@@ -1290,6 +1449,10 @@ const Osrs = {
 
       return {
         ...stateWithLock,
+        pendingMove: {
+          ...pendingMove,
+          retryCount: 0,
+        },
         actionLockUntilMs: deadlineFromNowTicks(moveWaitTicks),
       } as BotState;
     }
@@ -1321,6 +1484,7 @@ const Osrs = {
     }
 
     const bagStats = detectMotherlodeBagStatsInScreenshot(tickCapture.bitmap);
+    logBagStatsSnapshot("depositPayDirt", bagStats);
     const inventoryCount = bagStats?.sackRow.inventoryCount ?? null;
     const sackCount = bagStats?.sackRow.sackCount ?? null;
     const capacityCount = bagStats?.sackRow.capacityCount ?? null;
@@ -1415,13 +1579,15 @@ const Osrs = {
 
     const tile = detectPlayerTileFromOverlay(tickCapture.bitmap);
     if (isAtBankLadderDownTile(tile)) {
+      const bagStats = detectMotherlodeBagStatsInScreenshot(tickCapture.bitmap);
+      logBagStatsSnapshot("useLadder", bagStats);
       log(
         `Automate Bot (${BOT_NAME}): #${current.loopIndex} [use-ladder] Ladder descent confirmed at ${BANK_EXPECTED_LADDER_DOWN_X},${BANK_EXPECTED_LADDER_DOWN_Y}. Switching to banking/searchSack.`,
       );
       return {
         ...resetToBanking(current, "searchSack"),
         bankSouthClicks: 0,
-        bankYellowPreClickSackCount: getBagSackCountValue(detectMotherlodeBagStatsInScreenshot(tickCapture.bitmap)),
+        bankYellowPreClickSackCount: getBagSackCountValue(bagStats),
         bankYellowSackWaitTicks: 0,
         bankOrbClickCount: 0,
       } as BotState;
@@ -1488,6 +1654,7 @@ const Osrs = {
 
     const interactionPoint = toDepositInteractionScreenPoint(yellowTarget, captureBounds);
     const bagStats = detectMotherlodeBagStatsInScreenshot(tickCapture.bitmap);
+    logBagStatsSnapshot("searchSack", bagStats);
     const preSackCount = getBagSackCountValue(bagStats);
     const destination: MoveDestination = {
       phase: "banking",
@@ -1524,12 +1691,24 @@ const Osrs = {
     }
 
     const bagStats = detectMotherlodeBagStatsInScreenshot(tickCapture.bitmap);
+    logBagStatsSnapshot("fillInventory", bagStats);
     const currentSackCount = getBagSackCountValue(bagStats);
     const preClickSackCount = current.bankYellowPreClickSackCount ?? currentSackCount;
 
     if (preClickSackCount !== null && currentSackCount !== null && currentSackCount < preClickSackCount) {
       log(
         `Automate Bot (${BOT_NAME}): #${current.loopIndex} [fill-inventory] Sack count dropped (${preClickSackCount} -> ${currentSackCount}). Switching to bank-deposit search.`,
+      );
+      return {
+        ...resetToBanking(current, "searchBankDeposit"),
+        bankYellowPreClickSackCount: null,
+        bankYellowSackWaitTicks: 0,
+      } as BotState;
+    }
+
+    if (isInventoryFullByBagStats(bagStats)) {
+      log(
+        `Automate Bot (${BOT_NAME}): #${current.loopIndex} [fill-inventory] Inventory full by bagStats (row3=${bagStats?.row3.value ?? "?"}, inventory=${bagStats?.sackRow.inventoryCount ?? "?"}). Switching to bank-deposit search.`,
       );
       return {
         ...resetToBanking(current, "searchBankDeposit"),
@@ -1683,6 +1862,7 @@ const Osrs = {
     }
 
     const bagStats = detectMotherlodeBagStatsInScreenshot(tickCapture.bitmap);
+    logBagStatsSnapshot("checkInventoryEmpty", bagStats);
     if (!bagStats) {
       warn(`Automate Bot (${BOT_NAME}): #${current.loopIndex} [check-inventory-empty] Bag stats unavailable; waiting.`);
       return {
@@ -1885,9 +2065,9 @@ const Osrs = {
     clickScreenPoint(point.x, point.y);
     moveMouseAwayFromClickedNode(point.x, point.y, captureBounds);
 
-    if (state.phase === "moving" && state.pendingMove.destination.phase === "banking") {
+    if (state.phase === "moving") {
       return {
-        ...resetToBanking(state, "searchSack"),
+        ...state,
         actionLockUntilMs: deadlineFromNowTicks(OBSTACLE_CLICK_LOCK_TICKS),
       } as BotState;
     }
