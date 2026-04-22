@@ -3,13 +3,15 @@ export const ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID = "attack-zamorak-warrior-s
 export const COMBAT_AUTO_BOT_ID = "combat-auto";
 export const MINING_MOTHERLODE_MINE_BOT_ID = "mining-motherlode-mine";
 export const MINING_MOTHERLODE_MINE_V2_BOT_ID = "mining-motherlode-mine-v2";
+export const MINING_MOTHERLODE_MINE_V3_BOT_ID = "mining-motherlode-mine-v3";
 
 export type AutomateBotId =
   | typeof AGILITY_BOT_ID
   | typeof ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID
   | typeof COMBAT_AUTO_BOT_ID
   | typeof MINING_MOTHERLODE_MINE_BOT_ID
-  | typeof MINING_MOTHERLODE_MINE_V2_BOT_ID;
+  | typeof MINING_MOTHERLODE_MINE_V2_BOT_ID
+  | typeof MINING_MOTHERLODE_MINE_V3_BOT_ID;
 
 export type AutomateBotDefinition = {
   id: AutomateBotId;
@@ -40,6 +42,11 @@ export const AUTOMATE_BOTS: AutomateBotDefinition[] = [
   {
     id: MINING_MOTHERLODE_MINE_V2_BOT_ID,
     name: "Motherlode Mine V2",
+    group: "Mining",
+  },
+  {
+    id: MINING_MOTHERLODE_MINE_V3_BOT_ID,
+    name: "Motherlode Mine V3 (engine)",
     group: "Mining",
   },
 ];

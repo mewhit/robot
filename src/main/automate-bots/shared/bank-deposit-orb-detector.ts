@@ -506,11 +506,7 @@ function computeDescriptor(image: GrayscaleImage, x: number, y: number, angle: n
   return descriptor;
 }
 
-function extractOrbKeypoints(
-  bitmap: RobotBitmap,
-  fastThreshold: number,
-  maxKeypoints: number,
-): OrbKeypoint[] {
+function extractOrbKeypoints(bitmap: RobotBitmap, fastThreshold: number, maxKeypoints: number): OrbKeypoint[] {
   const pyramid = buildPyramid(toGrayscale(bitmap));
   const keypoints: OrbKeypoint[] = [];
   const levelBudget = Math.max(10, Math.ceil(maxKeypoints / pyramid.length));
@@ -721,19 +717,15 @@ function computeAppearanceWeight(referenceBitmap: RobotBitmap, x: number, y: num
   const up = readBitmapPixel(referenceBitmap, x, Math.max(0, y - 1));
   const down = readBitmapPixel(referenceBitmap, x, Math.min(referenceBitmap.height - 1, y + 1));
 
-  const grayscale = (pixel: { b: number; g: number; r: number }): number => (pixel.r * 77 + pixel.g * 150 + pixel.b * 29) >> 8;
-  const gradient =
-    Math.abs(grayscale(right) - grayscale(left)) + Math.abs(grayscale(down) - grayscale(up));
+  const grayscale = (pixel: { b: number; g: number; r: number }): number =>
+    (pixel.r * 77 + pixel.g * 150 + pixel.b * 29) >> 8;
+  const gradient = Math.abs(grayscale(right) - grayscale(left)) + Math.abs(grayscale(down) - grayscale(up));
   const saturation = Math.max(center.r, center.g, center.b) - Math.min(center.r, center.g, center.b);
   const greenDominance = center.g - Math.max(center.r, center.b);
   const brownishDominance = center.r - center.g + (center.g - center.b);
 
   return (
-    1 +
-    gradient / 40 +
-    saturation / 30 +
-    Math.max(0, greenDominance) / 14 +
-    Math.max(0, brownishDominance - 18) / 28
+    1 + gradient / 40 + saturation / 30 + Math.max(0, greenDominance) / 14 + Math.max(0, brownishDominance - 18) / 28
   );
 }
 
@@ -787,16 +779,8 @@ function buildSalientReferenceSamples(referenceBitmap: RobotBitmap): SalientRefe
     for (let cellLeft = 0; cellLeft < referenceBitmap.width; cellLeft += SALIENT_SAMPLE_CELL_SIZE) {
       let bestSample: SalientReferenceSample | null = null;
 
-      for (
-        let y = cellTop;
-        y < Math.min(referenceBitmap.height, cellTop + SALIENT_SAMPLE_CELL_SIZE);
-        y += 1
-      ) {
-        for (
-          let x = cellLeft;
-          x < Math.min(referenceBitmap.width, cellLeft + SALIENT_SAMPLE_CELL_SIZE);
-          x += 1
-        ) {
+      for (let y = cellTop; y < Math.min(referenceBitmap.height, cellTop + SALIENT_SAMPLE_CELL_SIZE); y += 1) {
+        for (let x = cellLeft; x < Math.min(referenceBitmap.width, cellLeft + SALIENT_SAMPLE_CELL_SIZE); x += 1) {
           const weight = computeAppearanceWeight(referenceBitmap, x, y);
           if (weight <= 0) {
             continue;
@@ -884,8 +868,7 @@ function findBestReferencePatchMatch(
       if (
         Math.abs(score - bestScore) <= 0.001 &&
         (denseAppearanceScore > bestDenseAppearanceScore + 0.001 ||
-          (Math.abs(denseAppearanceScore - bestDenseAppearanceScore) <= 0.001 &&
-            centerDistance < bestCenterDistance))
+          (Math.abs(denseAppearanceScore - bestDenseAppearanceScore) <= 0.001 && centerDistance < bestCenterDistance))
       ) {
         bestX = topX;
         bestY = topY;
@@ -949,16 +932,8 @@ function offsetDetectionToSourceBitmap(
 }
 
 function countLocalOrbMatches(referenceBitmap: RobotBitmap, candidateBitmap: RobotBitmap): number {
-  const referenceKeypoints = extractOrbKeypoints(
-    referenceBitmap,
-    REFERENCE_FAST_THRESHOLD,
-    REFERENCE_MAX_KEYPOINTS,
-  );
-  const candidateKeypoints = extractOrbKeypoints(
-    candidateBitmap,
-    REFERENCE_FAST_THRESHOLD,
-    REFERENCE_MAX_KEYPOINTS,
-  );
+  const referenceKeypoints = extractOrbKeypoints(referenceBitmap, REFERENCE_FAST_THRESHOLD, REFERENCE_MAX_KEYPOINTS);
+  const candidateKeypoints = extractOrbKeypoints(candidateBitmap, REFERENCE_FAST_THRESHOLD, REFERENCE_MAX_KEYPOINTS);
 
   let matchCount = 0;
 
@@ -1066,11 +1041,7 @@ function buildDetectionFromSeedMatches(
   }
 
   const medianDistance = median(inliers.map((match) => match.distance));
-  const score =
-    inliers.length * 120 +
-    matches.length * 15 +
-    appearanceScore * 240 -
-    medianDistance * 2;
+  const score = inliers.length * 120 + matches.length * 15 + appearanceScore * 240 - medianDistance * 2;
 
   return {
     x: clamp(bounds.x, 0, screenshotBitmap.width - 1),
@@ -1155,10 +1126,7 @@ function resolveDetection(
         height: Math.min(bounds.height, screenshotBitmap.height),
         centerX: Math.round(appearanceSeed.centerX),
         centerY: Math.round(appearanceSeed.centerY),
-        score:
-          localOrbMatchCount * 220 +
-          appearanceSeed.appearanceScore * 2400 -
-          40,
+        score: localOrbMatchCount * 220 + appearanceSeed.appearanceScore * 2400 - 40,
         appearanceScore: appearanceSeed.appearanceScore,
         rawMatchCount: matches.length,
         inlierCount: localOrbMatchCount,
@@ -1169,9 +1137,7 @@ function resolveDetection(
       };
 
       const candidateRank =
-        candidate.appearanceScore * 7000 +
-        candidate.inlierCount * 120 -
-        candidate.medianDistance * 3;
+        candidate.appearanceScore * 7000 + candidate.inlierCount * 120 - candidate.medianDistance * 3;
 
       bestDetection = candidate;
       bestRank = candidateRank;
@@ -1222,18 +1188,9 @@ export function detectBankDepositIconWithOrb(
     searchBounds.width,
     searchBounds.height,
   );
-  const referenceKeypoints = extractOrbKeypoints(
-    referenceBitmap,
-    REFERENCE_FAST_THRESHOLD,
-    REFERENCE_MAX_KEYPOINTS,
-  );
+  const referenceKeypoints = extractOrbKeypoints(referenceBitmap, REFERENCE_FAST_THRESHOLD, REFERENCE_MAX_KEYPOINTS);
   const sceneKeypoints = extractOrbKeypoints(searchBitmap, SCENE_FAST_THRESHOLD, SCENE_MAX_KEYPOINTS);
-  const matches = matchOrbFeatures(
-    referenceKeypoints,
-    sceneKeypoints,
-    referenceBitmap.width,
-    referenceBitmap.height,
-  );
+  const matches = matchOrbFeatures(referenceKeypoints, sceneKeypoints, referenceBitmap.width, referenceBitmap.height);
   const detection = offsetDetectionToSourceBitmap(
     resolveDetection(referenceBitmap, searchBitmap, matches),
     searchBounds,
@@ -1248,12 +1205,7 @@ export function detectBankDepositIconWithOrb(
   };
 }
 
-function setPngPixel(
-  png: PNG,
-  x: number,
-  y: number,
-  color: { r: number; g: number; b: number },
-): void {
+function setPngPixel(png: PNG, x: number, y: number, color: { r: number; g: number; b: number }): void {
   if (x < 0 || y < 0 || x >= png.width || y >= png.height) {
     return;
   }
@@ -1305,12 +1257,7 @@ function drawCrossOnPng(
   }
 }
 
-function drawPointOnPng(
-  png: PNG,
-  x: number,
-  y: number,
-  color: { r: number; g: number; b: number },
-): void {
+function drawPointOnPng(png: PNG, x: number, y: number, color: { r: number; g: number; b: number }): void {
   for (let dy = -2; dy <= 2; dy += 1) {
     for (let dx = -2; dx <= 2; dx += 1) {
       setPngPixel(png, x + dx, y + dy, color);

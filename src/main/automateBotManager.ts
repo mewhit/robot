@@ -4,6 +4,7 @@ import { onAttackZamorakWarriorSafeSpotBotStart } from "./automate-bots/attack-z
 import { onCombatAutoBotStart } from "./automate-bots/combat/auto-bot";
 import { onMotherlodeMineBotStart } from "./automate-bots/motherlode-mine-bot";
 import { onMotherlodeMineBotV2Start } from "./automate-bots/motherlode-mine-bot-v2";
+import { onMotherlodeMineBotV3Start } from "./automate-bots/motherlode-mine-bot-v3";
 import {
   AGILITY_BOT_ID,
   ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID,
@@ -11,6 +12,7 @@ import {
   DEFAULT_AUTOMATE_BOT_ID,
   MINING_MOTHERLODE_MINE_BOT_ID,
   MINING_MOTHERLODE_MINE_V2_BOT_ID,
+  MINING_MOTHERLODE_MINE_V3_BOT_ID,
   isAutomateBotId,
 } from "./automate-bots/definitions";
 import { flushOcrDebugDirectory } from "./automate-bots/shared/ocr-engine";
@@ -24,6 +26,7 @@ const botStartHandlers = new Map<string, () => void>([
   [COMBAT_AUTO_BOT_ID, onCombatAutoBotStart],
   [MINING_MOTHERLODE_MINE_BOT_ID, onMotherlodeMineBotStart],
   [MINING_MOTHERLODE_MINE_V2_BOT_ID, onMotherlodeMineBotV2Start],
+  [MINING_MOTHERLODE_MINE_V3_BOT_ID, onMotherlodeMineBotV3Start],
 ]);
 
 const botStartFromStepHandlers = new Map<string, (stepId: string) => void>();

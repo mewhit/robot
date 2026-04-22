@@ -2334,7 +2334,7 @@ async function runTick(state: BotState, captureBounds: ScreenCaptureBounds): Pro
         };
       }
 
-      if (row3InventorySpace === 28) {
+      if ((row3InventorySpace || 0) >= 28) {
         const preYellowSackCount = getBagSackCountValue(capture.bagStats);
         log(
           `Automate Bot (${BOT_NAME}): #${current.loopIndex} Post-orb banking click confirmed by row3=28. Restarting yellow->green->orb banking loop (${formatBagDecisionState(current, capture.bagStats)}).`,

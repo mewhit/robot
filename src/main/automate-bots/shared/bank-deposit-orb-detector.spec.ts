@@ -157,10 +157,7 @@ function resolveExpectedDetection(screenshotPath: string): ExpectedDetection {
   return EXPECTED_BY_SCREENSHOT[basename] ?? { shouldDetect: true };
 }
 
-function validateDetection(
-  screenshotPath: string,
-  detection: BankDepositOrbDetection | null,
-): boolean {
+function validateDetection(screenshotPath: string, detection: BankDepositOrbDetection | null): boolean {
   const basename = path.basename(screenshotPath);
   const expected = resolveExpectedDetection(screenshotPath);
 
@@ -193,11 +190,7 @@ function validateDetection(
     return false;
   }
 
-  if (
-    expected.centerX !== undefined &&
-    expected.centerY !== undefined &&
-    expected.tolerancePx !== undefined
-  ) {
+  if (expected.centerX !== undefined && expected.centerY !== undefined && expected.tolerancePx !== undefined) {
     const dx = Math.abs(expected.centerX - detection.centerX);
     const dy = Math.abs(expected.centerY - detection.centerY);
 
@@ -254,12 +247,9 @@ async function main(): Promise<void> {
     args[0] && !args[0].includes("*") && args[0].toLowerCase().endsWith(".png") && fs.existsSync(args[0])
       ? args[0]
       : DEFAULT_REFERENCE_ICON;
-  const screenshotArgs =
-    referenceIconPath === DEFAULT_REFERENCE_ICON ? args : args.slice(1);
+  const screenshotArgs = referenceIconPath === DEFAULT_REFERENCE_ICON ? args : args.slice(1);
   const expandedScreenshots =
-    screenshotArgs.length > 0
-      ? expandScreenshotArgs(screenshotArgs)
-      : expandScreenshotArgs([DEFAULT_SCREENSHOT_GLOB]);
+    screenshotArgs.length > 0 ? expandScreenshotArgs(screenshotArgs) : expandScreenshotArgs([DEFAULT_SCREENSHOT_GLOB]);
 
   console.log("\nBank Deposit ORB Detector Test Suite");
   console.log(`Reference icon: ${referenceIconPath}`);
