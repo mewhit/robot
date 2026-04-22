@@ -7,19 +7,12 @@ import * as logger from "../logger";
 import { getRuneLite } from "../runeLiteWindow";
 import { captureScreenBitmap } from "../windowsScreenCapture";
 import { MINING_MOTHERLODE_MINE_V3_BOT_ID } from "./definitions";
+import { MotherlodeBagFullState, detectMotherlodeBagFullBoxInScreenshot } from "./shared/motherlode-bag-full-box-detector";
+import { MotherlodeDepositBox, detectBestMotherlodeDepositBoxInScreenshot } from "./shared/motherlode-deposit-box-detector";
 import { MotherlodeMineBox, detectMotherlodeMineBoxesInScreenshot } from "./shared/motherlode-mine-box-detector";
-import {
-  MotherlodeBagFullState,
-  detectMotherlodeBagFullBoxInScreenshot,
-} from "./shared/motherlode-bag-full-box-detector";
-import {
-  MotherlodeObstacleRedBox,
-  detectBestMotherlodeObstacleRedBoxInScreenshot,
-} from "./shared/motherlode-obstacle-red-detector";
-import { isPlayerCollidingWithObstacle as isPlayerCollidingWithObstacleBox } from "./shared/player-obstacle-collision";
+import { MotherlodeObstacleRedBox, detectBestMotherlodeObstacleRedBoxInScreenshot } from "./shared/motherlode-obstacle-red-detector";
 import { PlayerBox, detectBestPlayerBoxInScreenshot } from "./shared/player-box-detector";
-import { detectTileLocationBoxInScreenshot } from "./shared/tile-location-detection";
-import { detectOverlayBoxInScreenshot } from "./shared/coordinate-box-detector";
+import { isPlayerCollidingWithObstacle as isPlayerCollidingWithObstacleBox } from "./shared/player-obstacle-collision";
 import { createMineFunction, runBotEngine, sleepWithAbort } from "./engine/bot-engine";
 import { RobotBitmap } from "./shared/ocr-engine";
 
@@ -34,13 +27,14 @@ const TOOLTIP_SETTLE_MS = 400;
 const ENABLE_TILE_LOCATION_DETECTION = false;
 const ENABLE_NODE_HOVER_BEFORE_TILE_READ = true;
 const ENABLE_OBSTACLE_RED_CLICK = true;
-const POST_CLICK_MOUSE_MOVE_MODE: PostClickMouseMoveMode = "offset-200";
+const POST_CLICK_MOUSE_MOVE_MODE: PostClickMouseMoveMode = "off";
 const POST_CLICK_MOUSE_OFFSET_PX = 200;
 const POST_CLICK_CORNER_MARGIN_PX = 6;
 const OBSTACLE_PLAYER_COLLISION_PADDING_PX = 4;
 const DEPOSIT_TRIGGER_STABLE_TICKS = 2;
 const NODE_CLICK_LOCK_TICKS = 3;
 const OBSTACLE_CLICK_LOCK_TICKS = 2;
+const DEPOSIT_CLICK_LOCK_TICKS = 1;
 const ACTIVE_NODE_MISSING_GRACE_TICKS = 2;
 const ACTIVE_NODE_MAX_WAIT_TICKS_MIN = 80;
 const ACTIVE_NODE_MAX_WAIT_TICKS_MAX = 86;
@@ -48,6 +42,12 @@ const ACTIVE_NODE_MATCH_RADIUS_PX = 34;
 const ACTIVE_NODE_YELLOW_PREFERENCE_MARGIN_PX = 6;
 const BOX_CLICK_INNER_RATIO = 0.75;
 const BOX_CLICK_PICK_MAX_ATTEMPTS = 12;
+const MOVE_PLAYER_SPEED_TILES_PER_TICK = 2;
+const MOVE_TILE_PX_FALLBACK = 64;
+const MOVE_TILE_PX_MIN = 24;
+const MOVE_TILE_PX_MAX = 96;
+const MOVE_WAIT_MAX_TICKS = 10;
+const MOVE_WAIT_EXTRA_TICKS = 1;
 
 interface ScreenCaptureBounds {
   x: number;
@@ -64,8 +64,16 @@ interface TileCoord {
 
 type HoverTileReadSource = "tile-location" | "overlay" | "none";
 type PostClickMouseMoveMode = "off" | "top-left" | "offset-200";
-type BotPhase = "searching" | "mining";
-type EngineFunctionKey = "mine";
+type BotPhase = "searching" | "mining" | "moving" | "depositing";
+type EngineFunctionKey = "mine" | "searchOre" | "searchDeposit" | "move" | "deposit";
+type MineSearchColor = "green" | "yellow" | "cyan";
+type MineTargetBox = MotherlodeMineBox;
+type MoveDestinationFunction = Exclude<EngineFunctionKey, "move">;
+type PendingMoveTarget = {
+  nextPhase: Exclude<BotPhase, "moving">;
+  nextFunction: MoveDestinationFunction;
+  targetScreen: { x: number; y: number };
+};
 
 type HoverTileReadResult = {
   tile: TileCoord | null;
@@ -73,27 +81,49 @@ type HoverTileReadResult = {
   rawLine: string | null;
 };
 
-type BotState = {
+type SharedBotState = {
   loopIndex: number;
   currentFunction: EngineFunctionKey;
   phase: BotPhase;
-  activeTile: TileCoord | null;
-  activeScreen: { x: number; y: number } | null;
-  missingActiveTicks: number;
-  miningWaitTicks: number;
-  activeNodeMaxWaitTicks: number;
+  latestPhase: BotPhase | null;
   actionLockUntilMs: number;
-  bagFullState: MotherlodeBagFullState | null;
-  depositTriggerStableTicks: number;
+};
+
+type BotState =
+  | (SharedBotState & {
+      phase: Exclude<BotPhase, "moving">;
+      activeTile: TileCoord | null;
+      activeScreen: { x: number; y: number } | null;
+      missingActiveTicks: number;
+      miningWaitTicks: number;
+      activeNodeMaxWaitTicks: number;
+
+      bagFullState: MotherlodeBagFullState | null;
+      depositTriggerStableTicks: number;
+      depositNearStableTicks: number;
+      depositRetryTicks: number;
+      depositInFlight: boolean;
+      depositLastDistancePx: number | null;
+    })
+  | MovingBotState;
+
+type MovingBotState = SharedBotState & {
+  phase: "moving";
+  pendingMove: PendingMoveTarget;
 };
 
 type MineCaptureResult = {
   bitmap: RobotBitmap;
-  boxes: MotherlodeMineBox[];
+  boxes: MineTargetBox[];
   obstacleBox: MotherlodeObstacleRedBox | null;
   playerBoxInCapture: PlayerBox | null;
   playerAnchorInCapture: { x: number; y: number } | null;
   bagFullState: MotherlodeBagFullState;
+};
+
+type EngineTickCapture = {
+  bitmap: RobotBitmap;
+  captureBitmap: () => RobotBitmap;
 };
 
 let isLoopRunning = false;
@@ -101,6 +131,7 @@ let startedAtMs: number | null = null;
 let lastClickPoint: { x: number; y: number } | null = null;
 let currentWindowsScalePercent = 100;
 let currentLogLoopIndex = 0;
+let currentLogPhase: BotPhase | "startup" = "startup";
 
 function formatElapsedSinceStart(): string {
   if (startedAtMs === null) return "+0ms";
@@ -121,19 +152,32 @@ function setCurrentLogLoopIndex(loopIndex: number): void {
   currentLogLoopIndex = Math.floor(loopIndex);
 }
 
+function setCurrentLogPhase(phase: BotPhase | null | undefined): void {
+  if (phase === "searching" || phase === "mining" || phase === "moving" || phase === "depositing") {
+    currentLogPhase = phase;
+    return;
+  }
+
+  currentLogPhase = "startup";
+}
+
+function stripAutomateBotPrefix(message: string): string {
+  return message
+    .replace(/^Automate Bot\s*\([^)]*\):\s*/, "")
+    .replace(/^Automate Bot\s*/, "")
+    .trim();
+}
+
 function withLoopCountAtBeginning(message: string): string {
-  const alreadyPrefixed = message.match(/^#\d+\s/);
-  if (alreadyPrefixed) {
-    return message;
+  const cleaned = stripAutomateBotPrefix(message);
+  const prefixedLoop = cleaned.match(/^#(\d+)\s*(.*)$/);
+
+  if (prefixedLoop) {
+    const [, loop, rest] = prefixedLoop;
+    return `#${loop} [${currentLogPhase}] ${rest}`.trimEnd();
   }
 
-  const embeddedLoop = message.match(/^(Automate Bot \([^)]*\):)\s*#(\d+)\s*(.*)$/);
-  if (embeddedLoop) {
-    const [, prefix, loop, rest] = embeddedLoop;
-    return `#${loop} ${prefix} ${rest}`.trimEnd();
-  }
-
-  return `#${currentLogLoopIndex} ${message}`;
+  return `#${currentLogLoopIndex} [${currentLogPhase}] ${cleaned}`.trimEnd();
 }
 
 function log(message: string): void {
@@ -230,7 +274,7 @@ function isDeadlineActive(deadlineMs: number, nowMs: number): boolean {
   return deadlineMs > nowMs;
 }
 
-function isActionLocked(state: BotState, nowMs: number): boolean {
+function isActionLocked(state: Pick<SharedBotState, "actionLockUntilMs">, nowMs: number): boolean {
   return isDeadlineActive(state.actionLockUntilMs, nowMs);
 }
 
@@ -312,11 +356,7 @@ function resolvePostClickMouseTarget(
   return null;
 }
 
-function moveMouseAwayFromClickedNode(
-  clickedScreenX: number,
-  clickedScreenY: number,
-  captureBounds: ScreenCaptureBounds,
-): void {
+function moveMouseAwayFromClickedNode(clickedScreenX: number, clickedScreenY: number, captureBounds: ScreenCaptureBounds): void {
   const target = resolvePostClickMouseTarget(clickedScreenX, clickedScreenY, captureBounds);
   if (!target) return;
   moveMouse(target.x, target.y);
@@ -328,15 +368,12 @@ function clickScreenPoint(screenX: number, screenY: number): void {
   lastClickPoint = { x: screenX, y: screenY };
 }
 
-function getNodeUpperBiasedLocalY(node: MotherlodeMineBox): number {
+function getNodeUpperBiasedLocalY(node: MineTargetBox): number {
   const upwardBiasPx = Math.max(3, Math.round(node.height * 0.32));
   return Math.max(node.y + 1, node.centerY - upwardBiasPx);
 }
 
-function toNodeInteractionScreenPoint(
-  node: MotherlodeMineBox,
-  captureBounds: ScreenCaptureBounds,
-): { x: number; y: number } {
+function toNodeInteractionScreenPoint(node: MineTargetBox, captureBounds: ScreenCaptureBounds): { x: number; y: number } {
   const innerX = getInnerRange(node.x, node.width, BOX_CLICK_INNER_RATIO);
   const innerY = getInnerRange(node.y, node.height, BOX_CLICK_INNER_RATIO);
 
@@ -357,10 +394,28 @@ function toObstacleInteractionScreenPoint(
   return pickDistinctScreenPointInLocalRange(innerX.min, innerX.max, innerY.min, innerY.max, captureBounds);
 }
 
-function isPlayerCollidingWithObstacle(
-  playerBoxInCapture: PlayerBox | null,
-  obstacleBox: MotherlodeObstacleRedBox | null,
-): boolean {
+function toDepositInteractionScreenPoint(
+  depositBox: Pick<MotherlodeDepositBox, "x" | "y" | "width" | "height">,
+  captureBounds: ScreenCaptureBounds,
+): { x: number; y: number } {
+  const innerX = getInnerRange(depositBox.x, depositBox.width, BOX_CLICK_INNER_RATIO);
+  const innerY = getInnerRange(depositBox.y, depositBox.height, BOX_CLICK_INNER_RATIO);
+  return pickDistinctScreenPointInLocalRange(innerX.min, innerX.max, innerY.min, innerY.max, captureBounds);
+}
+
+function detectBestCyanDepositBoxInScreenshot(bitmap: RobotBitmap): MotherlodeDepositBox | null {
+  return detectBestMotherlodeDepositBoxInScreenshot(bitmap);
+}
+
+function detectBestRedObstacleBoxInScreenshot(bitmap: RobotBitmap): MotherlodeObstacleRedBox | null {
+  return detectBestMotherlodeObstacleRedBoxInScreenshot(bitmap);
+}
+
+function detectMineTargetBoxesInScreenshot(bitmap: RobotBitmap): MineTargetBox[] {
+  return detectMotherlodeMineBoxesInScreenshot(bitmap).filter((box) => box.color === "green" || box.color === "yellow");
+}
+
+function isPlayerCollidingWithObstacle(playerBoxInCapture: PlayerBox | null, obstacleBox: MotherlodeObstacleRedBox | null): boolean {
   return isPlayerCollidingWithObstacleBox(playerBoxInCapture, obstacleBox, OBSTACLE_PLAYER_COLLISION_PADDING_PX);
 }
 
@@ -375,7 +430,53 @@ function isBagAtDepositThreshold(state: MotherlodeBagFullState): boolean {
   return state === "green" || state === "red";
 }
 
+function shouldStartDepositCycle(current: BotState): boolean {
+  if (current.phase === "moving" || current.phase === "depositing") {
+    return false;
+  }
+
+  if (current.depositTriggerStableTicks < DEPOSIT_TRIGGER_STABLE_TICKS) {
+    return false;
+  }
+
+  return current.bagFullState !== null && isBagAtDepositThreshold(current.bagFullState);
+}
+
+function resolveSearchFunctionFromBagState(
+  bagFullState: MotherlodeBagFullState | null,
+  depositTriggerStableTicks: number,
+): "searchOre" | "searchDeposit" {
+  if (bagFullState !== null && isBagAtDepositThreshold(bagFullState) && depositTriggerStableTicks >= DEPOSIT_TRIGGER_STABLE_TICKS) {
+    return "searchDeposit";
+  }
+
+  return "searchOre";
+}
+
+function resolvePendingMoveTransition(
+  requestedNextPhase: BotPhase,
+  color: MineSearchColor,
+): { nextPhase: Exclude<BotPhase, "moving">; nextFunction: MoveDestinationFunction } {
+  const nextPhase: Exclude<BotPhase, "moving"> = requestedNextPhase === "moving" ? "mining" : requestedNextPhase;
+
+  if (nextPhase === "mining") {
+    return {
+      nextPhase,
+      nextFunction: "mine",
+    };
+  }
+
+  return {
+    nextPhase: color === "cyan" ? "depositing" : nextPhase,
+    nextFunction: color === "cyan" ? "deposit" : "searchOre",
+  };
+}
+
 function updateBagState(current: BotState, nextState: MotherlodeBagFullState): BotState {
+  if (current.phase === "moving") {
+    return current;
+  }
+
   const stable = isBagAtDepositThreshold(nextState) ? current.depositTriggerStableTicks + 1 : 0;
   return {
     ...current,
@@ -387,38 +488,53 @@ function updateBagState(current: BotState, nextState: MotherlodeBagFullState): B
 function createInitialBotState(): BotState {
   return {
     loopIndex: 0,
-    currentFunction: "mine",
+    currentFunction: "searchOre",
     phase: "searching",
+    latestPhase: "searching",
+    actionLockUntilMs: 0,
     activeTile: null,
     activeScreen: null,
     missingActiveTicks: 0,
     miningWaitTicks: 0,
     activeNodeMaxWaitTicks: randomIntInclusive(ACTIVE_NODE_MAX_WAIT_TICKS_MIN, ACTIVE_NODE_MAX_WAIT_TICKS_MAX),
-    actionLockUntilMs: 0,
     bagFullState: null,
     depositTriggerStableTicks: 0,
+    depositNearStableTicks: 0,
+    depositRetryTicks: 0,
+    depositInFlight: false,
+    depositLastDistancePx: null,
   };
 }
 
-function resetToSearching(current: BotState): BotState {
+function resetToSearching(current: BotState, _function: "searchOre" | "searchDeposit"): BotState {
+  const bagFullState = "bagFullState" in current ? current.bagFullState : null;
+  const depositTriggerStableTicks = "depositTriggerStableTicks" in current ? current.depositTriggerStableTicks : 0;
+
   return {
-    ...current,
+    loopIndex: current.loopIndex,
+    currentFunction: _function,
     phase: "searching",
+    latestPhase: current.phase,
+    actionLockUntilMs: 0,
     activeTile: null,
     activeScreen: null,
     missingActiveTicks: 0,
     miningWaitTicks: 0,
     activeNodeMaxWaitTicks: randomIntInclusive(ACTIVE_NODE_MAX_WAIT_TICKS_MIN, ACTIVE_NODE_MAX_WAIT_TICKS_MAX),
-    actionLockUntilMs: 0,
+    bagFullState,
+    depositTriggerStableTicks,
+    depositNearStableTicks: 0,
+    depositRetryTicks: 0,
+    depositInFlight: false,
+    depositLastDistancePx: null,
   };
 }
 
-function captureMineState(captureBounds: ScreenCaptureBounds): MineCaptureResult {
-  const bitmap = captureScreenBitmap(captureBounds);
-  const boxes = detectMotherlodeMineBoxesInScreenshot(bitmap);
-  const obstacleBox = detectBestMotherlodeObstacleRedBoxInScreenshot(bitmap);
+function captureMineState(bitmap: RobotBitmap): MineCaptureResult {
+  const boxes = detectMineTargetBoxesInScreenshot(bitmap);
   const bagFullDetection = detectMotherlodeBagFullBoxInScreenshot(bitmap);
   const playerBox = detectBestPlayerBoxInScreenshot(bitmap);
+  const obstacleBox = detectBestRedObstacleBoxInScreenshot(bitmap);
   const playerAnchorInCapture = playerBox ? { x: playerBox.centerX, y: playerBox.centerY } : null;
 
   return {
@@ -431,63 +547,18 @@ function captureMineState(captureBounds: ScreenCaptureBounds): MineCaptureResult
   };
 }
 
-async function hoverAndReadTile(
-  screenX: number,
-  screenY: number,
-  captureBounds: ScreenCaptureBounds,
-): Promise<HoverTileReadResult> {
-  if (ENABLE_NODE_HOVER_BEFORE_TILE_READ) {
-    moveMouse(screenX, screenY);
-    await sleepWithAbort(TOOLTIP_SETTLE_MS, () => AppState.automateBotRunning);
-  }
-
-  if (!AppState.automateBotRunning) {
-    return { tile: null, source: "none", rawLine: null };
-  }
-
-  const bitmap = captureScreenBitmap(captureBounds);
-  let tileBox: ReturnType<typeof detectTileLocationBoxInScreenshot> = null;
-  if (ENABLE_TILE_LOCATION_DETECTION) {
-    tileBox = detectTileLocationBoxInScreenshot(bitmap);
-    const tileFromPrimary = tileBox ? parseTileCoord(tileBox.matchedLine) : null;
-    if (tileFromPrimary) {
-      return {
-        tile: tileFromPrimary,
-        source: "tile-location",
-        rawLine: tileBox?.matchedLine ?? null,
-      };
-    }
-  }
-
-  const overlayBox = detectOverlayBoxInScreenshot(bitmap, currentWindowsScalePercent);
-  if (!overlayBox) {
-    return {
-      tile: null,
-      source: "none",
-      rawLine: tileBox?.matchedLine ?? null,
-    };
-  }
-
-  const tileFromOverlay = parseTileCoord(overlayBox.matchedLine);
-  return {
-    tile: tileFromOverlay,
-    source: tileFromOverlay ? "overlay" : "none",
-    rawLine: tileFromOverlay ? overlayBox.matchedLine : (tileBox?.matchedLine ?? overlayBox.matchedLine),
-  };
-}
-
 function findNodeNearActiveScreen(
-  boxes: MotherlodeMineBox[],
+  boxes: MineTargetBox[],
   activeScreen: { x: number; y: number },
   captureBounds: ScreenCaptureBounds,
-): MotherlodeMineBox | null {
+): MineTargetBox | null {
   const activeX = activeScreen.x - captureBounds.x;
   const activeY = activeScreen.y - captureBounds.y;
 
-  let best: MotherlodeMineBox | null = null;
+  let best: MineTargetBox | null = null;
   let bestDistance = Number.POSITIVE_INFINITY;
   let bestCenterDistance = Number.POSITIVE_INFINITY;
-  let bestYellow: MotherlodeMineBox | null = null;
+  let bestYellow: MineTargetBox | null = null;
   let bestYellowDistance = Number.POSITIVE_INFINITY;
   let bestYellowCenterDistance = Number.POSITIVE_INFINITY;
 
@@ -510,8 +581,7 @@ function findNodeNearActiveScreen(
 
     if (
       box.color === "yellow" &&
-      (distance < bestYellowDistance ||
-        (Math.abs(distance - bestYellowDistance) < 0.001 && centerDistance < bestYellowCenterDistance))
+      (distance < bestYellowDistance || (Math.abs(distance - bestYellowDistance) < 0.001 && centerDistance < bestYellowCenterDistance))
     ) {
       bestYellowDistance = distance;
       bestYellowCenterDistance = centerDistance;
@@ -527,10 +597,10 @@ function findNodeNearActiveScreen(
 }
 
 function selectNearestMineNodeByAnchor(
-  boxes: MotherlodeMineBox[],
+  boxes: MineTargetBox[],
   captureBounds: ScreenCaptureBounds,
   anchor: { x: number; y: number } | null,
-): MotherlodeMineBox | null {
+): MineTargetBox | null {
   if (boxes.length === 0) {
     return null;
   }
@@ -538,7 +608,7 @@ function selectNearestMineNodeByAnchor(
   const anchorX = anchor?.x ?? Math.round(captureBounds.width / 2);
   const anchorY = anchor?.y ?? Math.round(captureBounds.height / 2);
 
-  let best: MotherlodeMineBox | null = null;
+  let best: MineTargetBox | null = null;
   let bestEdgeDistance = Number.POSITIVE_INFINITY;
   let bestCenterDistance = Number.POSITIVE_INFINITY;
 
@@ -553,10 +623,7 @@ function selectNearestMineNodeByAnchor(
     const centerDy = anchorY - box.centerY;
     const centerDistance = axisDistance(centerDx, centerDy);
 
-    if (
-      edgeDistance < bestEdgeDistance ||
-      (Math.abs(edgeDistance - bestEdgeDistance) < 0.001 && centerDistance < bestCenterDistance)
-    ) {
+    if (edgeDistance < bestEdgeDistance || (Math.abs(edgeDistance - bestEdgeDistance) < 0.001 && centerDistance < bestCenterDistance)) {
       best = box;
       bestEdgeDistance = edgeDistance;
       bestCenterDistance = centerDistance;
@@ -566,123 +633,389 @@ function selectNearestMineNodeByAnchor(
   return best;
 }
 
-type OsrsSearchContext = {
-  bitmap: RobotBitmap;
-  state: BotState;
+function estimateMoveTilePxFromPlayerBox(playerBoxInCapture: PlayerBox | null): number {
+  if (!playerBoxInCapture) {
+    return MOVE_TILE_PX_FALLBACK;
+  }
+
+  const estimatedTilePx = Math.round((playerBoxInCapture.width + playerBoxInCapture.height) / 2);
+  return clamp(estimatedTilePx, MOVE_TILE_PX_MIN, MOVE_TILE_PX_MAX);
+}
+
+function estimateMoveTravelTicks(
+  screenPoint: { x: number; y: number },
+  captureBounds: ScreenCaptureBounds,
+  playerBoxInCapture: PlayerBox | null,
+): number {
+  const anchorScreenX = captureBounds.x + (playerBoxInCapture?.centerX ?? Math.round(captureBounds.width / 2));
+  const anchorScreenY = captureBounds.y + (playerBoxInCapture?.centerY ?? Math.round(captureBounds.height / 2));
+  const tilePx = estimateMoveTilePxFromPlayerBox(playerBoxInCapture);
+  const dxPx = screenPoint.x - anchorScreenX;
+  const dyPx = screenPoint.y - anchorScreenY;
+  const distanceTiles = Math.max(Math.abs(dxPx) / tilePx, Math.abs(dyPx) / tilePx);
+
+  return clamp(
+    Math.ceil(distanceTiles / MOVE_PLAYER_SPEED_TILES_PER_TICK) + MOVE_WAIT_EXTRA_TICKS,
+    NODE_CLICK_LOCK_TICKS,
+    MOVE_WAIT_MAX_TICKS,
+  );
+}
+
+type BotEngineContext<T = BotState> = {
+  tickCapture: EngineTickCapture;
+  state: T;
   nowMs: number;
   captureBounds: ScreenCaptureBounds;
 };
 
 const Osrs = {
-  search:
-    (color: MotherlodeMineBox["color"], nextPhase: BotPhase) =>
-    async ({ bitmap, state, nowMs, captureBounds }: OsrsSearchContext): Promise<BotState> => {
-      const allMineBoxes = detectMotherlodeMineBoxesInScreenshot(bitmap);
-      const colorBoxes = allMineBoxes.filter((box) => box.color === color);
-      const playerBox = detectBestPlayerBoxInScreenshot(bitmap);
+  move: ({ captureBounds, state, nowMs, tickCapture }: BotEngineContext<MovingBotState>): BotState => {
+    const stateWithLock = state;
+    const pendingMove = stateWithLock.pendingMove;
+    const currentLockUntilMs = stateWithLock.actionLockUntilMs;
+
+    if (isDeadlineActive(currentLockUntilMs, nowMs)) {
+      const collisionState = Osrs.searchSolidColoredTile(
+        "green",
+        "searching",
+      )({
+        tickCapture,
+        state,
+        nowMs,
+        captureBounds,
+      });
+      if (collisionState !== state) {
+        return collisionState;
+      }
+
+      const remainingMs = Math.max(0, currentLockUntilMs - nowMs);
+      const remainingTicks = Math.max(1, Math.ceil(remainingMs / GAME_TICK_MS));
+      if (state.loopIndex % 2 === 0) {
+        log(
+          `Automate Bot (${BOT_NAME}): #${state.loopIndex} [move] Moving to (${pendingMove.targetScreen.x},${pendingMove.targetScreen.y}); waiting ${remainingTicks} more tick(s).`,
+        );
+      }
+
+      return state;
+    }
+
+    if (currentLockUntilMs <= 0) {
+      const playerBox = detectBestPlayerBoxInScreenshot(tickCapture.bitmap);
+      const moveWaitTicks = estimateMoveTravelTicks(
+        { x: pendingMove.targetScreen.x, y: pendingMove.targetScreen.y },
+        captureBounds,
+        playerBox,
+      );
+
+      clickScreenPoint(pendingMove.targetScreen.x, pendingMove.targetScreen.y);
+      moveMouseAwayFromClickedNode(pendingMove.targetScreen.x, pendingMove.targetScreen.y, captureBounds);
+
+      log(
+        `Automate Bot (${BOT_NAME}): #${state.loopIndex} [move] Clicking move target (${pendingMove.targetScreen.x},${pendingMove.targetScreen.y}); eta ~${moveWaitTicks} tick(s).`,
+      );
+
+      return {
+        ...stateWithLock,
+        actionLockUntilMs: deadlineFromNowTicks(moveWaitTicks),
+      } as BotState;
+    }
+
+    const nextPhase = pendingMove.nextPhase;
+    const nextFunction = pendingMove.nextFunction;
+    const bagFullState = ("bagFullState" in stateWithLock ? stateWithLock.bagFullState : null) as MotherlodeBagFullState | null;
+    const depositTriggerStableTicks = (
+      "depositTriggerStableTicks" in stateWithLock ? stateWithLock.depositTriggerStableTicks : 0
+    ) as number;
+
+    log(`Automate Bot (${BOT_NAME}): #${state.loopIndex} [move] Movement complete; transitioning to ${nextPhase}/${nextFunction}.`);
+
+    if (nextPhase === "mining") {
+      return {
+        loopIndex: state.loopIndex,
+        phase: "mining",
+        latestPhase: "moving",
+        currentFunction: "mine",
+        actionLockUntilMs: 0,
+        activeTile: null,
+        // Use the move click target as the active tracking anchor for mining-state matching.
+        activeScreen: { x: pendingMove.targetScreen.x, y: pendingMove.targetScreen.y },
+        missingActiveTicks: 0,
+        miningWaitTicks: 0,
+        activeNodeMaxWaitTicks: randomIntInclusive(ACTIVE_NODE_MAX_WAIT_TICKS_MIN, ACTIVE_NODE_MAX_WAIT_TICKS_MAX),
+        bagFullState,
+        depositTriggerStableTicks,
+        depositNearStableTicks: 0,
+        depositRetryTicks: 0,
+        depositInFlight: false,
+        depositLastDistancePx: null,
+      } as BotState;
+    }
+
+    if (nextPhase === "depositing" || nextFunction === "deposit") {
+      return {
+        loopIndex: state.loopIndex,
+        phase: "depositing",
+        latestPhase: "moving",
+        currentFunction: "deposit",
+        actionLockUntilMs: deadlineFromNowTicks(DEPOSIT_CLICK_LOCK_TICKS),
+        activeTile: null,
+        activeScreen: null,
+        missingActiveTicks: 0,
+        miningWaitTicks: 0,
+        activeNodeMaxWaitTicks: randomIntInclusive(ACTIVE_NODE_MAX_WAIT_TICKS_MIN, ACTIVE_NODE_MAX_WAIT_TICKS_MAX),
+        bagFullState,
+        depositTriggerStableTicks,
+        depositNearStableTicks: 0,
+        depositRetryTicks: 0,
+        depositInFlight: false,
+        depositLastDistancePx: null,
+      } as BotState;
+    }
+
+    return {
+      loopIndex: state.loopIndex,
+      phase: "searching",
+      latestPhase: "moving",
+      currentFunction: "searchOre",
+      actionLockUntilMs: 0,
+      activeTile: null,
+      activeScreen: null,
+      missingActiveTicks: 0,
+      miningWaitTicks: 0,
+      activeNodeMaxWaitTicks: randomIntInclusive(ACTIVE_NODE_MAX_WAIT_TICKS_MIN, ACTIVE_NODE_MAX_WAIT_TICKS_MAX),
+      bagFullState,
+      depositTriggerStableTicks,
+      depositNearStableTicks: 0,
+      depositRetryTicks: 0,
+      depositInFlight: false,
+      depositLastDistancePx: null,
+    } as BotState;
+  },
+  deposit: ({ tickCapture, state, nowMs }: BotEngineContext): BotState => {
+    if (state.phase === "moving") {
+      return state;
+    }
+
+    const bagFullState = detectMotherlodeBagFullBoxInScreenshot(tickCapture.bitmap).state;
+    const updatedState = updateBagState(state, bagFullState);
+
+    if (updatedState.phase === "moving") {
+      return updatedState;
+    }
+
+    const current = updatedState;
+
+    if (isActionLocked(current, nowMs)) {
+      return current;
+    }
+
+    const bagAtDepositThreshold = current.bagFullState !== null && isBagAtDepositThreshold(current.bagFullState);
+    if (!bagAtDepositThreshold) {
+      log(
+        `Automate Bot (${BOT_NAME}): #${current.loopIndex} [deposit] Deposit complete (bag=${current.bagFullState ?? "none"}). Returning to search.`,
+      );
+      return resetToSearching(current, "searchOre");
+    }
+
+    if (current.loopIndex % 3 === 0) {
+      warn(
+        `Automate Bot (${BOT_NAME}): #${current.loopIndex} [deposit] Deposit not confirmed yet (bag=${current.bagFullState}). Re-searching cyan deposit.`,
+      );
+    }
+
+    return resetToSearching(current, "searchDeposit");
+  },
+  searchBorderedTile:
+    (color: MineSearchColor, nextPhase: BotPhase) =>
+    ({ tickCapture, state, nowMs, captureBounds }: BotEngineContext): BotState => {
+      if (color !== "cyan") {
+        return state;
+      }
+
+      const targetDepositBox = detectBestCyanDepositBoxInScreenshot(tickCapture.bitmap);
+
+      if (!targetDepositBox) {
+        if (state.loopIndex % 3 === 0) {
+          warn(`Automate Bot (${BOT_NAME}): #${state.loopIndex} [search-bordered] Bag full but cyan deposit target was not found.`);
+        }
+        return state;
+      }
+
+      const interactionPoint = toDepositInteractionScreenPoint(targetDepositBox, captureBounds);
+      const transition = resolvePendingMoveTransition(nextPhase, color);
+
+      log(
+        `Automate Bot (${BOT_NAME}): #${state.loopIndex} [search-bordered] Found cyan deposit at (${interactionPoint.x},${interactionPoint.y}); queueing move -> ${transition.nextPhase}/${transition.nextFunction}.`,
+      );
+
+      return {
+        ...state,
+        phase: "moving",
+        latestPhase: state.phase,
+        currentFunction: "move",
+        pendingMove: {
+          nextPhase: transition.nextPhase,
+          nextFunction: transition.nextFunction,
+          targetScreen: { x: interactionPoint.x, y: interactionPoint.y },
+        },
+        actionLockUntilMs: 0,
+      };
+    },
+  searchSolidColoredTile:
+    (color: MineSearchColor, nextPhase: BotPhase) =>
+    ({ tickCapture, state, nowMs, captureBounds }: BotEngineContext): BotState => {
+      const playerBox = detectBestPlayerBoxInScreenshot(tickCapture.bitmap);
+      const obstacleBox = detectBestRedObstacleBoxInScreenshot(tickCapture.bitmap);
+
+      if (!shouldClearRedObstacle(playerBox, obstacleBox)) {
+        return state;
+      }
+
+      const point = toObstacleInteractionScreenPoint(obstacleBox, captureBounds);
+      const bagFullState = detectMotherlodeBagFullBoxInScreenshot(tickCapture.bitmap).state;
+      const stateWithDeposit = state as BotState & { depositTriggerStableTicks?: number };
+      const previousDepositTicks =
+        typeof stateWithDeposit.depositTriggerStableTicks === "number" ? stateWithDeposit.depositTriggerStableTicks : 0;
+      const depositTriggerStableTicks = isBagAtDepositThreshold(bagFullState)
+        ? Math.min(DEPOSIT_TRIGGER_STABLE_TICKS, previousDepositTicks + 1)
+        : 0;
+      const searchFunction = resolveSearchFunctionFromBagState(bagFullState, depositTriggerStableTicks);
+
+      warn(
+        `Automate Bot (${BOT_NAME}): #${state.loopIndex} [search-solid] Clearing red obstacle at (${point.x},${point.y}) [${color} -> ${nextPhase}].`,
+      );
+      clickScreenPoint(point.x, point.y);
+      moveMouseAwayFromClickedNode(point.x, point.y, captureBounds);
+
+      return {
+        loopIndex: state.loopIndex,
+        currentFunction: searchFunction,
+        phase: "searching",
+        latestPhase: state.latestPhase ?? state.phase,
+        actionLockUntilMs: 0,
+        activeTile: null,
+        activeScreen: null,
+        missingActiveTicks: 0,
+        miningWaitTicks: 0,
+        activeNodeMaxWaitTicks: randomIntInclusive(ACTIVE_NODE_MAX_WAIT_TICKS_MIN, ACTIVE_NODE_MAX_WAIT_TICKS_MAX),
+        bagFullState,
+        depositTriggerStableTicks,
+        depositNearStableTicks: 0,
+        depositRetryTicks: 0,
+        depositInFlight: false,
+        depositLastDistancePx: null,
+      } as BotState;
+    },
+  searchColoredCircle:
+    (color: MineSearchColor, nextPhase: BotPhase) =>
+    ({ tickCapture, state, nowMs, captureBounds }: BotEngineContext): BotState => {
+      if (color === "cyan") {
+        return state;
+      }
+
+      const mineColor = color as MineTargetBox["color"];
+      const allMineBoxes = detectMineTargetBoxesInScreenshot(tickCapture.bitmap);
+      const colorBoxes = allMineBoxes.filter((box) => box.color === mineColor);
+      const playerBox = detectBestPlayerBoxInScreenshot(tickCapture.bitmap);
       const playerAnchor = playerBox ? { x: playerBox.centerX, y: playerBox.centerY } : null;
       const targetNode = selectNearestMineNodeByAnchor(colorBoxes, captureBounds, playerAnchor);
 
       if (!targetNode) {
         if (state.loopIndex % 3 === 0) {
           warn(
-            `Automate Bot (${BOT_NAME}): #${state.loopIndex} search(${color} -> ${nextPhase}) found no target (boxes=${allMineBoxes.length}, color=${colorBoxes.length}).`,
+            `Automate Bot (${BOT_NAME}): #${state.loopIndex} search(${mineColor} -> ${nextPhase}) found no target (boxes=${allMineBoxes.length}, color=${colorBoxes.length}).`,
           );
         }
         return state;
       }
 
-      if (isActionLocked(state, nowMs)) {
-        return state;
-      }
-
       const interactionPoint = toNodeInteractionScreenPoint(targetNode, captureBounds);
-      const tileRead = await hoverAndReadTile(interactionPoint.x, interactionPoint.y, captureBounds);
-      if (!tileRead.tile) {
-        warn(
-          `Automate Bot (${BOT_NAME}): #${state.loopIndex} search(${color} -> ${nextPhase}) tile read failed (source=${tileRead.source}, raw='${tileRead.rawLine ?? ""}').`,
-        );
-        return state;
-      }
+      const transition = resolvePendingMoveTransition(nextPhase, mineColor);
 
       log(
-        `Automate Bot (${BOT_NAME}): #${state.loopIndex} search(${color} -> ${nextPhase}) clicking tile (${tileRead.tile.x},${tileRead.tile.y},${tileRead.tile.z}) via ${tileRead.source}.`,
+        `Automate Bot (${BOT_NAME}): #${state.loopIndex} [search-colored-circle] Found ${mineColor} node (boxes=${allMineBoxes.length}, color=${colorBoxes.length}) at (${interactionPoint.x},${interactionPoint.y}); queueing move -> ${transition.nextPhase}/${transition.nextFunction}.`,
       );
-      clickScreenPoint(interactionPoint.x, interactionPoint.y);
-      moveMouseAwayFromClickedNode(interactionPoint.x, interactionPoint.y, captureBounds);
-
-      if (nextPhase === "mining") {
-        return {
-          ...state,
-          phase: nextPhase,
-          activeTile: tileRead.tile,
-          activeScreen: { x: interactionPoint.x, y: interactionPoint.y },
-          missingActiveTicks: 0,
-          miningWaitTicks: 0,
-          activeNodeMaxWaitTicks: randomIntInclusive(ACTIVE_NODE_MAX_WAIT_TICKS_MIN, ACTIVE_NODE_MAX_WAIT_TICKS_MAX),
-          actionLockUntilMs: deadlineFromNowTicks(NODE_CLICK_LOCK_TICKS),
-        };
-      }
 
       return {
         ...state,
-        phase: nextPhase,
-        actionLockUntilMs: deadlineFromNowTicks(NODE_CLICK_LOCK_TICKS),
+        phase: "moving",
+        latestPhase: state.phase,
+        currentFunction: "move",
+        pendingMove: {
+          nextPhase: transition.nextPhase,
+          nextFunction: transition.nextFunction,
+          targetScreen: { x: interactionPoint.x, y: interactionPoint.y },
+        },
+        actionLockUntilMs: 0,
       };
     },
 };
 
-const searchOre = Osrs.search("green", "mining");
-
-const runMineFunction = createMineFunction<BotState, MineCaptureResult>({
-  capture: (state) => {
+const runMineFunction = createMineFunction<BotState, MineCaptureResult, EngineTickCapture>({
+  capture: (state, _nowMs, tickCapture) => {
     setCurrentLogLoopIndex(state.loopIndex);
-    const capture = captureMineState(captureBoundsRef!);
+    setCurrentLogPhase(state.phase);
+    const capture = captureMineState(tickCapture.bitmap);
     const current = updateBagState(state, capture.bagFullState);
     return { state: current, capture };
   },
-  beforePhase: (current, capture, nowMs) => {
-    if (current.depositTriggerStableTicks === DEPOSIT_TRIGGER_STABLE_TICKS) {
-      warn(
-        `Automate Bot (${BOT_NAME}): #${current.loopIndex} Bag-full threshold is stable (${current.bagFullState}). Deposit/banking flow is not wired yet in v3; staying in mine function.`,
-      );
-    }
+  beforePhase: (current, capture, nowMs, tickCapture) => {
+    const isCurrentLocked = current.phase === "moving" ? isActionLocked(current, nowMs) : false;
 
-    if (!isActionLocked(current, nowMs) && shouldClearRedObstacle(capture.playerBoxInCapture, capture.obstacleBox)) {
-      const point = toObstacleInteractionScreenPoint(capture.obstacleBox, captureBoundsRef!);
-      warn(`Automate Bot (${BOT_NAME}): #${current.loopIndex} Clearing red obstacle at (${point.x},${point.y}).`);
-      clickScreenPoint(point.x, point.y);
-      moveMouseAwayFromClickedNode(point.x, point.y, captureBoundsRef!);
-      return {
-        ...resetToSearching(current),
-        bagFullState: current.bagFullState,
-        depositTriggerStableTicks: current.depositTriggerStableTicks,
-        actionLockUntilMs: deadlineFromNowTicks(OBSTACLE_CLICK_LOCK_TICKS),
-      };
+    if (current.phase !== "moving" && !isCurrentLocked && shouldClearRedObstacle(capture.playerBoxInCapture, capture.obstacleBox)) {
+      return Osrs.searchSolidColoredTile(
+        "green",
+        "searching",
+      )({
+        tickCapture,
+        state: current,
+        nowMs,
+        captureBounds: captureBoundsRef!,
+      });
     }
 
     return null;
   },
-  runSearchingPhase: (current, capture, nowMs) =>
-    searchOre({
-      bitmap: capture.bitmap,
-      state: current,
-      nowMs,
-      captureBounds: captureBoundsRef!,
-    }),
-  runMiningPhase: (current, capture) => {
+
+  runMiningPhase: (current, capture, nowMs, tickCapture) => {
+    if (current.phase === "searching") {
+      return {
+        ...current,
+        currentFunction: "searchOre",
+      } as BotState;
+    }
+
+    if (current.phase === "moving") {
+      return {
+        ...current,
+        currentFunction: "move",
+      } as BotState;
+    }
+
+    if (current.phase === "depositing") {
+      return {
+        ...current,
+        currentFunction: "deposit",
+      } as BotState;
+    }
+
+    if (shouldStartDepositCycle(current)) {
+      log(
+        `Automate Bot (${BOT_NAME}): #${current.loopIndex} [mine] Bag-full threshold stable (${current.bagFullState}); switching to searchDeposit.`,
+      );
+      return resetToSearching(current, "searchDeposit");
+    }
+
     if (!current.activeScreen) {
       warn(`Automate Bot (${BOT_NAME}): #${current.loopIndex} Missing active tracking point; returning to search.`);
-      return resetToSearching(current);
+      return resetToSearching(current, "searchOre");
     }
 
     const nearbyAny = findNodeNearActiveScreen(capture.boxes, current.activeScreen, captureBoundsRef!);
     if (nearbyAny) {
       if (nearbyAny.color !== "green") {
-        log(
-          `Automate Bot (${BOT_NAME}): #${current.loopIndex} [mine] Active node is now ${nearbyAny.color}. Searching next node.`,
-        );
-        return resetToSearching(current);
+        log(`Automate Bot (${BOT_NAME}): #${current.loopIndex} [mine] Active node is now ${nearbyAny.color}. Searching next node.`);
+        return resetToSearching(current, "searchOre");
       }
 
       const miningWaitTicks = current.miningWaitTicks + 1;
@@ -690,7 +1023,7 @@ const runMineFunction = createMineFunction<BotState, MineCaptureResult>({
         warn(
           `Automate Bot (${BOT_NAME}): #${current.loopIndex} [mine] Active node still ${nearbyAny.color} after ${miningWaitTicks} ticks. Re-searching.`,
         );
-        return resetToSearching(current);
+        return resetToSearching(current, "searchOre");
       }
 
       if (current.loopIndex % 2 === 0) {
@@ -710,7 +1043,7 @@ const runMineFunction = createMineFunction<BotState, MineCaptureResult>({
     }
 
     log(`Automate Bot (${BOT_NAME}): #${current.loopIndex} [mine] Lost active node; returning to search.`);
-    return resetToSearching(current);
+    return resetToSearching(current, "searchOre");
   },
 });
 
@@ -727,28 +1060,75 @@ async function runLoop(captureBounds: ScreenCaptureBounds): Promise<void> {
   setAutomateBotCurrentStep(MINING_MOTHERLODE_MINE_V3_BOT_ID);
 
   try {
-    await runBotEngine<BotState, EngineFunctionKey>({
+    await runBotEngine<BotState, EngineFunctionKey, EngineTickCapture>({
       tickMs: BASE_TICK_MS,
       isRunning: () => AppState.automateBotRunning,
       createInitialState: createInitialBotState,
+      captureTick: () => ({
+        bitmap: captureScreenBitmap(captureBounds),
+        captureBitmap: () => captureScreenBitmap(captureBounds),
+      }),
       functions: {
-        mine: ({ state, nowMs }) => runMineFunction(state, nowMs),
+        mine: ({ state, nowMs, tickCapture }) => runMineFunction(state, nowMs, tickCapture),
+        deposit: ({ state, nowMs, tickCapture }) => {
+          setCurrentLogLoopIndex(state.loopIndex);
+          setCurrentLogPhase(state.phase);
+
+          if (state.phase !== "depositing") {
+            return state.phase === "moving" ? state : resetToSearching(state, "searchDeposit");
+          }
+
+          return Osrs.deposit({ tickCapture, state, nowMs, captureBounds });
+        },
+        searchDeposit: ({ state, nowMs, tickCapture }) => {
+          setCurrentLogLoopIndex(state.loopIndex);
+          setCurrentLogPhase(state.phase);
+
+          if (state.phase !== "searching") {
+            return {
+              ...state,
+              currentFunction: state.phase === "moving" ? "move" : state.phase === "depositing" ? "deposit" : "mine",
+            } as BotState;
+          }
+
+          return Osrs.searchBorderedTile("cyan", "depositing")({ tickCapture, state, nowMs, captureBounds });
+        },
+        searchOre: ({ state, nowMs, tickCapture }) => {
+          setCurrentLogLoopIndex(state.loopIndex);
+          setCurrentLogPhase(state.phase);
+
+          if (state.phase !== "searching") {
+            return {
+              ...state,
+              currentFunction: state.phase === "moving" ? "move" : state.phase === "depositing" ? "deposit" : "mine",
+            } as BotState;
+          }
+
+          return Osrs.searchColoredCircle("green", "moving")({ tickCapture, state, nowMs, captureBounds });
+        },
+        move: ({ state, nowMs, tickCapture }) => {
+          setCurrentLogLoopIndex(state.loopIndex);
+          setCurrentLogPhase(state.phase);
+          return state.phase === "moving" ? Osrs.move({ state, nowMs, captureBounds, tickCapture }) : state;
+        },
       },
       onTickError: (error, state) => {
         const message = error instanceof Error ? error.message : String(error);
-        logger.error(`#${state.loopIndex} Automate Bot (${BOT_NAME}): tick error - ${message}`);
+        logger.error(`#${state.loopIndex} [${state.phase}] tick error - ${message}`);
       },
     });
   } finally {
     captureBoundsRef = null;
     isLoopRunning = false;
     startedAtMs = null;
+    setCurrentLogPhase(null);
     setAutomateBotCurrentStep(null);
   }
 }
 
 export function onMotherlodeMineBotV3Start(): void {
   setCurrentLogLoopIndex(0);
+  setCurrentLogPhase("searching");
 
   if (!isLoopRunning) {
     startedAtMs = Date.now();
@@ -757,7 +1137,7 @@ export function onMotherlodeMineBotV3Start(): void {
 
   log(`Automate Bot STARTED (${BOT_NAME}).`);
   log(
-    `Automate Bot (${BOT_NAME}) config: engineTick=${BASE_TICK_MS}ms, engineFunctions={mine}, hover-before-read=${ENABLE_NODE_HOVER_BEFORE_TILE_READ ? "on" : "off"}, obstacle-red-click=${ENABLE_OBSTACLE_RED_CLICK ? "on" : "off"}.`,
+    `Automate Bot (${BOT_NAME}) config: engineTick=${BASE_TICK_MS}ms, engineFunctions={searchOre,searchDeposit,move,mine,deposit}, hover-before-read=${ENABLE_NODE_HOVER_BEFORE_TILE_READ ? "on" : "off"}, obstacle-red-click=${ENABLE_OBSTACLE_RED_CLICK ? "on" : "off"}.`,
   );
 
   const window = getRuneLite();

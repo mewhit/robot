@@ -12,7 +12,7 @@
     "test:screenshot:tile-location": "ts-node src/main/automate-bots/shared/tile-location-detection.spec.ts test-images/tile-location-box/*.png",
     "test:screenshot:cyan": "ts-node src/main/automate-bots/shared/cyan-box-detector.spec.ts test-images/npc-box/*.png",
     "test:screenshot:attack": "ts-node src/main/automate-bots/shared/attack-box-detector.spec.ts test-images/attack-box/*.png",
-    "test:screenshot:motherlode-mine": "ts-node src/main/automate-bots/shared/motherlode-mine-box-detector.spec.ts test-images/motherlode-mine-box/*.png",
+    "test:screenshot:motherlode-mine-box": "ts-node src/main/automate-bots/shared/motherlode-mine-box-detector.spec.ts test-images/motherlode-mine-box/*.png",
     "test:screenshot:motherlode-deposit": "ts-node src/main/automate-bots/shared/motherlode-deposit-box-detector.spec.ts test-images/motherlode-mine-upstair-deposit/*.png",
     "test:screenshot:motherlode-banking-green": "ts-node src/main/automate-bots/shared/motherlode-banking-green-detector.spec.ts test-images/motherlode-banking-green/*.png",
     "test:screenshot:motherlode-banking-yellow": "ts-node src/main/automate-bots/shared/motherlode-banking-yellow-detector.spec.ts test-images/motherlode-banking-yellow/*.png",

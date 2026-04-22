@@ -16,7 +16,7 @@ type AutomateBotProps = {
   logLines: string[];
   onToggleTaskNodeExpand: (id: string) => void;
   onSelectTaskNode: (id: string) => void;
-  onToggleSelectedTaskRun: () => void;
+  onToggleSelectedTaskRun: (taskNodeId?: string) => void;
   onStepContextMenu: (e: React.MouseEvent, stepId: string, stepName: string) => void;
 };
 
@@ -40,7 +40,7 @@ function TaskNodeComponent({
   activeStepId: string | null;
   onToggleExpand: (id: string) => void;
   onSelectNode: (id: string) => void;
-  onToggleSelectedTaskRun: () => void;
+  onToggleSelectedTaskRun: (taskNodeId?: string) => void;
   onStepContextMenu: (e: React.MouseEvent, stepId: string, stepName: string) => void;
 }) {
   const isExpanded = expandedNodeIds.has(node.id);
@@ -86,8 +86,7 @@ function TaskNodeComponent({
             className={`task-play-btn${isSelectedTaskRunning && isSelected ? " running" : ""}`}
             onClick={(e) => {
               e.stopPropagation();
-              onSelectNode(node.id);
-              onToggleSelectedTaskRun();
+              onToggleSelectedTaskRun(node.id);
             }}
           >
             {isSelectedTaskRunning && isSelected ? "Stop" : "Play"}

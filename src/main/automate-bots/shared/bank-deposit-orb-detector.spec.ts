@@ -2,11 +2,7 @@ import fs from "fs";
 import path from "path";
 import { PNG } from "pngjs";
 import type { RobotBitmap } from "./ocr-engine";
-import {
-  BankDepositOrbDetection,
-  detectBankDepositIconWithOrb,
-  saveBitmapWithBankDepositOrbDetection,
-} from "./bank-deposit-orb-detector";
+import { BankDepositOrbDetection, detectBankDepositIconWithOrb, saveBitmapWithBankDepositOrbDetection } from "./bank-deposit-orb-detector";
 
 type ExpectedDetection = {
   shouldDetect: boolean;
@@ -177,9 +173,7 @@ function validateDetection(screenshotPath: string, detection: BankDepositOrbDete
   }
 
   if ((expected.minInliers ?? 0) > detection.inlierCount) {
-    console.error(
-      `Too few inliers for ${basename}: expected >=${expected.minInliers}, actual ${detection.inlierCount}`,
-    );
+    console.error(`Too few inliers for ${basename}: expected >=${expected.minInliers}, actual ${detection.inlierCount}`);
     return false;
   }
 
