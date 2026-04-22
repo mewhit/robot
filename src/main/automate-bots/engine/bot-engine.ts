@@ -22,11 +22,13 @@ export type RunBotEngineOptions<State extends BotEngineLoopState<FunctionKey>, F
   onTickError?: (error: unknown, state: State) => void;
 };
 
-export type OrsrPhaseState = {
-  phase: "mining" | "searching" | "moving" | "depositing";
+export type OrsrCorePhase = "mining" | "searching" | "moving" | "depositing";
+
+export type OrsrPhaseState<AdditionalPhase extends string = never> = {
+  phase: OrsrCorePhase | AdditionalPhase;
 };
 
-export type CreateMineFunctionOptions<State extends OrsrPhaseState, Capture, TickCapture = undefined> = {
+export type CreateMineFunctionOptions<State extends OrsrPhaseState<string>, Capture, TickCapture = undefined> = {
   capture: (
     state: State,
     nowMs: number,
@@ -41,7 +43,7 @@ export type CreateMineFunctionOptions<State extends OrsrPhaseState, Capture, Tic
   runMiningPhase: (state: State, capture: Capture, nowMs: number, tickCapture: TickCapture) => Promise<State> | State;
 };
 
-export function createMineFunction<State extends OrsrPhaseState, Capture, TickCapture = undefined>(
+export function createMineFunction<State extends OrsrPhaseState<string>, Capture, TickCapture = undefined>(
   options: CreateMineFunctionOptions<State, Capture, TickCapture>,
 ): (state: State, nowMs: number, tickCapture: TickCapture) => Promise<State> {
   return async (state: State, nowMs: number, tickCapture: TickCapture): Promise<State> => {

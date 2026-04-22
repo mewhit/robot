@@ -107,6 +107,26 @@ function expandScreenshotArgs(args: string[]): string[] {
 function expectedStatsFromScreenshotPath(screenshotPath: string): ExpectedStats | null {
   const basename = path.basename(screenshotPath).toLowerCase();
 
+  if (basename.includes("[168+22-189]-[1]-[-1}")) {
+    return {
+      sackCount: 168,
+      inventoryCount: 22,
+      capacityCount: 189,
+      row2Value: 1,
+      row3Value: -1,
+    };
+  }
+
+  if (basename.includes("1298x1549-2k-125-3")) {
+    return {
+      sackCount: 80,
+      inventoryCount: 0,
+      capacityCount: 108,
+      row2Value: 2,
+      row3Value: 28,
+    };
+  }
+
   if (basename.includes("full-bag")) {
     return {
       sackCount: 56,

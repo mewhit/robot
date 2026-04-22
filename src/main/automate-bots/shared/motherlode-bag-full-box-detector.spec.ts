@@ -119,6 +119,10 @@ function expectedStateFromScreenshotPath(screenshotPath: string): MotherlodeBagF
     return "red";
   }
 
+  if (file.includes("[168+22-189]")) {
+    return "red";
+  }
+
   return null;
 }
 

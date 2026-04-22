@@ -1074,6 +1074,36 @@ function normalizeMotherlodeCapacity(
   return capacityCount;
 }
 
+function normalizeMotherlodeSackCount(
+  sackCount: number | null,
+  inventoryCount: number | null,
+  capacityCount: number | null,
+): number | null {
+  if (sackCount === null || !Number.isFinite(sackCount)) {
+    return null;
+  }
+
+  if (capacityCount === null || !Number.isFinite(capacityCount)) {
+    return sackCount;
+  }
+
+  const inventory = inventoryCount ?? 0;
+  const maxPlausibleSack = Math.max(0, capacityCount + Math.max(1, inventory));
+  if (sackCount <= maxPlausibleSack) {
+    return sackCount;
+  }
+
+  const sackText = String(Math.floor(Math.abs(sackCount)));
+  if (sackText.length === 3 && sackText.startsWith("4")) {
+    const corrected = Number(`1${sackText.slice(1)}`);
+    if (Number.isFinite(corrected) && corrected >= 0 && corrected <= maxPlausibleSack) {
+      return corrected;
+    }
+  }
+
+  return sackCount;
+}
+
 function readBestRightAlignedValue(rowBitmap: RobotBitmap): {
   rawText: string | null;
   value: number | null;
@@ -1217,11 +1247,16 @@ export function detectMotherlodeBagStatsInScreenshot(bitmap: RobotBitmap): Mothe
     rawSackRow.inventoryCount,
     rawSackRow.capacityCount,
   );
+  const normalizedSackCount = normalizeMotherlodeSackCount(
+    rawSackRow.sackCount,
+    rawSackRow.inventoryCount,
+    normalizedCapacity,
+  );
   const row2 = readBestRightAlignedValue(rowBitmaps[1]);
   const row3 = readBestRightAlignedValue(rowBitmaps[2]);
   const sackRowRawText =
-    rawSackRow.sackCount !== null && rawSackRow.inventoryCount !== null && normalizedCapacity !== null
-      ? `${rawSackRow.sackCount}+${rawSackRow.inventoryCount}/${normalizedCapacity}`
+    normalizedSackCount !== null && rawSackRow.inventoryCount !== null && normalizedCapacity !== null
+      ? `${normalizedSackCount}+${rawSackRow.inventoryCount}/${normalizedCapacity}`
       : rawSackRow.rawText;
 
   return {
@@ -1234,7 +1269,7 @@ export function detectMotherlodeBagStatsInScreenshot(bitmap: RobotBitmap): Mothe
       ...rowRois[0],
       rawText: sackRowRawText,
       value: normalizedCapacity,
-      sackCount: rawSackRow.sackCount,
+      sackCount: normalizedSackCount,
       inventoryCount: rawSackRow.inventoryCount,
       capacityCount: normalizedCapacity,
     },
