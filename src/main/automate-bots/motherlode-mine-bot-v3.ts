@@ -18,11 +18,13 @@ import { MotherlodeBagStats, detectMotherlodeBagStatsInScreenshot } from "./shar
 import {
   MotherlodeDepositBox,
   detectBestMotherlodeDepositBoxInScreenshot,
+  detectMotherlodeDepositBoxesInScreenshot,
 } from "./shared/motherlode-deposit-box-detector";
 import { MotherlodeMineBox, detectMotherlodeMineBoxesInScreenshot } from "./shared/motherlode-mine-box-detector";
 import {
   MotherlodeObstacleRedBox,
   detectBestMotherlodeObstacleRedBoxInScreenshot,
+  saveBitmapWithMotherlodeObstacleRedBoxes,
 } from "./shared/motherlode-obstacle-red-detector";
 import {
   MotherlodeBankingYellowBox,
@@ -31,15 +33,17 @@ import {
 import {
   MotherlodeBankingGreenBox,
   detectBestMotherlodeBankingGreenBoxInScreenshot,
+  saveBitmapWithMotherlodeBankingGreenBoxes,
 } from "./shared/motherlode-banking-green-detector";
 import { detectBankDepositIconWithOrb } from "./shared/bank-deposit-orb-detector";
-import { PlayerBox, detectBestPlayerBoxInScreenshot } from "./shared/player-box-detector";
+import { PlayerBox, detectBestPlayerBoxInScreenshot, saveBitmapWithPlayerBoxes } from "./shared/player-box-detector";
 import { detectOverlayBoxInScreenshot } from "./shared/coordinate-box-detector";
 import { isPlayerCollidingWithObstacle as isPlayerCollidingWithObstacleBox } from "./shared/player-obstacle-collision";
 import { createMineFunction, runBotEngine, sleepWithAbort } from "./engine/bot-engine";
 import { RobotBitmap } from "./shared/ocr-engine";
 
 const BOT_NAME = "Motherlode Mine V3";
+const DEBUG_DIR = "ocr-debug";
 const CAMERA_SCROLL_TICKS = 35;
 const CAMERA_SCROLL_DELTA_Y = 120;
 const NORTH_KEY_HOLD_MS = 100;
@@ -50,6 +54,8 @@ const TOOLTIP_SETTLE_MS = 400;
 const ENABLE_TILE_LOCATION_DETECTION = false;
 const ENABLE_NODE_HOVER_BEFORE_TILE_READ = true;
 const ENABLE_OBSTACLE_RED_CLICK = true;
+const ENABLE_COLLISION_DEBUG_IMAGE = true;
+const ENABLE_BANK_DEPOSIT_DEBUG_IMAGE = true;
 const POST_CLICK_MOUSE_MOVE_MODE: PostClickMouseMoveMode = "off";
 const POST_CLICK_MOUSE_OFFSET_PX = 200;
 const POST_CLICK_CORNER_MARGIN_PX = 6;
@@ -63,7 +69,7 @@ const ACTIVE_NODE_MAX_WAIT_TICKS_MIN = 80;
 const ACTIVE_NODE_MAX_WAIT_TICKS_MAX = 86;
 const ACTIVE_NODE_MATCH_RADIUS_PX = 34;
 const ACTIVE_NODE_YELLOW_PREFERENCE_MARGIN_PX = 6;
-const BOX_CLICK_INNER_RATIO = 0.75;
+const BOX_CLICK_INNER_RATIO = 0.5;
 const BOX_CLICK_PICK_MAX_ATTEMPTS = 12;
 const BOX_CLICK_BORDER_EXCLUSION_PX = 1;
 const MOVE_PLAYER_SPEED_TILES_PER_TICK = 2;
@@ -75,9 +81,6 @@ const MOVE_WAIT_EXTRA_TICKS = 1;
 const MOVE_OBSTACLE_CHECK_MAX_REMAINING_TICKS = 2;
 const MOVE_EARLY_COMPLETE_MAX_REMAINING_TICKS = 1;
 const MOVE_EARLY_COMPLETE_RADIUS_TILES = 1.2;
-const MOVE_PREDICTIVE_RECLICK_MAX_REMAINING_TICKS = 1;
-const MOVE_PREDICTIVE_RECLICK_MAX_ATTEMPTS = 1;
-const MOVE_PREDICTIVE_RECLICK_WAIT_TICKS = 2;
 const BANK_EXPECTED_LADDER_DOWN_X = 3755;
 const BANK_EXPECTED_LADDER_DOWN_Y = 5672;
 const BANK_EXPECTED_LADDER_UP_X = 3755;
@@ -136,6 +139,8 @@ type EngineFunctionKey =
   | "searchSack"
   | "fillInventory"
   | "searchBankDeposit"
+  | "searchBankPayDirtDeposit"
+  | "depositBankPayDirt"
   | "searchBankOrb"
   | "checkInventoryEmpty"
   | "searchReturnLadder"
@@ -144,6 +149,8 @@ type BankingFunctionKey =
   | "searchSack"
   | "fillInventory"
   | "searchBankDeposit"
+  | "searchBankPayDirtDeposit"
+  | "depositBankPayDirt"
   | "searchBankOrb"
   | "checkInventoryEmpty"
   | "searchReturnLadder"
@@ -160,6 +167,10 @@ type OrangeTargetBox = {
   pixelCount: number;
 };
 type MoveDestinationFunction = Exclude<EngineFunctionKey, "move">;
+type EngineStateSnapshot = {
+  phase: Exclude<BotPhase, "moving">;
+  currentFunction: MoveDestinationFunction;
+};
 type MoveDestination = {
   phase: Exclude<BotPhase, "moving">;
   currentFunction: MoveDestinationFunction;
@@ -169,7 +180,7 @@ type MoveDestination = {
 type PendingMoveTarget = {
   targetScreen: { x: number; y: number };
   destination: MoveDestination;
-  retryCount: number;
+  latestState: EngineStateSnapshot;
 };
 
 type HoverTileReadResult = {
@@ -302,6 +313,57 @@ function log(message: string): void {
 
 function warn(message: string): void {
   logger.warn(`[${formatElapsedSinceStart()}] ${withLoopCountAtBeginning(message)}`);
+}
+
+function sanitizeDebugToken(token: string): string {
+  return (
+    token
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "") || "event"
+  );
+}
+
+function saveCollisionDebugArtifacts(
+  phase: BotPhase,
+  loopIndex: number,
+  bitmap: RobotBitmap,
+  playerBoxInCapture: PlayerBox | null,
+  obstacleBox: MotherlodeObstacleRedBox,
+): void {
+  if (!ENABLE_COLLISION_DEBUG_IMAGE) {
+    return;
+  }
+
+  const phaseToken = sanitizeDebugToken(phase);
+  const base = path.join(DEBUG_DIR, `v3-collision-${phaseToken}-loop${loopIndex}`);
+  const obstaclePath = `${base}-obstacle.png`;
+  const playerPath = `${base}-player.png`;
+
+  saveBitmapWithMotherlodeObstacleRedBoxes(bitmap, [obstacleBox], obstaclePath);
+  void saveBitmapWithPlayerBoxes(bitmap, playerBoxInCapture ? [playerBoxInCapture] : [], playerPath).catch((error) => {
+    warn(
+      `Automate Bot (${BOT_NAME}): collision debug player screenshot failed for loop #${loopIndex}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  });
+
+  warn(`Automate Bot (${BOT_NAME}): collision debug screenshots saved obstacle=${obstaclePath}, player=${playerPath}.`);
+}
+
+function saveBankDepositDebugArtifact(
+  loopIndex: number,
+  bitmap: RobotBitmap,
+  bankDepositBox: MotherlodeBankingGreenBox,
+): void {
+  if (!ENABLE_BANK_DEPOSIT_DEBUG_IMAGE) {
+    return;
+  }
+
+  const filename = path.join(DEBUG_DIR, `v3-bank-deposit-loop${loopIndex}.png`);
+  saveBitmapWithMotherlodeBankingGreenBoxes(bitmap, [bankDepositBox], filename);
+  warn(`Automate Bot (${BOT_NAME}): bank-deposit debug screenshot saved ${filename}.`);
 }
 
 function toRobotBitmapFromPng(png: PNG): RobotBitmap {
@@ -727,8 +789,29 @@ function toDepositInteractionScreenPoint(
   return pickDistinctScreenPointInLocalRange(innerX.min, innerX.max, innerY.min, innerY.max, captureBounds);
 }
 
+function toTopInnerInteractionScreenPoint(
+  box: Pick<OrangeTargetBox, "x" | "y" | "width" | "height">,
+  captureBounds: ScreenCaptureBounds,
+): { x: number; y: number } {
+  const innerX = getStrictInteriorRange(box.x, box.width, BOX_CLICK_INNER_RATIO);
+  const innerY = getStrictInteriorRange(box.y, box.height, BOX_CLICK_INNER_RATIO);
+  const topBandHeight = Math.max(1, Math.ceil((innerY.max - innerY.min + 1) * 0.2));
+  const topBandMaxY = Math.min(innerY.max, innerY.min + topBandHeight - 1);
+  return pickDistinctScreenPointInLocalRange(innerX.min, innerX.max, innerY.min, topBandMaxY, captureBounds);
+}
+
 function detectBestCyanDepositBoxInScreenshot(bitmap: RobotBitmap): MotherlodeDepositBox | null {
   return detectBestMotherlodeDepositBoxInScreenshot(bitmap);
+}
+
+function detectNearestCyanDepositBoxInScreenshot(
+  bitmap: RobotBitmap,
+  captureBounds: ScreenCaptureBounds,
+): MotherlodeDepositBox | null {
+  const boxes = detectMotherlodeDepositBoxesInScreenshot(bitmap);
+  const playerBox = detectBestPlayerBoxInScreenshot(bitmap);
+  const playerAnchor = playerBox ? { x: playerBox.centerX, y: playerBox.centerY } : null;
+  return findNearestDepositBox(boxes, captureBounds, playerAnchor);
 }
 
 function detectBestBankingYellowBoxInScreenshot(bitmap: RobotBitmap): MotherlodeBankingYellowBox | null {
@@ -831,6 +914,8 @@ function queueMoveState(
   targetScreen: { x: number; y: number },
   destination: MoveDestination,
 ): BotState {
+  const latestState = toEngineStateSnapshot(state);
+
   return {
     ...state,
     phase: "moving",
@@ -839,10 +924,47 @@ function queueMoveState(
     pendingMove: {
       targetScreen,
       destination,
-      retryCount: 0,
+      latestState,
     },
     actionLockUntilMs: 0,
   };
+}
+
+function toEngineStateSnapshot(state: BotState): EngineStateSnapshot {
+  if (state.phase === "moving") {
+    return state.pendingMove.latestState;
+  }
+
+  const normalizedFunction = resolveCurrentFunctionForPhase(state);
+  if (normalizedFunction === "move") {
+    return {
+      phase: "searching",
+      currentFunction: "searchOre",
+    };
+  }
+
+  return {
+    phase: state.phase,
+    currentFunction: normalizedFunction,
+  };
+}
+
+function restoreFromLatestEngineState(
+  state: MovingBotState,
+  bagFullState: MotherlodeBagFullState,
+  depositTriggerStableTicks: number,
+): BotState {
+  const latestState = state.pendingMove.latestState;
+  const restored = {
+    ...resetToSearching(state, "searchOre"),
+    phase: latestState.phase,
+    currentFunction: latestState.currentFunction,
+    bagFullState,
+    depositTriggerStableTicks,
+    actionLockUntilMs: deadlineFromNowTicks(OBSTACLE_CLICK_LOCK_TICKS),
+  } as BotState;
+
+  return syncStateCurrentFunction(restored);
 }
 
 function buildStateAfterMove(state: MovingBotState): BotState {
@@ -938,6 +1060,10 @@ function getBagSackCountValue(bagStats: MotherlodeBagStats | null): number | nul
   return bagStats?.sackRow.sackCount ?? null;
 }
 
+function getBagInventoryCountValue(bagStats: MotherlodeBagStats | null): number | null {
+  return bagStats?.sackRow.inventoryCount ?? null;
+}
+
 function isInventoryEmptyByBagStats(bagStats: MotherlodeBagStats | null): boolean {
   if (!bagStats) {
     return false;
@@ -982,6 +1108,46 @@ function findNearestOrangeBox(
   const anchorY = anchor?.y ?? Math.round(captureBounds.height / 2);
 
   let best: OrangeTargetBox | null = null;
+  let bestEdgeDistance = Number.POSITIVE_INFINITY;
+  let bestCenterDistance = Number.POSITIVE_INFINITY;
+
+  for (const box of boxes) {
+    const nearestX = clamp(anchorX, box.x, box.x + box.width - 1);
+    const nearestY = clamp(anchorY, box.y, box.y + box.height - 1);
+    const edgeDx = anchorX - nearestX;
+    const edgeDy = anchorY - nearestY;
+    const edgeDistance = axisDistance(edgeDx, edgeDy);
+
+    const centerDx = anchorX - box.centerX;
+    const centerDy = anchorY - box.centerY;
+    const centerDistance = axisDistance(centerDx, centerDy);
+
+    if (
+      edgeDistance < bestEdgeDistance ||
+      (Math.abs(edgeDistance - bestEdgeDistance) < 0.001 && centerDistance < bestCenterDistance)
+    ) {
+      best = box;
+      bestEdgeDistance = edgeDistance;
+      bestCenterDistance = centerDistance;
+    }
+  }
+
+  return best;
+}
+
+function findNearestDepositBox(
+  boxes: MotherlodeDepositBox[],
+  captureBounds: ScreenCaptureBounds,
+  anchor: { x: number; y: number } | null,
+): MotherlodeDepositBox | null {
+  if (boxes.length === 0) {
+    return null;
+  }
+
+  const anchorX = anchor?.x ?? Math.round(captureBounds.width / 2);
+  const anchorY = anchor?.y ?? Math.round(captureBounds.height / 2);
+
+  let best: MotherlodeDepositBox | null = null;
   let bestEdgeDistance = Number.POSITIVE_INFINITY;
   let bestCenterDistance = Number.POSITIVE_INFINITY;
 
@@ -1079,7 +1245,7 @@ function createInitialBotState(): BotState {
       inventoryCount !== null && sackCount !== null && capacityCount !== null
         ? capacityCount - sackCount - inventoryCount
         : null;
-    const isInventoryCleanByBagStats = inventoryCount === 0 || (needed !== null && needed < 0);
+    const isInventoryCleanByBagStats = isInventoryEmptyByBagStats(bagStats);
 
     const inferredFunction: "searchOre" | "searchDepositPayDirt" | "searchLadder" = !isInventoryCleanByBagStats
       ? "searchDepositPayDirt"
@@ -1135,6 +1301,22 @@ function resetToSearching(
     bankYellowPreClickSackCount: null,
     bankYellowSackWaitTicks: 0,
     bankOrbClickCount: 0,
+  };
+}
+
+function resetToSearchingAndClearDepositTrigger(
+  current: BotState,
+  _function: "searchOre" | "searchDepositPayDirt" | "searchLadder",
+): BotState {
+  const next = resetToSearching(current, _function);
+  if (next.phase === "moving") {
+    return next;
+  }
+
+  return {
+    ...next,
+    bagFullState: null,
+    depositTriggerStableTicks: 0,
   };
 }
 
@@ -1402,27 +1584,6 @@ const Osrs = {
         }
       }
 
-      if (
-        remainingTicks <= MOVE_PREDICTIVE_RECLICK_MAX_REMAINING_TICKS &&
-        !nearTarget &&
-        pendingMove.retryCount < MOVE_PREDICTIVE_RECLICK_MAX_ATTEMPTS
-      ) {
-        const nextRetryCount = pendingMove.retryCount + 1;
-        warn(
-          `Automate Bot (${BOT_NAME}): #${state.loopIndex} [move] Still far from target (distance=${distancePx}px) with ${remainingTicks} tick(s) left. Re-clicking predicted target (${pendingMove.targetScreen.x},${pendingMove.targetScreen.y}) (${nextRetryCount}/${MOVE_PREDICTIVE_RECLICK_MAX_ATTEMPTS}).`,
-        );
-        clickScreenPoint(pendingMove.targetScreen.x, pendingMove.targetScreen.y);
-        moveMouseAwayFromClickedNode(pendingMove.targetScreen.x, pendingMove.targetScreen.y, captureBounds);
-        return {
-          ...stateWithLock,
-          pendingMove: {
-            ...pendingMove,
-            retryCount: nextRetryCount,
-          },
-          actionLockUntilMs: deadlineFromNowTicks(MOVE_PREDICTIVE_RECLICK_WAIT_TICKS),
-        } as BotState;
-      }
-
       if (state.loopIndex % 2 === 0) {
         log(
           `Automate Bot (${BOT_NAME}): #${state.loopIndex} [move] Moving to (${pendingMove.targetScreen.x},${pendingMove.targetScreen.y}); waiting ${remainingTicks} more tick(s) (distance=${distancePx}px).`,
@@ -1449,10 +1610,6 @@ const Osrs = {
 
       return {
         ...stateWithLock,
-        pendingMove: {
-          ...pendingMove,
-          retryCount: 0,
-        },
         actionLockUntilMs: deadlineFromNowTicks(moveWaitTicks),
       } as BotState;
     }
@@ -1492,21 +1649,21 @@ const Osrs = {
       inventoryCount !== null && sackCount !== null && capacityCount !== null
         ? capacityCount - sackCount - inventoryCount
         : null;
-    const isInventoryCleanByBagStats = inventoryCount === 0 || (needed !== null && needed < 0);
+    const isInventoryCleanByBagStats = isInventoryEmptyByBagStats(bagStats);
 
     const shouldSwitchToLadder = current.bagFullState === "red" && isInventoryCleanByBagStats;
     if (shouldSwitchToLadder) {
       warn(
         `Automate Bot (${BOT_NAME}): #${current.loopIndex} [deposit] Deposit complete and sack is red (inventory=${inventoryCount ?? "?"}, needed=${needed ?? "?"}). Switching to ladder search.`,
       );
-      return resetToSearching(current, "searchLadder");
+      return resetToSearchingAndClearDepositTrigger(current, "searchLadder");
     }
 
     if (isInventoryCleanByBagStats) {
       log(
         `Automate Bot (${BOT_NAME}): #${current.loopIndex} [deposit] Deposit complete by bagStats (inventory=${inventoryCount ?? "?"}, needed=${needed ?? "?"}). Returning to search.`,
       );
-      return resetToSearching(current, "searchOre");
+      return resetToSearchingAndClearDepositTrigger(current, "searchOre");
     }
 
     const bagAtDepositThreshold = current.bagFullState !== null && isBagAtDepositThreshold(current.bagFullState);
@@ -1514,7 +1671,7 @@ const Osrs = {
       log(
         `Automate Bot (${BOT_NAME}): #${current.loopIndex} [deposit] Deposit complete fallback (bag=${current.bagFullState ?? "none"}, inventory=${inventoryCount ?? "?"}, needed=${needed ?? "?"}). Returning to search.`,
       );
-      return resetToSearching(current, "searchOre");
+      return resetToSearchingAndClearDepositTrigger(current, "searchOre");
     }
 
     if (current.bagFullState === "red") {
@@ -1780,6 +1937,8 @@ const Osrs = {
       return current;
     }
 
+    saveBankDepositDebugArtifact(current.loopIndex, tickCapture.bitmap, greenTarget);
+
     const interactionPoint = toDepositInteractionScreenPoint(greenTarget, captureBounds);
     const destination: MoveDestination = {
       phase: "banking",
@@ -1789,6 +1948,131 @@ const Osrs = {
       `Automate Bot (${BOT_NAME}): #${current.loopIndex} [search-bank-deposit] Found green deposit target at (${interactionPoint.x},${interactionPoint.y}); queueing move -> ${destination.phase}/${destination.currentFunction}.`,
     );
     return queueMoveState(current, { x: interactionPoint.x, y: interactionPoint.y }, destination);
+  },
+  searchBankPayDirtDeposit: ({ tickCapture, state, nowMs, captureBounds }: BotEngineContext): BotState => {
+    if (state.phase === "moving") {
+      return state;
+    }
+
+    const bagFullState = detectMotherlodeBagFullBoxInScreenshot(tickCapture.bitmap).state;
+    const updatedState = updateBagState(state, bagFullState);
+    if (updatedState.phase === "moving") {
+      return updatedState;
+    }
+
+    const current = updatedState;
+    if (current.phase !== "banking") {
+      return syncStateCurrentFunction(current);
+    }
+
+    if (isActionLocked(current, nowMs)) {
+      return current;
+    }
+
+    const bagStats = detectMotherlodeBagStatsInScreenshot(tickCapture.bitmap);
+    logBagStatsSnapshot("searchBankPayDirtDeposit", bagStats);
+    const payDirtInventoryCount = getBagInventoryCountValue(bagStats);
+    if (payDirtInventoryCount !== null && payDirtInventoryCount <= 0) {
+      log(
+        `Automate Bot (${BOT_NAME}): #${current.loopIndex} [search-bank-paydirt-deposit] +x is now ${payDirtInventoryCount}. Returning to yellow sack flow.`,
+      );
+      return resetToBanking(current, "searchSack");
+    }
+
+    if (payDirtInventoryCount === null) {
+      if (current.loopIndex % 3 === 0) {
+        warn(
+          `Automate Bot (${BOT_NAME}): #${current.loopIndex} [search-bank-paydirt-deposit] Could not read +x inventory count yet; waiting before cyan deposit search.`,
+        );
+      }
+      return {
+        ...current,
+        actionLockUntilMs: deadlineFromNowTicks(1),
+      } as BotState;
+    }
+
+    const cyanTarget = detectNearestCyanDepositBoxInScreenshot(tickCapture.bitmap, captureBounds);
+    if (!cyanTarget) {
+      if (current.loopIndex % 3 === 0) {
+        warn(
+          `Automate Bot (${BOT_NAME}): #${current.loopIndex} [search-bank-paydirt-deposit] +x=${payDirtInventoryCount}, but nearest cyan pay-dirt deposit target was not found.`,
+        );
+      }
+      return current;
+    }
+
+    const interactionPoint = toDepositInteractionScreenPoint(cyanTarget, captureBounds);
+    const destination: MoveDestination = {
+      phase: "banking",
+      currentFunction: "depositBankPayDirt",
+      actionLockTicks: DEPOSIT_CLICK_LOCK_TICKS,
+    };
+    log(
+      `Automate Bot (${BOT_NAME}): #${current.loopIndex} [search-bank-paydirt-deposit] +x=${payDirtInventoryCount}; nearest cyan deposit at (${interactionPoint.x},${interactionPoint.y}). Queueing move -> ${destination.phase}/${destination.currentFunction}.`,
+    );
+    return queueMoveState(current, { x: interactionPoint.x, y: interactionPoint.y }, destination);
+  },
+  depositBankPayDirt: ({ tickCapture, state, nowMs, captureBounds }: BotEngineContext): BotState => {
+    if (state.phase === "moving") {
+      return state;
+    }
+
+    const bagFullState = detectMotherlodeBagFullBoxInScreenshot(tickCapture.bitmap).state;
+    const updatedState = updateBagState(state, bagFullState);
+    if (updatedState.phase === "moving") {
+      return updatedState;
+    }
+
+    const current = updatedState;
+    if (current.phase !== "banking") {
+      return syncStateCurrentFunction(current);
+    }
+
+    if (isActionLocked(current, nowMs)) {
+      return current;
+    }
+
+    const bagStats = detectMotherlodeBagStatsInScreenshot(tickCapture.bitmap);
+    logBagStatsSnapshot("depositBankPayDirt", bagStats);
+    const payDirtInventoryCount = getBagInventoryCountValue(bagStats);
+    if (payDirtInventoryCount !== null && payDirtInventoryCount <= 0) {
+      log(
+        `Automate Bot (${BOT_NAME}): #${current.loopIndex} [deposit-bank-paydirt] +x is now ${payDirtInventoryCount}. Returning to yellow sack flow.`,
+      );
+      return resetToBanking(current, "searchSack");
+    }
+
+    if (payDirtInventoryCount === null) {
+      warn(
+        `Automate Bot (${BOT_NAME}): #${current.loopIndex} [deposit-bank-paydirt] Could not read +x inventory count; re-searching nearest cyan deposit target.`,
+      );
+      return {
+        ...resetToBanking(current, "searchBankPayDirtDeposit"),
+        actionLockUntilMs: deadlineFromNowTicks(1),
+      } as BotState;
+    }
+
+    const cyanTarget = detectNearestCyanDepositBoxInScreenshot(tickCapture.bitmap, captureBounds);
+    if (!cyanTarget) {
+      warn(
+        `Automate Bot (${BOT_NAME}): #${current.loopIndex} [deposit-bank-paydirt] +x=${payDirtInventoryCount}, but nearest cyan deposit target was not found. Re-searching.`,
+      );
+      return {
+        ...resetToBanking(current, "searchBankPayDirtDeposit"),
+        actionLockUntilMs: deadlineFromNowTicks(1),
+      } as BotState;
+    }
+
+    const point = toDepositInteractionScreenPoint(cyanTarget, captureBounds);
+    log(
+      `Automate Bot (${BOT_NAME}): #${current.loopIndex} [deposit-bank-paydirt] Clicking nearest cyan pay-dirt deposit at (${point.x},${point.y}) while +x=${payDirtInventoryCount}.`,
+    );
+    clickScreenPoint(point.x, point.y);
+    moveMouseAwayFromClickedNode(point.x, point.y, captureBounds);
+    return {
+      ...current,
+      actionLockUntilMs: deadlineFromNowTicks(DEPOSIT_CLICK_LOCK_TICKS),
+    } as BotState;
   },
   searchBankOrb: ({ tickCapture, state, nowMs, captureBounds }: BotEngineContext): BotState => {
     if (state.phase === "moving") {
@@ -1872,7 +2156,18 @@ const Osrs = {
     }
 
     const sackCount = getBagSackCountValue(bagStats);
+    const payDirtInventoryCount = getBagInventoryCountValue(bagStats);
     const inventoryEmpty = isInventoryEmptyByBagStats(bagStats);
+
+    if (payDirtInventoryCount !== null && payDirtInventoryCount > 0) {
+      log(
+        `Automate Bot (${BOT_NAME}): #${current.loopIndex} [check-inventory-empty] +x still ${payDirtInventoryCount} after banking. Switching to nearest cyan pay-dirt deposit flow.`,
+      );
+      return {
+        ...resetToBanking(current, "searchBankPayDirtDeposit"),
+        bankOrbClickCount: 0,
+      } as BotState;
+    }
 
     if (!inventoryEmpty) {
       log(
@@ -1941,14 +2236,14 @@ const Osrs = {
       return current;
     }
 
-    const interactionPoint = toDepositInteractionScreenPoint(targetLadder, captureBounds);
+    const interactionPoint = toTopInnerInteractionScreenPoint(targetLadder, captureBounds);
     const destination: MoveDestination = {
       phase: "banking",
       currentFunction: "useReturnLadder",
       actionLockTicks: BANK_LADDER_POST_CLICK_WAIT_TICKS,
     };
     log(
-      `Automate Bot (${BOT_NAME}): #${current.loopIndex} [search-return-ladder] Found return ladder target at (${interactionPoint.x},${interactionPoint.y}); queueing move -> ${destination.phase}/${destination.currentFunction}.`,
+      `Automate Bot (${BOT_NAME}): #${current.loopIndex} [search-return-ladder] Found return ladder target at (${interactionPoint.x},${interactionPoint.y}) using top-inner click band; queueing move -> ${destination.phase}/${destination.currentFunction}.`,
     );
     return queueMoveState(current, { x: interactionPoint.x, y: interactionPoint.y }, destination);
   },
@@ -2050,6 +2345,7 @@ const Osrs = {
     }
 
     const point = toObstacleInteractionScreenPoint(obstacleBox, captureBounds);
+    saveCollisionDebugArtifacts(state.phase, state.loopIndex, tickCapture.bitmap, playerBox, obstacleBox);
     const bagFullState = detectMotherlodeBagFullBoxInScreenshot(tickCapture.bitmap).state;
     const stateWithDeposit = state as BotState & { depositTriggerStableTicks?: number };
     const previousDepositTicks =
@@ -2066,6 +2362,16 @@ const Osrs = {
     moveMouseAwayFromClickedNode(point.x, point.y, captureBounds);
 
     if (state.phase === "moving") {
+      if (state.pendingMove.destination.phase === "mining") {
+        const latestState = state.pendingMove.latestState;
+
+        warn(
+          `Automate Bot (${BOT_NAME}): #${state.loopIndex} [obstacle] Move to mining target interrupted after obstacle clear. Restoring latest state ${latestState.phase}/${latestState.currentFunction}.`,
+        );
+
+        return restoreFromLatestEngineState(state, bagFullState, depositTriggerStableTicks);
+      }
+
       return {
         ...state,
         actionLockUntilMs: deadlineFromNowTicks(OBSTACLE_CLICK_LOCK_TICKS),
@@ -2187,6 +2493,20 @@ const runMineFunction = createMineFunction<BotState, MineCaptureResult, EngineTi
     }
 
     if (shouldStartDepositCycle(current)) {
+      const bagStats = detectMotherlodeBagStatsInScreenshot(tickCapture.bitmap);
+      if (isInventoryEmptyByBagStats(bagStats)) {
+        if (current.loopIndex % 3 === 0) {
+          warn(
+            `Automate Bot (${BOT_NAME}): #${current.loopIndex} [mine] Bag-full threshold stable (${current.bagFullState}) but bagStats shows empty inventory (inventory=${bagStats?.sackRow.inventoryCount ?? "?"}, row3=${bagStats?.row3.value ?? "?"}). Ignoring deposit switch.`,
+          );
+        }
+        return {
+          ...current,
+          bagFullState: null,
+          depositTriggerStableTicks: 0,
+        } as BotState;
+      }
+
       log(
         `Automate Bot (${BOT_NAME}): #${current.loopIndex} [mine] Bag-full threshold stable (${current.bagFullState}); switching to searchDepositPayDirt.`,
       );
@@ -2257,6 +2577,8 @@ function resolveCurrentFunctionForPhase(state: BotState): EngineFunctionKey {
       case "searchSack":
       case "fillInventory":
       case "searchBankDeposit":
+      case "searchBankPayDirtDeposit":
+      case "depositBankPayDirt":
       case "searchBankOrb":
       case "checkInventoryEmpty":
       case "searchReturnLadder":
@@ -2385,6 +2707,26 @@ async function runLoop(captureBounds: ScreenCaptureBounds): Promise<void> {
 
           return Osrs.searchBankDeposit({ tickCapture, state, nowMs, captureBounds });
         },
+        searchBankPayDirtDeposit: ({ state, nowMs, tickCapture }) => {
+          setCurrentLogLoopIndex(state.loopIndex);
+          setCurrentLogPhase(state.phase);
+
+          if (state.phase !== "banking") {
+            return syncStateCurrentFunction(state);
+          }
+
+          return Osrs.searchBankPayDirtDeposit({ tickCapture, state, nowMs, captureBounds });
+        },
+        depositBankPayDirt: ({ state, nowMs, tickCapture }) => {
+          setCurrentLogLoopIndex(state.loopIndex);
+          setCurrentLogPhase(state.phase);
+
+          if (state.phase !== "banking") {
+            return syncStateCurrentFunction(state);
+          }
+
+          return Osrs.depositBankPayDirt({ tickCapture, state, nowMs, captureBounds });
+        },
         searchBankOrb: ({ state, nowMs, tickCapture }) => {
           setCurrentLogLoopIndex(state.loopIndex);
           setCurrentLogPhase(state.phase);
@@ -2460,7 +2802,7 @@ export function onMotherlodeMineBotV3Start(): void {
 
   log(`Automate Bot STARTED (${BOT_NAME}).`);
   log(
-    `Automate Bot (${BOT_NAME}) config: engineTick=${BASE_TICK_MS}ms, engineFunctions={searchOre,searchDepositPayDirt,searchLadder,useLadder,searchSack,fillInventory,searchBankDeposit,searchBankOrb,checkInventoryEmpty,searchReturnLadder,useReturnLadder,move,mine,depositPayDirt}, hover-before-read=${ENABLE_NODE_HOVER_BEFORE_TILE_READ ? "on" : "off"}, obstacle-red-click=${ENABLE_OBSTACLE_RED_CLICK ? "on" : "off"}.`,
+    `Automate Bot (${BOT_NAME}) config: engineTick=${BASE_TICK_MS}ms, engineFunctions={searchOre,searchDepositPayDirt,searchLadder,useLadder,searchSack,fillInventory,searchBankDeposit,searchBankPayDirtDeposit,depositBankPayDirt,searchBankOrb,checkInventoryEmpty,searchReturnLadder,useReturnLadder,move,mine,depositPayDirt}, hover-before-read=${ENABLE_NODE_HOVER_BEFORE_TILE_READ ? "on" : "off"}, obstacle-red-click=${ENABLE_OBSTACLE_RED_CLICK ? "on" : "off"}.`,
   );
 
   const window = getRuneLite();

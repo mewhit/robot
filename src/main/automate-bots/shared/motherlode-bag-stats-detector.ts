@@ -785,7 +785,7 @@ function classifyGlyphSegment(mask: Uint8Array, width: number, y0: number, y1: n
 
   const glyphWidth = x1 - x0 + 1;
   const glyphHeight = maxY - minY + 1;
-  if (glyphHeight <= OCR_SCALE_FACTOR * 2 && glyphWidth >= OCR_SCALE_FACTOR && glyphWidth <= OCR_SCALE_FACTOR * 4) {
+  if (glyphHeight <= OCR_SCALE_FACTOR * 2 && glyphWidth >= OCR_SCALE_FACTOR && glyphWidth <= OCR_SCALE_FACTOR * 6) {
     const midY = Math.floor((minY + maxY) / 2);
     let middleInk = 0;
     for (let x = x0; x <= x1; x += 1) {
@@ -1071,20 +1071,26 @@ function normalizeMotherlodeCapacity(
     return capacityCount;
   }
 
-  const currentTotal = Math.max(0, (sackCount ?? 0) + (inventoryCount ?? 0));
-  const viableCapacities = VALID_MOTHERLODE_CAPACITIES.filter((capacity) => capacity >= currentTotal);
+  const currentSackCount = Math.max(0, sackCount ?? 0);
+  const viableCapacities = VALID_MOTHERLODE_CAPACITIES.filter((capacity) => capacity >= currentSackCount);
   if (viableCapacities.length === 0) {
     return capacityCount;
   }
 
-  if (capacityCount === null || capacityCount < currentTotal) {
-    return viableCapacities[0];
+  const currentCarriedTotal = Math.max(0, currentSackCount + Math.max(0, inventoryCount ?? 0));
+  const preferredCapacities = viableCapacities.filter(
+    (capacity) => capacity >= currentCarriedTotal || capacity === currentSackCount,
+  );
+  const candidateCapacities = preferredCapacities.length > 0 ? preferredCapacities : viableCapacities;
+
+  if (capacityCount === null || capacityCount < currentSackCount) {
+    return candidateCapacities[0];
   }
 
-  let best = viableCapacities[0];
+  let best = candidateCapacities[0];
   let bestDistance = Math.abs(capacityCount - best);
 
-  for (const capacity of viableCapacities.slice(1)) {
+  for (const capacity of candidateCapacities.slice(1)) {
     const distance = Math.abs(capacityCount - capacity);
     if (distance < bestDistance) {
       best = capacity;
@@ -1092,7 +1098,7 @@ function normalizeMotherlodeCapacity(
     }
   }
 
-  if (bestDistance <= 24) {
+  if (bestDistance <= 30) {
     return best;
   }
 
