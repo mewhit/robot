@@ -442,23 +442,26 @@ export default function App() {
     }
   };
 
-  const handleToggleSelectedTaskRun = useCallback(async (botId?: string) => {
-    const requestedBotId = typeof botId === "string" ? botId.trim() : "";
-    if (requestedBotId && requestedBotId !== selectedTaskNodeId) {
-      setSelectedTaskNodeId(requestedBotId);
-      ipcRenderer.send(CHANNELS.SET_SELECTED_AUTOMATE_BOT, requestedBotId);
-    }
-
-    try {
-      const result = await ipcRenderer.invoke(CHANNELS.TOGGLE_SELECTED_AUTOMATE_BOT);
-      if (!result?.ok) {
-        window.alert(result?.error || "Unable to toggle Automate Bot.");
+  const handleToggleSelectedTaskRun = useCallback(
+    async (botId?: string) => {
+      const requestedBotId = typeof botId === "string" ? botId.trim() : "";
+      if (requestedBotId && requestedBotId !== selectedTaskNodeId) {
+        setSelectedTaskNodeId(requestedBotId);
+        ipcRenderer.send(CHANNELS.SET_SELECTED_AUTOMATE_BOT, requestedBotId);
       }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      window.alert(`Unable to toggle Automate Bot: ${message}`);
-    }
-  }, [selectedTaskNodeId]);
+
+      try {
+        const result = await ipcRenderer.invoke(CHANNELS.TOGGLE_SELECTED_AUTOMATE_BOT);
+        if (!result?.ok) {
+          window.alert(result?.error || "Unable to toggle Automate Bot.");
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        window.alert(`Unable to toggle Automate Bot: ${message}`);
+      }
+    },
+    [selectedTaskNodeId],
+  );
 
   const handleRunScreenshotCapture = useCallback(async () => {
     try {

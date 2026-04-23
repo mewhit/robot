@@ -34,6 +34,10 @@ export function setupIoHookHandlers() {
     }
 
     if (e.keycode === UiohookKey.F2) {
+      if (AppState.activeView === "automateBot" || AppState.automateBotRunning) {
+        return;
+      }
+
       if (AppState.activeView === "debug") {
         const result = runAgilityScreenshotCapture({
           targetFilePath: getSavedScreenshotSavePath() ?? undefined,

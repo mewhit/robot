@@ -11,7 +11,7 @@ import { runBotEngine, sleepWithAbort } from "./engine/bot-engine";
 import { detectMithrilActiveMarkerBoxesInScreenshot, MithrilActiveMarkerBox } from "./shared/mithril-active-marker-detector";
 import { detectMithrilOreBoxesInScreenshot, MithrilOreBox } from "./shared/mithril-ore-detector";
 import { RobotBitmap } from "./shared/ocr-engine";
-import { detectBestPlayerBoxInScreenshot } from "./shared/player-box-detector";
+import { detectBestPlayerBoxInScreenshot, PlayerBox } from "./shared/player-box-detector";
 
 const BOT_NAME = "Mining Guild Mithril Ore";
 const GAME_TICK_MS = 600;
@@ -20,7 +20,15 @@ const NORTH_KEY_HOLD_MS = 100;
 const STARTUP_SETTLE_MS = 180;
 const ORE_RECLICK_COOLDOWN_TICKS = 10;
 const MOVE_MAX_WAIT_TICKS = 18;
-const MOVE_TARGET_LOST_GRACE_TICKS = 4;
+const MOVE_PLAYER_SPEED_TILES_PER_TICK = 2;
+const MOVE_TILE_PX_FALLBACK = 64;
+const MOVE_TILE_PX_MIN = 24;
+const MOVE_TILE_PX_MAX = 96;
+const MOVE_WAIT_EXTRA_TICKS = 1;
+const MOVE_EARLY_COMPLETE_MAX_REMAINING_TICKS = 1;
+const MOVE_EARLY_COMPLETE_RADIUS_TILES = 1.2;
+const MINING_START_WAIT_TICKS = 3;
+const MINING_MAX_WAIT_TICKS = 30;
 const ACTIVE_MARKER_MATCH_RADIUS_PX = 96;
 const SAME_ORE_MATCH_RADIUS_PX = 56;
 const TARGET_ORE_MATCH_RADIUS_PX = 110;
@@ -35,17 +43,19 @@ type ScreenCaptureBounds = {
   height: number;
 };
 
-type BotPhase = "searching" | "moving";
-type EngineFunctionKey = "searchOre" | "move";
+type BotPhase = "searching" | "moving" | "mining";
+type EngineFunctionKey = "searchOre" | "move" | "mine";
 
 type BotState = {
   loopIndex: number;
   currentFunction: EngineFunctionKey;
   phase: BotPhase;
   actionLockUntilMs: number;
+  moveDeadlineMs: number;
   lastClickedOreScreen: { x: number; y: number } | null;
   targetScreen: { x: number; y: number } | null;
   moveWaitTicks: number;
+  miningWaitTicks: number;
 };
 
 type TickCapture = {
@@ -75,7 +85,7 @@ function setCurrentLogLoopIndex(loopIndex: number): void {
 }
 
 function setCurrentLogPhase(phase: BotPhase | null | undefined): void {
-  if (phase === "searching" || phase === "moving") {
+  if (phase === "searching" || phase === "moving" || phase === "mining") {
     currentLogPhase = phase;
     return;
   }
@@ -228,6 +238,98 @@ function selectNearestMithrilOre(
   return best;
 }
 
+function hasOreNearAnchor(
+  boxes: MithrilOreBox[],
+  anchorInCapture: { x: number; y: number } | null,
+  maxDistancePx: number = PLAYER_ORE_MAX_EDGE_DISTANCE_PX,
+): boolean {
+  if (!anchorInCapture) {
+    return false;
+  }
+
+  return boxes.some((box) => distanceToBox(anchorInCapture.x, anchorInCapture.y, box) <= maxDistancePx);
+}
+
+function resolveMithrilPlayerAnchor(
+  boxes: MithrilOreBox[],
+  captureSize: { width: number; height: number },
+  playerBoxInCapture: PlayerBox | null,
+): { anchorInCapture: { x: number; y: number }; playerBoxForDistance: PlayerBox | null; source: "player" | "center" } {
+  const centerAnchor = {
+    x: Math.round(captureSize.width / 2),
+    y: Math.round(captureSize.height / 2),
+  };
+
+  if (!playerBoxInCapture) {
+    return {
+      anchorInCapture: centerAnchor,
+      playerBoxForDistance: null,
+      source: "center",
+    };
+  }
+
+  const playerAnchor = {
+    x: playerBoxInCapture.centerX,
+    y: playerBoxInCapture.centerY,
+  };
+
+  if (hasOreNearAnchor(boxes, playerAnchor)) {
+    return {
+      anchorInCapture: playerAnchor,
+      playerBoxForDistance: playerBoxInCapture,
+      source: "player",
+    };
+  }
+
+  return {
+    anchorInCapture: centerAnchor,
+    playerBoxForDistance: null,
+    source: "center",
+  };
+}
+
+function estimateMoveTilePxFromPlayerBox(playerBoxInCapture: PlayerBox | null): number {
+  if (!playerBoxInCapture) {
+    return MOVE_TILE_PX_FALLBACK;
+  }
+
+  const estimatedTilePx = Math.round((playerBoxInCapture.width + playerBoxInCapture.height) / 2);
+  return clamp(estimatedTilePx, MOVE_TILE_PX_MIN, MOVE_TILE_PX_MAX);
+}
+
+function estimateMoveTravelTicks(
+  screenPoint: { x: number; y: number },
+  captureBounds: ScreenCaptureBounds,
+  playerBoxInCapture: PlayerBox | null,
+): number {
+  const { distanceTiles } = estimateMoveDistanceToTargetPx(screenPoint, captureBounds, playerBoxInCapture);
+
+  return clamp(
+    Math.ceil(distanceTiles / MOVE_PLAYER_SPEED_TILES_PER_TICK) + MOVE_WAIT_EXTRA_TICKS,
+    1,
+    MOVE_MAX_WAIT_TICKS,
+  );
+}
+
+function estimateMoveDistanceToTargetPx(
+  screenPoint: { x: number; y: number },
+  captureBounds: ScreenCaptureBounds,
+  playerBoxInCapture: PlayerBox | null,
+): { distancePx: number; tilePx: number; distanceTiles: number } {
+  const targetCaptureX = screenPoint.x - captureBounds.x;
+  const targetCaptureY = screenPoint.y - captureBounds.y;
+  const anchorCaptureX = playerBoxInCapture?.centerX ?? Math.round(captureBounds.width / 2);
+  const anchorCaptureY = playerBoxInCapture?.centerY ?? Math.round(captureBounds.height / 2);
+  const tilePx = estimateMoveTilePxFromPlayerBox(playerBoxInCapture);
+  const dxPx = targetCaptureX - anchorCaptureX;
+  const dyPx = targetCaptureY - anchorCaptureY;
+  return {
+    distancePx: axisDistance(dxPx, dyPx),
+    tilePx,
+    distanceTiles: Math.max(Math.abs(dxPx) / tilePx, Math.abs(dyPx) / tilePx),
+  };
+}
+
 function findOreNearTargetScreen(
   boxes: MithrilOreBox[],
   targetScreen: { x: number; y: number },
@@ -339,8 +441,8 @@ function moveMouseAwayFromClickedTarget(
   moveMouse(target.x, target.y);
 }
 
-function deadlineFromNowTicks(ticks: number): number {
-  return Date.now() + Math.max(0, ticks) * GAME_TICK_MS;
+function deadlineFromNowTicks(ticks: number, nowMs: number = Date.now()): number {
+  return nowMs + Math.max(0, ticks) * GAME_TICK_MS;
 }
 
 function isActionLocked(state: BotState, nowMs: number): boolean {
@@ -361,8 +463,10 @@ function resetToSearchingState(state: BotState, actionLockUntilMs: number = stat
     phase: "searching",
     currentFunction: "searchOre",
     actionLockUntilMs,
+    moveDeadlineMs: 0,
     targetScreen: null,
     moveWaitTicks: 0,
+    miningWaitTicks: 0,
   };
 }
 
@@ -372,16 +476,30 @@ function createInitialState(): BotState {
     currentFunction: "searchOre",
     phase: "searching",
     actionLockUntilMs: 0,
+    moveDeadlineMs: 0,
     lastClickedOreScreen: null,
     targetScreen: null,
     moveWaitTicks: 0,
+    miningWaitTicks: 0,
+  };
+}
+
+function transitionToMiningState(state: BotState): BotState {
+  return {
+    ...state,
+    phase: "mining",
+    currentFunction: "mine",
+    moveDeadlineMs: 0,
+    moveWaitTicks: 0,
+    miningWaitTicks: 0,
   };
 }
 
 function runSearchOreTick(state: BotState, nowMs: number, tickCapture: TickCapture, captureBounds: ScreenCaptureBounds): BotState {
-  const oreBoxes = detectMithrilOreBoxesInScreenshot(tickCapture.bitmap);
   const playerBox = detectBestPlayerBoxInScreenshot(tickCapture.bitmap);
-  const playerAnchor = playerBox ? { x: playerBox.centerX, y: playerBox.centerY } : null;
+  const tilePxHint = estimateMoveTilePxFromPlayerBox(playerBox);
+  const oreBoxes = detectMithrilOreBoxesInScreenshot(tickCapture.bitmap, { tilePxHint });
+  const resolvedPlayer = resolveMithrilPlayerAnchor(oreBoxes, tickCapture.bitmap, playerBox);
   const sameOreLocked = isActionLocked(state, nowMs) && !!state.lastClickedOreScreen;
   const selectableOreBoxes =
     sameOreLocked && state.lastClickedOreScreen
@@ -390,7 +508,7 @@ function runSearchOreTick(state: BotState, nowMs: number, tickCapture: TickCaptu
           return !isSameOreScreenTarget(trackingPoint, state.lastClickedOreScreen!);
         })
       : oreBoxes;
-  const selectedOre = selectNearestMithrilOre(selectableOreBoxes, tickCapture.bitmap, playerAnchor);
+  const selectedOre = selectNearestMithrilOre(selectableOreBoxes, tickCapture.bitmap, resolvedPlayer.anchorInCapture);
 
   if (sameOreLocked && selectableOreBoxes.length === 0) {
     if (state.loopIndex % 2 === 0) {
@@ -402,7 +520,7 @@ function runSearchOreTick(state: BotState, nowMs: number, tickCapture: TickCaptu
   if (!selectedOre) {
     if (state.loopIndex % 3 === 0) {
       warn(
-        `No mithril ore found (boxes=${oreBoxes.length}, selectable=${selectableOreBoxes.length}, anchor=${playerAnchor ? `${playerAnchor.x},${playerAnchor.y}` : "none"}).`,
+        `No mithril ore found (boxes=${oreBoxes.length}, selectable=${selectableOreBoxes.length}, anchor=${resolvedPlayer.anchorInCapture.x},${resolvedPlayer.anchorInCapture.y}, anchor-source=${resolvedPlayer.source}).`,
       );
     }
     return state;
@@ -410,10 +528,12 @@ function runSearchOreTick(state: BotState, nowMs: number, tickCapture: TickCaptu
 
   const interactionPoint = toOreInteractionScreenPoint(selectedOre, captureBounds);
   const trackingPoint = toOreTrackingScreenPoint(selectedOre, captureBounds);
-  const edgeDistance = playerAnchor ? distanceToBox(playerAnchor.x, playerAnchor.y, selectedOre) : null;
+  const edgeDistance = distanceToBox(resolvedPlayer.anchorInCapture.x, resolvedPlayer.anchorInCapture.y, selectedOre);
+  const moveTravelTicks = estimateMoveTravelTicks(trackingPoint, captureBounds, resolvedPlayer.playerBoxForDistance);
+  const { distanceTiles } = estimateMoveDistanceToTargetPx(trackingPoint, captureBounds, resolvedPlayer.playerBoxForDistance);
 
   log(
-    `Selected mithril ore center=(${selectedOre.centerX},${selectedOre.centerY}) size=${selectedOre.width}x${selectedOre.height} blue=${selectedOre.blueDominance.toFixed(1)} edge=${edgeDistance ?? "?"}; clicking (${interactionPoint.x},${interactionPoint.y}).`,
+    `Selected mithril ore center=(${selectedOre.centerX},${selectedOre.centerY}) size=${selectedOre.width}x${selectedOre.height} blue=${selectedOre.blueDominance.toFixed(1)} edge=${edgeDistance} tiles~${distanceTiles.toFixed(1)} anchor=${resolvedPlayer.source}; clicking (${interactionPoint.x},${interactionPoint.y}), move eta ~${moveTravelTicks} tick(s).`,
   );
 
   clickScreenPoint(interactionPoint.x, interactionPoint.y);
@@ -423,10 +543,12 @@ function runSearchOreTick(state: BotState, nowMs: number, tickCapture: TickCaptu
     ...state,
     phase: "moving",
     currentFunction: "move",
-    actionLockUntilMs: deadlineFromNowTicks(ORE_RECLICK_COOLDOWN_TICKS),
+    actionLockUntilMs: deadlineFromNowTicks(ORE_RECLICK_COOLDOWN_TICKS, nowMs),
+    moveDeadlineMs: deadlineFromNowTicks(moveTravelTicks, nowMs),
     lastClickedOreScreen: trackingPoint,
     targetScreen: trackingPoint,
     moveWaitTicks: 0,
+    miningWaitTicks: 0,
   };
 }
 
@@ -436,37 +558,89 @@ function runMoveTick(state: BotState, nowMs: number, tickCapture: TickCapture, c
     return resetToSearchingState(state);
   }
 
-  const activeMarkers = detectMithrilActiveMarkerBoxesInScreenshot(tickCapture.bitmap);
-  const matchedMarker = findActiveMarkerNearTargetScreen(activeMarkers, state.targetScreen, captureBounds);
-  if (matchedMarker) {
-    log(
-      `Active yellow marker detected at (${matchedMarker.centerX},${matchedMarker.centerY}) after ${state.moveWaitTicks} move tick(s); mithril is mined, searching next ore.`,
-    );
-
-    return resetToSearchingState(state, state.actionLockUntilMs);
-  }
-
-  const oreBoxes = detectMithrilOreBoxesInScreenshot(tickCapture.bitmap);
-  const nearbyOre = findOreNearTargetScreen(oreBoxes, state.targetScreen, captureBounds);
+  const playerBox = detectBestPlayerBoxInScreenshot(tickCapture.bitmap);
+  const { distancePx, tilePx } = estimateMoveDistanceToTargetPx(state.targetScreen, captureBounds, playerBox);
   const moveWaitTicks = state.moveWaitTicks + 1;
 
-  if (!nearbyOre && moveWaitTicks >= MOVE_TARGET_LOST_GRACE_TICKS) {
-    warn(`Target ore disappeared before active marker appeared after ${moveWaitTicks} tick(s); re-searching.`);
+  if (state.moveDeadlineMs > nowMs) {
+    const remainingMs = Math.max(0, state.moveDeadlineMs - nowMs);
+    const remainingTicks = Math.max(1, Math.ceil(remainingMs / GAME_TICK_MS));
+    const nearTarget = distancePx <= Math.round(tilePx * MOVE_EARLY_COMPLETE_RADIUS_TILES);
+
+    if (remainingTicks <= MOVE_EARLY_COMPLETE_MAX_REMAINING_TICKS && nearTarget) {
+      log(
+        `Arrived near move target (${state.targetScreen.x},${state.targetScreen.y}) early after ${moveWaitTicks} tick(s) (distance=${distancePx}px); switching to mining.`,
+      );
+      return transitionToMiningState(state);
+    }
+
+    if (state.loopIndex % 2 === 0) {
+      log(
+        `Moving to (${state.targetScreen.x},${state.targetScreen.y}); waiting ${remainingTicks} more tick(s) (distance=${distancePx}px, tile=${tilePx}px).`,
+      );
+    }
+
+    return {
+      ...state,
+      moveWaitTicks,
+    };
+  }
+
+  log(
+    `Move ETA complete for (${state.targetScreen.x},${state.targetScreen.y}) after ${moveWaitTicks} tick(s); entering mining phase.`,
+  );
+  return transitionToMiningState(state);
+}
+
+function runMineTick(state: BotState, _nowMs: number, tickCapture: TickCapture, captureBounds: ScreenCaptureBounds): BotState {
+  if (!state.targetScreen) {
+    warn(`Missing target screen while mining; returning to search.`);
+    return resetToSearchingState(state);
+  }
+
+  const activeMarkers = detectMithrilActiveMarkerBoxesInScreenshot(tickCapture.bitmap);
+  const matchedMarker = findActiveMarkerNearTargetScreen(activeMarkers, state.targetScreen, captureBounds);
+  const nextMiningWaitTicks = state.miningWaitTicks + 1;
+
+  if (matchedMarker) {
+    log(
+      `Yellow marker detected at (${matchedMarker.centerX},${matchedMarker.centerY}) after ${state.miningWaitTicks} mining tick(s); returning to ore search.`,
+    );
     return resetToSearchingState(state, state.actionLockUntilMs);
   }
 
-  if (moveWaitTicks >= MOVE_MAX_WAIT_TICKS) {
-    warn(`No active marker near target after ${moveWaitTicks} tick(s); re-searching.`);
+  if (nextMiningWaitTicks <= MINING_START_WAIT_TICKS) {
+    if (state.loopIndex % 2 === 0) {
+      log(`At mining destination; waiting start tick=${nextMiningWaitTicks}/${MINING_START_WAIT_TICKS}.`);
+    }
+
+    return {
+      ...state,
+      miningWaitTicks: nextMiningWaitTicks,
+    };
+  }
+
+  const playerBox = detectBestPlayerBoxInScreenshot(tickCapture.bitmap);
+  const tilePxHint = estimateMoveTilePxFromPlayerBox(playerBox);
+  const oreBoxes = detectMithrilOreBoxesInScreenshot(tickCapture.bitmap, { tilePxHint });
+  const nearbyOre = findOreNearTargetScreen(oreBoxes, state.targetScreen, captureBounds);
+
+  if (nextMiningWaitTicks >= MINING_MAX_WAIT_TICKS) {
+    warn(
+      `No yellow marker appeared after ${nextMiningWaitTicks} mining tick(s) at destination (ore-near=${nearbyOre ? "yes" : "no"}); searching next ore.`,
+    );
     return resetToSearchingState(state, state.actionLockUntilMs);
   }
 
   if (state.loopIndex % 2 === 0) {
-    log(`Waiting for movement/mining start (tick=${moveWaitTicks}/${MOVE_MAX_WAIT_TICKS}, markers=${activeMarkers.length}, ore-near=${nearbyOre ? "yes" : "no"}).`);
+    log(
+      `Waiting in mining phase tick=${nextMiningWaitTicks}/${MINING_MAX_WAIT_TICKS} for yellow marker (ore-near=${nearbyOre ? "yes" : "no"}).`,
+    );
   }
 
   return {
     ...state,
-    moveWaitTicks,
+    miningWaitTicks: nextMiningWaitTicks,
   };
 }
 
@@ -498,6 +672,11 @@ async function runLoop(captureBounds: ScreenCaptureBounds): Promise<void> {
           setCurrentLogPhase(state.phase);
           return state.phase === "moving" ? runMoveTick(state, nowMs, tickCapture, captureBounds) : state;
         },
+        mine: ({ state, nowMs, tickCapture }) => {
+          setCurrentLogLoopIndex(state.loopIndex);
+          setCurrentLogPhase(state.phase);
+          return state.phase === "mining" ? runMineTick(state, nowMs, tickCapture, captureBounds) : state;
+        },
       },
       onTickError: (error, state) => {
         const message = error instanceof Error ? error.message : String(error);
@@ -522,7 +701,9 @@ export function onMiningGuildMithrilOreBotStart(): void {
   }
 
   log(`Automate Bot STARTED (${BOT_NAME}).`);
-  log(`Config: engineTick=${GAME_TICK_MS}ms, startup='hold-w+north', player-ore-max-edge=${PLAYER_ORE_MAX_EDGE_DISTANCE_PX}px.`);
+  log(
+    `Config: engineTick=${GAME_TICK_MS}ms, phases='search->move->mine', startup='hold-w+north', player-ore-max-edge=${PLAYER_ORE_MAX_EDGE_DISTANCE_PX}px.`,
+  );
 
   const window = getRuneLite();
   if (!window) {
