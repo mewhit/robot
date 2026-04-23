@@ -95,6 +95,7 @@ const BANK_LADDER_POST_CLICK_WAIT_TICKS = 3;
 const BANK_YELLOW_TILE_CLICK_LOCK_TICKS = 2;
 const BANK_YELLOW_SACK_WAIT_MAX_TICKS = 8;
 const BANK_ORB_CLICK_LOCK_TICKS = 2;
+const BANK_ORB_ESCAPE_WAIT_TICKS = 1;
 const BANK_ORB_INVENTORY_EMPTY_VALUE = 28;
 const BANK_SOUTH_CLICK_RANDOM_RADIUS_PX = 14;
 const BANK_SOUTHWEST_CLICK_OFFSET_TILES_X = -1.15;
@@ -142,6 +143,7 @@ type EngineFunctionKey =
   | "searchBankPayDirtDeposit"
   | "depositBankPayDirt"
   | "searchBankOrb"
+  | "closeBankAfterOrb"
   | "checkInventoryEmpty"
   | "searchReturnLadder"
   | "useReturnLadder";
@@ -152,6 +154,7 @@ type BankingFunctionKey =
   | "searchBankPayDirtDeposit"
   | "depositBankPayDirt"
   | "searchBankOrb"
+  | "closeBankAfterOrb"
   | "checkInventoryEmpty"
   | "searchReturnLadder"
   | "useReturnLadder";
@@ -478,6 +481,16 @@ function tapCompassNorth(): void {
   setTimeout(() => {
     keyToggle("n", "up");
   }, NORTH_KEY_HOLD_MS);
+}
+
+function tapEscapeAfterBankOrb(): void {
+  if (typeof keyToggle !== "function") {
+    warn(`Automate Bot (${BOT_NAME}): RobotJS keyToggle unavailable; skipping Escape after bank orb click.`);
+    return;
+  }
+
+  keyToggle("escape", "down");
+  keyToggle("escape", "up");
 }
 
 function getWindowsDisplayScaleFactor(bounds: ScreenCaptureBounds): number {
@@ -1069,12 +1082,17 @@ function isInventoryEmptyByBagStats(bagStats: MotherlodeBagStats | null): boolea
     return false;
   }
 
+  const sackRowInventoryCount = bagStats.sackRow.inventoryCount;
+  if (typeof sackRowInventoryCount === "number") {
+    return sackRowInventoryCount <= 0;
+  }
+
   const row3InventorySpace = bagStats.row3.value;
   if (typeof row3InventorySpace === "number") {
     return row3InventorySpace >= BANK_ORB_INVENTORY_EMPTY_VALUE;
   }
 
-  return bagStats.sackRow.inventoryCount === 0;
+  return false;
 }
 
 function isInventoryFullByBagStats(bagStats: MotherlodeBagStats | null): boolean {
@@ -2114,15 +2132,46 @@ const Osrs = {
       y: captureBounds.y + orbResult.detection.centerY,
     };
     log(
-      `Automate Bot (${BOT_NAME}): #${current.loopIndex} [search-bank-orb] Orb found at (${orbResult.detection.centerX},${orbResult.detection.centerY}). Clicking (${orbPoint.x},${orbPoint.y}).`,
+      `Automate Bot (${BOT_NAME}): #${current.loopIndex} [search-bank-orb] Orb found at (${orbResult.detection.centerX},${orbResult.detection.centerY}). Clicking (${orbPoint.x},${orbPoint.y}) and waiting ${BANK_ORB_ESCAPE_WAIT_TICKS} tick before Escape.`,
     );
     clickScreenPoint(orbPoint.x, orbPoint.y);
     moveMouseAwayFromClickedNode(orbPoint.x, orbPoint.y, captureBounds);
     return {
       ...current,
-      currentFunction: "checkInventoryEmpty",
+      currentFunction: "closeBankAfterOrb",
       bankOrbClickCount: current.bankOrbClickCount + 1,
-      actionLockUntilMs: deadlineFromNowTicks(BANK_ORB_CLICK_LOCK_TICKS),
+      actionLockUntilMs: deadlineFromNowTicks(BANK_ORB_ESCAPE_WAIT_TICKS),
+    } as BotState;
+  },
+  closeBankAfterOrb: ({ tickCapture, state, nowMs }: BotEngineContext): BotState => {
+    if (state.phase === "moving") {
+      return state;
+    }
+
+    const bagFullState = detectMotherlodeBagFullBoxInScreenshot(tickCapture.bitmap).state;
+    const updatedState = updateBagState(state, bagFullState);
+    if (updatedState.phase === "moving") {
+      return updatedState;
+    }
+
+    const current = updatedState;
+    if (current.phase !== "banking") {
+      return syncStateCurrentFunction(current);
+    }
+
+    if (isActionLocked(current, nowMs)) {
+      return current;
+    }
+
+    tapEscapeAfterBankOrb();
+    log(
+      `Automate Bot (${BOT_NAME}): #${current.loopIndex} [close-bank-after-orb] Pressed Escape; transitioning to inventory check.`,
+    );
+
+    return {
+      ...current,
+      currentFunction: "checkInventoryEmpty",
+      actionLockUntilMs: deadlineFromNowTicks(1),
     } as BotState;
   },
   checkInventoryEmpty: ({ tickCapture, state, nowMs }: BotEngineContext): BotState => {
@@ -2580,6 +2629,7 @@ function resolveCurrentFunctionForPhase(state: BotState): EngineFunctionKey {
       case "searchBankPayDirtDeposit":
       case "depositBankPayDirt":
       case "searchBankOrb":
+      case "closeBankAfterOrb":
       case "checkInventoryEmpty":
       case "searchReturnLadder":
       case "useReturnLadder":
@@ -2737,6 +2787,16 @@ async function runLoop(captureBounds: ScreenCaptureBounds): Promise<void> {
 
           return Osrs.searchBankOrb({ tickCapture, state, nowMs, captureBounds });
         },
+        closeBankAfterOrb: ({ state, nowMs, tickCapture }) => {
+          setCurrentLogLoopIndex(state.loopIndex);
+          setCurrentLogPhase(state.phase);
+
+          if (state.phase !== "banking") {
+            return syncStateCurrentFunction(state);
+          }
+
+          return Osrs.closeBankAfterOrb({ tickCapture, state, nowMs, captureBounds });
+        },
         checkInventoryEmpty: ({ state, nowMs, tickCapture }) => {
           setCurrentLogLoopIndex(state.loopIndex);
           setCurrentLogPhase(state.phase);
@@ -2802,7 +2862,7 @@ export function onMotherlodeMineBotV3Start(): void {
 
   log(`Automate Bot STARTED (${BOT_NAME}).`);
   log(
-    `Automate Bot (${BOT_NAME}) config: engineTick=${BASE_TICK_MS}ms, engineFunctions={searchOre,searchDepositPayDirt,searchLadder,useLadder,searchSack,fillInventory,searchBankDeposit,searchBankPayDirtDeposit,depositBankPayDirt,searchBankOrb,checkInventoryEmpty,searchReturnLadder,useReturnLadder,move,mine,depositPayDirt}, hover-before-read=${ENABLE_NODE_HOVER_BEFORE_TILE_READ ? "on" : "off"}, obstacle-red-click=${ENABLE_OBSTACLE_RED_CLICK ? "on" : "off"}.`,
+    `Automate Bot (${BOT_NAME}) config: engineTick=${BASE_TICK_MS}ms, engineFunctions={searchOre,searchDepositPayDirt,searchLadder,useLadder,searchSack,fillInventory,searchBankDeposit,searchBankPayDirtDeposit,depositBankPayDirt,searchBankOrb,closeBankAfterOrb,checkInventoryEmpty,searchReturnLadder,useReturnLadder,move,mine,depositPayDirt}, hover-before-read=${ENABLE_NODE_HOVER_BEFORE_TILE_READ ? "on" : "off"}, obstacle-red-click=${ENABLE_OBSTACLE_RED_CLICK ? "on" : "off"}.`,
   );
 
   const window = getRuneLite();
