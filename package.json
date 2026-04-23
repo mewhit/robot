@@ -27,7 +27,9 @@
     "test:screenshot:motherlode-targeting": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:motherlode-targeting\"",
     "test:screenshot:motherlode-active-node": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:motherlode-active-node\"",
     "test:screenshot:player": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:player\"",
-    "test:screenshot:bank-deposit-orb": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:bank-deposit-orb\""
+    "test:screenshot:bank-deposit-orb": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:bank-deposit-orb\"",
+    "test:screenshot:mithril-ore": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:mithril-ore\"",
+    "test:screenshot:mithril-active-marker": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:mithril-active-marker\""
   },
   "electronmon": {
     "patterns": [

@@ -94,6 +94,14 @@ const SCREENSHOT_SUITES: Record<string, ScreenshotSuite> = {
     script: "src/main/automate-bots/shared/bank-deposit-orb-detector.spec.ts",
     args: [],
   },
+  "test:screenshot:mithril-ore": {
+    script: "src/main/automate-bots/shared/mithril-ore-detector.spec.ts",
+    args: ["test-images/mining-mithril-mining-guilde/*-ores.png"],
+  },
+  "test:screenshot:mithril-active-marker": {
+    script: "src/main/automate-bots/shared/mithril-active-marker-detector.spec.ts",
+    args: ["test-images/mining-mithril-mining-guilde/tini-yellow-circle.png"],
+  },
 };
 
 function quoteArgIfNeeded(value: string): string {
