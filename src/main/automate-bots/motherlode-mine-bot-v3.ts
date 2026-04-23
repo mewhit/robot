@@ -1264,12 +1264,14 @@ function createInitialBotState(): BotState {
         ? capacityCount - sackCount - inventoryCount
         : null;
     const isInventoryCleanByBagStats = isInventoryEmptyByBagStats(bagStats);
+    const isSackOverCapacityByBagStats = typeof needed === "number" && needed < 0;
 
-    const inferredFunction: "searchOre" | "searchDepositPayDirt" | "searchLadder" = !isInventoryCleanByBagStats
-      ? "searchDepositPayDirt"
-      : bagFullState === "red"
+    const inferredFunction: "searchOre" | "searchDepositPayDirt" | "searchLadder" =
+      isSackOverCapacityByBagStats || (bagFullState === "red" && isInventoryCleanByBagStats)
         ? "searchLadder"
-        : "searchOre";
+        : !isInventoryCleanByBagStats
+          ? "searchDepositPayDirt"
+          : "searchOre";
 
     log(
       `Automate Bot (${BOT_NAME}): startup inferred function=${inferredFunction} (bag=${bagFullState}, inventory=${inventoryCount ?? "?"}, needed=${needed ?? "?"}).`,
@@ -1668,11 +1670,13 @@ const Osrs = {
         ? capacityCount - sackCount - inventoryCount
         : null;
     const isInventoryCleanByBagStats = isInventoryEmptyByBagStats(bagStats);
+    const isSackOverCapacityByBagStats = typeof needed === "number" && needed < 0;
 
-    const shouldSwitchToLadder = current.bagFullState === "red" && isInventoryCleanByBagStats;
+    const shouldSwitchToLadder =
+      isSackOverCapacityByBagStats || (current.bagFullState === "red" && isInventoryCleanByBagStats);
     if (shouldSwitchToLadder) {
       warn(
-        `Automate Bot (${BOT_NAME}): #${current.loopIndex} [deposit] Deposit complete and sack is red (inventory=${inventoryCount ?? "?"}, needed=${needed ?? "?"}). Switching to ladder search.`,
+        `Automate Bot (${BOT_NAME}): #${current.loopIndex} [deposit] Deposit complete by bagStats ladder criteria (bag=${current.bagFullState ?? "none"}, inventory=${inventoryCount ?? "?"}, needed=${needed ?? "?"}). Switching to ladder search.`,
       );
       return resetToSearchingAndClearDepositTrigger(current, "searchLadder");
     }
