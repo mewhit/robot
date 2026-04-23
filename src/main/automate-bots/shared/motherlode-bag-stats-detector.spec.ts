@@ -15,7 +15,7 @@ type RobotBitmap = {
   image: Buffer;
 };
 
-type ExpectedStats = {
+export type ExpectedStats = {
   sackCount: number;
   inventoryCount: number;
   capacityCount: number;
@@ -24,8 +24,9 @@ type ExpectedStats = {
 };
 
 const VALID_MOTHERLODE_CAPACITIES = [81, 108, 162, 189];
+export const DEFAULT_MOTHERLODE_BAG_STATS_SCREENSHOTS = ["test-images/motherlode-bag-full-box/*.png"];
 
-type TestStatus = "passed" | "failed" | "skipped";
+export type TestStatus = "passed" | "failed" | "skipped";
 
 async function loadScreenshot(filePath: string): Promise<RobotBitmap | null> {
   if (!fs.existsSync(filePath)) {
@@ -72,7 +73,7 @@ function patternToRegex(pattern: string): RegExp {
   return new RegExp(`^${escaped}$`, "i");
 }
 
-function expandScreenshotArgs(args: string[]): string[] {
+export function expandScreenshotArgs(args: string[]): string[] {
   const expanded: string[] = [];
 
   for (const arg of args) {
@@ -108,7 +109,7 @@ function expandScreenshotArgs(args: string[]): string[] {
   return expanded;
 }
 
-function expectedStatsFromScreenshotPath(screenshotPath: string): ExpectedStats | null {
+export function expectedStatsFromScreenshotPath(screenshotPath: string): ExpectedStats | null {
   const basename = path.basename(screenshotPath, path.extname(screenshotPath)).toLowerCase();
 
   // Preferred filename format:
@@ -195,7 +196,7 @@ function validateDetection(detection: MotherlodeBagStats, expected: ExpectedStat
   return true;
 }
 
-async function testDetection(screenshotPath: string): Promise<TestStatus> {
+export async function testDetection(screenshotPath: string): Promise<TestStatus> {
   console.log(`\nTesting: ${screenshotPath}`);
   console.log("-".repeat(60));
 
@@ -236,9 +237,9 @@ async function testDetection(screenshotPath: string): Promise<TestStatus> {
   return validateDetection(detection, expected) ? "passed" : "failed";
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const args = expandScreenshotArgs(process.argv.slice(2));
-  const screenshots = args.length > 0 ? args : ["test-images/motherlode-bag-full-box/*.png"];
+  const screenshots = args.length > 0 ? args : DEFAULT_MOTHERLODE_BAG_STATS_SCREENSHOTS;
   const expandedScreenshots = expandScreenshotArgs(screenshots);
 
   console.log(`\nMotherlode Bag Stats Detector Test Suite`);
@@ -262,4 +263,6 @@ async function main(): Promise<void> {
   console.log(`\nResults: ${successCount} passed, ${failureCount} failed, ${skippedCount} skipped`);
 }
 
-main().catch(console.error);
+if (typeof require !== "undefined" && require.main === module) {
+  main().catch(console.error);
+}

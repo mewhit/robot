@@ -20,7 +20,7 @@
     "test:screenshot:motherlode-banking-green": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:motherlode-banking-green\"",
     "test:screenshot:motherlode-banking-yellow": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:motherlode-banking-yellow\"",
     "test:screenshot:motherlode-bag-full": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:motherlode-bag-full\"",
-    "test:screenshot:motherlode-bag-stats": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:motherlode-bag-stats\"",
+    "test:screenshot:motherlode-bag-stats": "vitest run src/main/automate-bots/shared/motherlode-bag-stats-detector.vitest.ts",
     "test:screenshot:motherlode-obstacle-red": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:motherlode-obstacle-red\"",
     "test:screenshot:motherlode-collision": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:motherlode-collision\"",
     "test:screenshot:motherlode-near-deposit": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:motherlode-near-deposit\"",
