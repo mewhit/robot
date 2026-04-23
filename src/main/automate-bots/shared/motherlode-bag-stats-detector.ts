@@ -709,6 +709,7 @@ function splitSegmentAtValleys(mask: Uint8Array, width: number, y0: number, y1: 
 function disambiguateLoopGlyph(
   bestChar: string,
   holeSummary: HoleSummary,
+  orthogonalHoleCount: number,
   normalizedBits: number[],
   loopDistances: LoopDistanceMap,
 ): string {
@@ -741,6 +742,9 @@ function disambiguateLoopGlyph(
   }
 
   if (holeSummary.count >= 2) {
+    if (bestChar === "0" && orthogonalHoleCount >= 4 && loopDistances["0"] <= loopDistances["8"] + 2) {
+      return "0";
+    }
     return "8";
   }
 
@@ -861,7 +865,7 @@ function classifyGlyphSegment(mask: Uint8Array, width: number, y0: number, y1: n
     return "0";
   }
 
-  return disambiguateLoopGlyph(bestChar, holeSummary, normalizedBits, loopDistances);
+  return disambiguateLoopGlyph(bestChar, holeSummary, orthogonalHoleCount, normalizedBits, loopDistances);
 }
 
 function collectClassifiedSegments(
