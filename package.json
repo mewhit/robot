@@ -29,7 +29,10 @@
     "test:screenshot:player": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:player\"",
     "test:screenshot:bank-deposit-orb": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:bank-deposit-orb\"",
     "test:screenshot:mithril-ore": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:mithril-ore\"",
-    "test:screenshot:mithril-active-marker": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:mithril-active-marker\""
+    "test:screenshot:mithril-active-marker": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:mithril-active-marker\"",
+    "test:screenshot:inventory-count": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:inventory-count\"",
+    "test:screenshot:mining-box-status": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:mining-box-status\"",
+    "test:screenshot:object-magenta": "node -r ts-node/register src/main/automate-bots/shared/magenta-object-detector.spec.ts test-images/object-magenta/*.png"
   },
   "electronmon": {
     "patterns": [

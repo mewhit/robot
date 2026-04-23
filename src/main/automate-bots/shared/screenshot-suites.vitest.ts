@@ -102,6 +102,14 @@ const SCREENSHOT_SUITES: Record<string, ScreenshotSuite> = {
     script: "src/main/automate-bots/shared/mithril-active-marker-detector.spec.ts",
     args: ["test-images/mining-mithril-mining-guilde/tini-yellow-circle.png"],
   },
+  "test:screenshot:inventory-count": {
+    script: "src/main/automate-bots/shared/inventory-count-detector.spec.ts",
+    args: ["test-images/icon/inventory-count/*.png"],
+  },
+  "test:screenshot:mining-box-status": {
+    script: "src/main/automate-bots/shared/mining-box-status-detector.spec.ts",
+    args: ["test-images/mining-box-stats/*.png"],
+  },
 };
 
 function quoteArgIfNeeded(value: string): string {
@@ -162,9 +170,7 @@ describe.sequential("Screenshot Suites", () => {
         if (result.exitCode !== 0) {
           const outputSnippet = buildOutputSnippet(result.output);
           const signalText = result.signal ? `, signal=${result.signal}` : "";
-          throw new Error(
-            `Suite failed with exitCode=${result.exitCode}${signalText}\nCommand: ${result.command}\n\n${outputSnippet}`,
-          );
+          throw new Error(`Suite failed with exitCode=${result.exitCode}${signalText}\nCommand: ${result.command}\n\n${outputSnippet}`);
         }
 
         expect(result.exitCode).toBe(0);
