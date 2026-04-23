@@ -11,6 +11,7 @@ import { getRuneLite } from "../runeLiteWindow";
 import { captureScreenBitmap } from "../windowsScreenCapture";
 import { MINING_GUILD_MITHRIL_ORE_BOT_ID } from "./definitions";
 import { runBotEngine, sleepWithAbort } from "./engine/bot-engine";
+import { detectOverlayBoxInScreenshot } from "./shared/coordinate-box-detector";
 import { detectInventoryCount } from "./shared/inventory-count-detector";
 import { detectBankDepositIconWithOrb } from "./shared/bank-deposit-orb-detector";
 import { detectMiningBoxStatusInScreenshot } from "./shared/mining-box-status-detector";
@@ -44,8 +45,15 @@ const BANK_DEPOSIT_ORB_REFERENCE_ICON = "test-images/icon/bank-deposit/bank-depo
 const BANKING_MAGENTA_MIN_PIXELS = 120;
 const BANKING_MOVE_COOLDOWN_TICKS = 2;
 const BANK_ORB_FIND_RETRY_MAX = 3;
+const BANK_ORB_MAX_DISTANCE_FROM_DEPOSIT_RATIO = 0.32;
+const BANK_ORB_MAX_DISTANCE_FROM_DEPOSIT_MIN_PX = 360;
+const BANK_ORB_MAX_DISTANCE_FROM_DEPOSIT_MAX_PX = 700;
 const EAST_RECOVERY_STEP_COOLDOWN_TICKS = 3;
 const DIRECTIONAL_STEP_Y_RATIO = 0.6;
+const BANK_APPROACH_TARGET_TILE = { x: 3013, y: 9720 };
+const BANK_APPROACH_ARRIVAL_RADIUS_TILES = 1;
+const BANK_APPROACH_MAX_CLICK_DISTANCE_TILES = 9;
+const BANK_APPROACH_EDGE_MARGIN_PX = 24;
 
 const TARGET_MAGENTA = { r: 255, g: 0, b: 255 };
 
@@ -62,12 +70,30 @@ type EngineFunctionKey = "searchOre" | "move" | "mine" | "bank";
 
 type WalkDirection = "west" | "east";
 
+type TileCoord = {
+  x: number;
+  y: number;
+  z: number;
+};
+
 type MagentaBlob = {
   centerX: number;
   centerY: number;
   pixelCount: number;
   width: number;
   height: number;
+};
+
+type OverlayTileReadResult = {
+  tile: TileCoord | null;
+  matchedLine: string | null;
+};
+
+type BankApproachMovePlan = {
+  point: { x: number; y: number };
+  deltaXTiles: number;
+  deltaYTiles: number;
+  distanceTiles: number;
 };
 
 type BotState = {
@@ -96,6 +122,7 @@ let currentLogLoopIndex = 0;
 let currentLogPhase: BotPhase | "startup" = "startup";
 let bankDepositOrbReferenceBitmap: RobotBitmap | null = null;
 let bankDepositOrbReferenceLoadAttempted = false;
+let currentWindowsScalePercent = 100;
 
 function formatElapsedSinceStart(): string {
   if (startedAtMs === null) {
@@ -206,6 +233,26 @@ async function prepareCamera(logicalBounds: ScreenCaptureBounds): Promise<void> 
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+function parseTileCoord(matchedLine: string): TileCoord | null {
+  const parts = matchedLine.split(",");
+  if (parts.length < 3) {
+    return null;
+  }
+
+  const x = Number(parts[0]);
+  const y = Number(parts[1]);
+  const z = Number(parts[2]);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+    return null;
+  }
+
+  return { x, y, z };
+}
+
+function formatTileCoord(tile: TileCoord): string {
+  return `${tile.x},${tile.y},${tile.z}`;
 }
 
 function axisDistance(dx: number, dy: number): number {
@@ -347,6 +394,14 @@ function estimateBankMoveTravelTicks(
 ): number {
   const baseTicks = estimateMoveTravelTicks(screenPoint, captureBounds, playerBoxInCapture);
   return clamp(Math.max(BANK_MOVE_MIN_TICKS, Math.ceil(baseTicks * BANK_MOVE_TICK_MULTIPLIER)), 1, MOVE_MAX_WAIT_TICKS);
+}
+
+function resolveBankOrbMaxDistanceFromDepositPx(captureBounds: ScreenCaptureBounds): number {
+  return clamp(
+    Math.round(Math.min(captureBounds.width, captureBounds.height) * BANK_ORB_MAX_DISTANCE_FROM_DEPOSIT_RATIO),
+    BANK_ORB_MAX_DISTANCE_FROM_DEPOSIT_MIN_PX,
+    BANK_ORB_MAX_DISTANCE_FROM_DEPOSIT_MAX_PX,
+  );
 }
 
 function estimateMoveDistanceToTargetPx(
@@ -586,6 +641,56 @@ function findLargestMagentaBlobInBitmap(bitmap: RobotBitmap, minPixels: number =
   }
 
   return best;
+}
+
+function readPlayerTileFromOverlay(bitmap: RobotBitmap): OverlayTileReadResult {
+  const overlayBox = detectOverlayBoxInScreenshot(bitmap, currentWindowsScalePercent);
+  if (!overlayBox) {
+    return { tile: null, matchedLine: null };
+  }
+
+  return {
+    tile: parseTileCoord(overlayBox.matchedLine),
+    matchedLine: overlayBox.matchedLine,
+  };
+}
+
+function planBankApproachMove(
+  captureBounds: ScreenCaptureBounds,
+  playerBoxInCapture: PlayerBox | null,
+  playerTile: TileCoord,
+): BankApproachMovePlan | null {
+  const deltaXTiles = BANK_APPROACH_TARGET_TILE.x - playerTile.x;
+  const deltaYTiles = BANK_APPROACH_TARGET_TILE.y - playerTile.y;
+  const distanceTiles = axisDistance(deltaXTiles, deltaYTiles);
+  if (distanceTiles <= BANK_APPROACH_ARRIVAL_RADIUS_TILES) {
+    return null;
+  }
+
+  const anchorX = playerBoxInCapture?.centerX ?? Math.round(captureBounds.width / 2);
+  const anchorY = playerBoxInCapture?.centerY ?? Math.round(captureBounds.height / 2);
+  const tilePx = estimateMoveTilePxFromPlayerBox(playerBoxInCapture);
+  const moveScale =
+    distanceTiles > BANK_APPROACH_MAX_CLICK_DISTANCE_TILES ? BANK_APPROACH_MAX_CLICK_DISTANCE_TILES / distanceTiles : 1;
+
+  const minLocalX = BANK_APPROACH_EDGE_MARGIN_PX;
+  const minLocalY = BANK_APPROACH_EDGE_MARGIN_PX;
+  const maxLocalX = captureBounds.width - 1 - BANK_APPROACH_EDGE_MARGIN_PX;
+  const maxLocalY = captureBounds.height - 1 - BANK_APPROACH_EDGE_MARGIN_PX;
+
+  const localX = clamp(anchorX + Math.round(deltaXTiles * tilePx * moveScale), minLocalX, maxLocalX);
+  // Startup camera prep aligns the view north, so increasing world-y should aim upward on screen.
+  const localY = clamp(anchorY - Math.round(deltaYTiles * tilePx * moveScale), minLocalY, maxLocalY);
+
+  return {
+    point: {
+      x: captureBounds.x + localX,
+      y: captureBounds.y + localY,
+    },
+    deltaXTiles,
+    deltaYTiles,
+    distanceTiles,
+  };
 }
 
 function clickDirectionalWalk(captureBounds: ScreenCaptureBounds, direction: WalkDirection): { x: number; y: number } {
@@ -891,6 +996,50 @@ function runBankTick(state: BotState, nowMs: number, tickCapture: TickCapture, c
     const playerBox = detectBestPlayerBoxInScreenshot(tickCapture.bitmap);
     const magenta = findLargestMagentaBlobInBitmap(tickCapture.bitmap);
     if (!magenta) {
+      const overlayTile = readPlayerTileFromOverlay(tickCapture.bitmap);
+      if (overlayTile.tile) {
+        const bankApproachMove = planBankApproachMove(captureBounds, playerBox, overlayTile.tile);
+        if (!bankApproachMove) {
+          if (state.loopIndex % 2 === 0) {
+            log(
+              `No large magenta target yet; current tile ${formatTileCoord(overlayTile.tile)} is already within ${BANK_APPROACH_ARRIVAL_RADIUS_TILES} tile(s) of ${BANK_APPROACH_TARGET_TILE.x},${BANK_APPROACH_TARGET_TILE.y}. Holding position and retrying.`,
+            );
+          }
+
+          return {
+            ...state,
+            inventoryCount,
+            actionLockUntilMs: deadlineFromNowTicks(1, nowMs),
+          };
+        }
+
+        clickScreenPoint(bankApproachMove.point.x, bankApproachMove.point.y);
+        const moveTravelTicks = estimateBankMoveTravelTicks(bankApproachMove.point, captureBounds, playerBox);
+        log(
+          `No large magenta target yet; aiming toward ${BANK_APPROACH_TARGET_TILE.x},${BANK_APPROACH_TARGET_TILE.y} from tile ${formatTileCoord(overlayTile.tile)} (dx=${bankApproachMove.deltaXTiles}, dy=${bankApproachMove.deltaYTiles}, remaining~${bankApproachMove.distanceTiles.toFixed(1)} tile(s)) via click at (${bankApproachMove.point.x},${bankApproachMove.point.y}) with move eta ~${moveTravelTicks} tick(s).`,
+        );
+
+        return transitionToMoveState(
+          {
+            ...state,
+            inventoryCount,
+          },
+          nowMs,
+          bankApproachMove.point,
+          moveTravelTicks,
+          "banking-search-magenta",
+          0,
+        );
+      }
+
+      if (state.loopIndex % 3 === 0) {
+        warn(
+          overlayTile.matchedLine
+            ? `Coordinate overlay matched '${overlayTile.matchedLine}' but current tile could not be parsed; falling back to west step.`
+            : `Coordinate overlay unavailable while banking; falling back to west step.`,
+        );
+      }
+
       const stepPoint = clickDirectionalWalk(captureBounds, "west");
       const moveTravelTicks = estimateBankMoveTravelTicks(stepPoint, captureBounds, playerBox);
       if (state.loopIndex % 2 === 0) {
@@ -995,6 +1144,47 @@ function runBankTick(state: BotState, nowMs: number, tickCapture: TickCapture, c
 
   const orbScreenX = captureBounds.x + orbResult.detection.centerX;
   const orbScreenY = captureBounds.y + orbResult.detection.centerY;
+  if (state.bankDepositScreen) {
+    const orbDistanceFromDepositPx = axisDistance(
+      orbScreenX - state.bankDepositScreen.x,
+      orbScreenY - state.bankDepositScreen.y,
+    );
+    const maxDistanceFromDepositPx = resolveBankOrbMaxDistanceFromDepositPx(captureBounds);
+    if (orbDistanceFromDepositPx > maxDistanceFromDepositPx) {
+      const nextAttemptCount = state.bankOrbFindAttemptCount + 1;
+      const rejectionMessage =
+        `Ignoring bank orb candidate at (${orbResult.detection.centerX},${orbResult.detection.centerY}) score=${orbResult.detection.score.toFixed(1)} because it is ${orbDistanceFromDepositPx}px from cached bank deposit click (${state.bankDepositScreen.x},${state.bankDepositScreen.y}) and exceeds ${maxDistanceFromDepositPx}px.`;
+
+      if (nextAttemptCount >= BANK_ORB_FIND_RETRY_MAX) {
+        const playerBox = detectBestPlayerBoxInScreenshot(tickCapture.bitmap);
+        const moveTravelTicks = estimateBankMoveTravelTicks(state.bankDepositScreen, captureBounds, playerBox);
+        warn(`${rejectionMessage} Re-clicking bank deposit with move eta ~${moveTravelTicks} tick(s).`);
+        clickScreenPoint(state.bankDepositScreen.x, state.bankDepositScreen.y);
+
+        return transitionToMoveState(
+          {
+            ...state,
+            inventoryCount,
+            bankOrbFindAttemptCount: 0,
+          },
+          nowMs,
+          state.bankDepositScreen,
+          moveTravelTicks,
+          "banking-find-orb",
+          0,
+        );
+      }
+
+      warn(`${rejectionMessage} Waiting for a closer orb candidate (${nextAttemptCount}/${BANK_ORB_FIND_RETRY_MAX}).`);
+      return {
+        ...state,
+        inventoryCount,
+        bankOrbFindAttemptCount: nextAttemptCount,
+        actionLockUntilMs: deadlineFromNowTicks(1, nowMs),
+      };
+    }
+  }
+
   clickScreenPoint(orbScreenX, orbScreenY);
 
   log(
@@ -1075,7 +1265,7 @@ export function onMiningGuildMithrilOreBotStart(): void {
 
   log(`Automate Bot STARTED (${BOT_NAME}).`);
   log(
-    `Config: engineTick=${GAME_TICK_MS}ms, phases='search->move->mine', startup='hold-w+north', player-ore-max-edge=${PLAYER_ORE_MAX_EDGE_DISTANCE_PX}px.`,
+    `Config: engineTick=${GAME_TICK_MS}ms, phases='search->move->mine', startup='hold-w+north', player-ore-max-edge=${PLAYER_ORE_MAX_EDGE_DISTANCE_PX}px, bank-approach=${BANK_APPROACH_TARGET_TILE.x},${BANK_APPROACH_TARGET_TILE.y}.`,
   );
 
   const window = getRuneLite();
@@ -1116,6 +1306,7 @@ export function onMiningGuildMithrilOreBotStart(): void {
 
   const scaleFactor = getWindowsDisplayScaleFactor(logicalBounds);
   const captureBounds = toPhysicalBounds(logicalBounds, scaleFactor);
+  currentWindowsScalePercent = Math.round(scaleFactor * 100);
 
   void (async () => {
     try {

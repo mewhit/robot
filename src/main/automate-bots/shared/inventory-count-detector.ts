@@ -20,6 +20,8 @@ const SEARCH_LEFT_RATIO = 0.86;
 const SEARCH_TOP_RATIO = 0.82;
 const SEARCH_RIGHT_RATIO = 1.0;
 const SEARCH_BOTTOM_RATIO = 0.9;
+const MIN_BOTTOM_RIGHT_SEARCH_WIDTH = 700;
+const MIN_BOTTOM_RIGHT_SEARCH_HEIGHT = 420;
 
 // Minimum cyan pixels per row to qualify as a text row
 const TEXT_ROW_THRESHOLD_RATIO = 0.002;
@@ -367,14 +369,19 @@ function readInventoryCountLine(mask: Uint8Array, origWidth: number, origHeight:
 }
 
 export function detectInventoryCount(bitmap: RobotBitmap): InventoryCountResult {
-  const searchX0 = clamp(Math.round(bitmap.width * SEARCH_LEFT_RATIO), 0, bitmap.width - 1);
-  const searchY0 = clamp(Math.round(bitmap.height * SEARCH_TOP_RATIO), 0, bitmap.height - 1);
-  const searchX1 = bitmap.width - 1;
+  const ratioSearchX0 = Math.round(bitmap.width * SEARCH_LEFT_RATIO);
+  const ratioSearchY0 = Math.round(bitmap.height * SEARCH_TOP_RATIO);
+  const minWidthSearchX0 = bitmap.width - MIN_BOTTOM_RIGHT_SEARCH_WIDTH;
+  const minHeightSearchY0 = bitmap.height - MIN_BOTTOM_RIGHT_SEARCH_HEIGHT;
+  const searchX0 = clamp(Math.min(ratioSearchX0, minWidthSearchX0), 0, bitmap.width - 1);
+  const searchY0 = clamp(Math.min(ratioSearchY0, minHeightSearchY0), 0, bitmap.height - 1);
+  const searchX1 = clamp(Math.round(bitmap.width * SEARCH_RIGHT_RATIO) - 1, searchX0, bitmap.width - 1);
+  const searchY1 = clamp(Math.round(bitmap.height * SEARCH_BOTTOM_RATIO), searchY0, bitmap.height - 1);
   const searchRoi: Roi = {
     x: searchX0,
     y: searchY0,
     width: searchX1 - searchX0 + 1,
-    height: Math.round(bitmap.height * SEARCH_BOTTOM_RATIO) - searchY0,
+    height: searchY1 - searchY0 + 1,
   };
 
   const cropped = cropBitmap(bitmap, searchRoi);

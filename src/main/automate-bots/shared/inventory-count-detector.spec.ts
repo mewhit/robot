@@ -5,7 +5,10 @@
  * Usage:
  *   node -r ts-node/register inventory-count-detector.spec.ts <glob-or-path...>
  *
- * Filename convention: ...-count=<N>.png where N is the expected free inventory slots (0-28).
+ * Filename convention:
+ *   - ...-count=<N>.png
+ *   - ...-<N>.png
+ * where N is the expected free inventory slots (0-28).
  */
 
 import fs from "fs";
@@ -25,7 +28,7 @@ const DEBUG_OUTPUT_DIR = "./test-image-debug";
 
 function parseExpectedCountFromFilename(screenshotPath: string): number | null {
   const basename = path.basename(screenshotPath, path.extname(screenshotPath));
-  const match = basename.match(/count=(\d+)$/i);
+  const match = basename.match(/(?:count=|[-_])(\d+)$/i);
   if (!match) {
     return null;
   }

@@ -38,6 +38,8 @@ const STATUS_SEARCH_LEFT_RATIO = 0.009;
 const STATUS_SEARCH_RIGHT_RATIO = 0.05;
 const STATUS_SEARCH_TOP_RATIO = 0.04;
 const STATUS_SEARCH_BOTTOM_RATIO = 0.075;
+const MIN_STATUS_SEARCH_WIDTH = 160;
+const MIN_STATUS_SEARCH_HEIGHT = 110;
 
 const MIN_STATUS_PIXEL_COUNT = 12;
 const MIN_DOMINANCE_RATIO = 0.62;
@@ -56,8 +58,8 @@ function resolveStatusRoi(bitmap: RobotBitmap): Roi {
 
   const x = clamp(x0, 0, bitmap.width - 1);
   const y = clamp(y0, 0, bitmap.height - 1);
-  const maxX = clamp(Math.max(x0 + 16, x1), 0, bitmap.width - 1);
-  const maxY = clamp(Math.max(y0 + 12, y1), 0, bitmap.height - 1);
+  const maxX = clamp(Math.max(x0 + MIN_STATUS_SEARCH_WIDTH - 1, x1), 0, bitmap.width - 1);
+  const maxY = clamp(Math.max(y0 + MIN_STATUS_SEARCH_HEIGHT - 1, y1), 0, bitmap.height - 1);
 
   return {
     x,
