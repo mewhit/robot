@@ -38,13 +38,12 @@ const MOVE_EARLY_COMPLETE_RADIUS_TILES = 1.2;
 const SAME_ORE_MATCH_RADIUS_PX = 56;
 const TARGET_ORE_MATCH_RADIUS_PX = 110;
 const PLAYER_ORE_MAX_EDGE_DISTANCE_PX = 500;
-const POST_CLICK_MOUSE_OFFSET_PX = 200;
-const POST_CLICK_CORNER_MARGIN_PX = 6;
 const INVENTORY_EMPTY_COUNT = 0;
 const INVENTORY_FULL_COUNT = 28;
 const BANK_DEPOSIT_ORB_REFERENCE_ICON = "test-images/icon/bank-deposit/bank-deposit-icon.png";
 const BANKING_MAGENTA_MIN_PIXELS = 120;
 const BANKING_MOVE_COOLDOWN_TICKS = 2;
+const BANK_ORB_FIND_RETRY_MAX = 3;
 const EAST_RECOVERY_STEP_COOLDOWN_TICKS = 3;
 const DIRECTIONAL_STEP_Y_RATIO = 0.6;
 
@@ -83,6 +82,8 @@ type BotState = {
   moveDestinationPhase: MoveDestinationPhase;
   inventoryCount: number | null;
   bankOrbClickCount: number;
+  bankDepositScreen: { x: number; y: number } | null;
+  bankOrbFindAttemptCount: number;
 };
 
 type TickCapture = {
@@ -413,35 +414,6 @@ function clickScreenPoint(screenX: number, screenY: number): void {
   mouseClick("left", false);
 }
 
-function resolvePostClickMouseTarget(
-  clickedScreenX: number,
-  clickedScreenY: number,
-  captureBounds: ScreenCaptureBounds,
-): { x: number; y: number } | null {
-  const minX = captureBounds.x + POST_CLICK_CORNER_MARGIN_PX;
-  const minY = captureBounds.y + POST_CLICK_CORNER_MARGIN_PX;
-  const maxX = captureBounds.x + captureBounds.width - 1 - POST_CLICK_CORNER_MARGIN_PX;
-  const maxY = captureBounds.y + captureBounds.height - 1 - POST_CLICK_CORNER_MARGIN_PX;
-
-  if (minX > maxX || minY > maxY) {
-    return null;
-  }
-
-  return {
-    x: clamp(clickedScreenX - POST_CLICK_MOUSE_OFFSET_PX, minX, maxX),
-    y: clamp(clickedScreenY - POST_CLICK_MOUSE_OFFSET_PX, minY, maxY),
-  };
-}
-
-function moveMouseAwayFromClickedTarget(clickedScreenX: number, clickedScreenY: number, captureBounds: ScreenCaptureBounds): void {
-  const target = resolvePostClickMouseTarget(clickedScreenX, clickedScreenY, captureBounds);
-  if (!target) {
-    return;
-  }
-
-  moveMouse(target.x, target.y);
-}
-
 function deadlineFromNowTicks(ticks: number, nowMs: number = Date.now()): number {
   return nowMs + Math.max(0, ticks) * GAME_TICK_MS;
 }
@@ -621,7 +593,6 @@ function clickDirectionalWalk(captureBounds: ScreenCaptureBounds, direction: Wal
   const x = captureBounds.x + Math.round(captureBounds.width * ratioX);
   const y = captureBounds.y + Math.round(captureBounds.height * DIRECTIONAL_STEP_Y_RATIO);
   clickScreenPoint(x, y);
-  moveMouseAwayFromClickedTarget(x, y, captureBounds);
   return { x, y };
 }
 
@@ -648,6 +619,8 @@ function resetToSearchingState(state: BotState, actionLockUntilMs: number = stat
     moveWaitTicks: 0,
     moveDestinationPhase: "mining",
     bankOrbClickCount: 0,
+    bankDepositScreen: null,
+    bankOrbFindAttemptCount: 0,
   };
 }
 
@@ -664,6 +637,8 @@ function createInitialState(): BotState {
     moveDestinationPhase: "mining",
     inventoryCount: null,
     bankOrbClickCount: 0,
+    bankDepositScreen: null,
+    bankOrbFindAttemptCount: 0,
   };
 }
 
@@ -688,6 +663,8 @@ function transitionToBankingState(state: BotState, nowMs: number): BotState {
     moveWaitTicks: 0,
     moveDestinationPhase: "banking-search-magenta",
     bankOrbClickCount: 0,
+    bankDepositScreen: null,
+    bankOrbFindAttemptCount: 0,
     actionLockUntilMs: deadlineFromNowTicks(1, nowMs),
   };
 }
@@ -729,6 +706,7 @@ function transitionFromMoveState(state: BotState, inventoryCount: number | null)
     moveDeadlineMs: 0,
     targetScreen: null,
     moveWaitTicks: 0,
+    bankOrbFindAttemptCount: 0,
   };
 }
 
@@ -794,7 +772,6 @@ function runSearchOreTick(state: BotState, nowMs: number, tickCapture: TickCaptu
   );
 
   clickScreenPoint(interactionPoint.x, interactionPoint.y);
-  moveMouseAwayFromClickedTarget(interactionPoint.x, interactionPoint.y, captureBounds);
 
   return transitionToMoveState(
     {
@@ -939,12 +916,13 @@ function runBankTick(state: BotState, nowMs: number, tickCapture: TickCapture, c
       `Found magenta target size=${magenta.width}x${magenta.height} pixels=${magenta.pixelCount}; clicking (${targetScreenX},${targetScreenY}) with move eta ~${moveTravelTicks} tick(s) before bank-orb detection.`,
     );
     clickScreenPoint(targetScreenX, targetScreenY);
-    moveMouseAwayFromClickedTarget(targetScreenX, targetScreenY, captureBounds);
 
     return transitionToMoveState(
       {
         ...state,
         inventoryCount,
+        bankDepositScreen: { x: targetScreenX, y: targetScreenY },
+        bankOrbFindAttemptCount: 0,
       },
       nowMs,
       { x: targetScreenX, y: targetScreenY },
@@ -967,14 +945,50 @@ function runBankTick(state: BotState, nowMs: number, tickCapture: TickCapture, c
 
   const orbResult = detectBankDepositIconWithOrb(orbReferenceBitmap, tickCapture.bitmap);
   if (!orbResult.detection) {
+    const nextAttemptCount = state.bankOrbFindAttemptCount + 1;
+    if (nextAttemptCount >= BANK_ORB_FIND_RETRY_MAX) {
+      if (!state.bankDepositScreen) {
+        warn(`Bank orb not found after ${nextAttemptCount} attempt(s) and no deposit target is cached; restarting bank search.`);
+        return {
+          ...state,
+          inventoryCount,
+          phase: "banking-search-magenta",
+          currentFunction: "bank",
+          actionLockUntilMs: deadlineFromNowTicks(BANKING_MOVE_COOLDOWN_TICKS, nowMs),
+          bankOrbFindAttemptCount: 0,
+        };
+      }
+
+      const playerBox = detectBestPlayerBoxInScreenshot(tickCapture.bitmap);
+      const moveTravelTicks = estimateBankMoveTravelTicks(state.bankDepositScreen, captureBounds, playerBox);
+      log(
+        `Bank orb not found after ${nextAttemptCount} attempt(s); re-clicking bank deposit at (${state.bankDepositScreen.x},${state.bankDepositScreen.y}) with move eta ~${moveTravelTicks} tick(s).`,
+      );
+      clickScreenPoint(state.bankDepositScreen.x, state.bankDepositScreen.y);
+
+      return transitionToMoveState(
+        {
+          ...state,
+          inventoryCount,
+          bankOrbFindAttemptCount: 0,
+        },
+        nowMs,
+        state.bankDepositScreen,
+        moveTravelTicks,
+        "banking-find-orb",
+        0,
+      );
+    }
+
     if (state.loopIndex % 3 === 0) {
       log(
-        `Waiting for bank deposit orb after magenta click (sceneKeypoints=${orbResult.sceneKeypointCount}, rawMatches=${orbResult.rawMatchCount}).`,
+        `Waiting for bank deposit orb after magenta click (attempt ${nextAttemptCount}/${BANK_ORB_FIND_RETRY_MAX}, sceneKeypoints=${orbResult.sceneKeypointCount}, rawMatches=${orbResult.rawMatchCount}).`,
       );
     }
     return {
       ...state,
       inventoryCount,
+      bankOrbFindAttemptCount: nextAttemptCount,
       actionLockUntilMs: deadlineFromNowTicks(1, nowMs),
     };
   }
@@ -982,7 +996,6 @@ function runBankTick(state: BotState, nowMs: number, tickCapture: TickCapture, c
   const orbScreenX = captureBounds.x + orbResult.detection.centerX;
   const orbScreenY = captureBounds.y + orbResult.detection.centerY;
   clickScreenPoint(orbScreenX, orbScreenY);
-  moveMouseAwayFromClickedTarget(orbScreenX, orbScreenY, captureBounds);
 
   log(
     `Bank orb detected at (${orbResult.detection.centerX},${orbResult.detection.centerY}) score=${orbResult.detection.score.toFixed(1)}; clicked (${orbScreenX},${orbScreenY}) and waiting for inventory=28.`,
@@ -992,6 +1005,7 @@ function runBankTick(state: BotState, nowMs: number, tickCapture: TickCapture, c
     ...state,
     inventoryCount,
     bankOrbClickCount: state.bankOrbClickCount + 1,
+    bankOrbFindAttemptCount: 0,
     actionLockUntilMs: deadlineFromNowTicks(2, nowMs),
   };
 }
