@@ -17,13 +17,12 @@ import {
 import { MotherlodeBagStats, detectMotherlodeBagStatsInScreenshot } from "./shared/motherlode-bag-stats-detector";
 import {
   MotherlodeDepositBox,
-  detectBestMotherlodeDepositBoxInScreenshot,
   detectMotherlodeDepositBoxesInScreenshot,
 } from "./shared/motherlode-deposit-box-detector";
 import { MotherlodeMineBox, detectMotherlodeMineBoxesInScreenshot } from "./shared/motherlode-mine-box-detector";
 import {
   MotherlodeObstacleRedBox,
-  detectBestMotherlodeObstacleRedBoxInScreenshot,
+  detectMotherlodeObstacleRedBoxesInScreenshot,
   saveBitmapWithMotherlodeObstacleRedBoxes,
 } from "./shared/motherlode-obstacle-red-detector";
 import {
@@ -813,10 +812,6 @@ function toTopInnerInteractionScreenPoint(
   return pickDistinctScreenPointInLocalRange(innerX.min, innerX.max, innerY.min, topBandMaxY, captureBounds);
 }
 
-function detectBestCyanDepositBoxInScreenshot(bitmap: RobotBitmap): MotherlodeDepositBox | null {
-  return detectBestMotherlodeDepositBoxInScreenshot(bitmap);
-}
-
 function detectNearestCyanDepositBoxInScreenshot(
   bitmap: RobotBitmap,
   captureBounds: ScreenCaptureBounds,
@@ -827,6 +822,16 @@ function detectNearestCyanDepositBoxInScreenshot(
   return findNearestDepositBox(boxes, captureBounds, playerAnchor);
 }
 
+function detectSouthernBankingCyanDepositBoxInScreenshot(
+  bitmap: RobotBitmap,
+  captureBounds: ScreenCaptureBounds,
+): MotherlodeDepositBox | null {
+  const boxes = detectMotherlodeDepositBoxesInScreenshot(bitmap);
+  const playerBox = detectBestPlayerBoxInScreenshot(bitmap);
+  const playerAnchor = playerBox ? { x: playerBox.centerX, y: playerBox.centerY } : null;
+  return findSouthernDepositBox(boxes, captureBounds, playerAnchor);
+}
+
 function detectBestBankingYellowBoxInScreenshot(bitmap: RobotBitmap): MotherlodeBankingYellowBox | null {
   return detectBestMotherlodeBankingYellowBoxInScreenshot(bitmap);
 }
@@ -835,8 +840,45 @@ function detectBestBankingGreenBoxInScreenshot(bitmap: RobotBitmap): MotherlodeB
   return detectBestMotherlodeBankingGreenBoxInScreenshot(bitmap);
 }
 
-function detectBestRedObstacleBoxInScreenshot(bitmap: RobotBitmap): MotherlodeObstacleRedBox | null {
-  return detectBestMotherlodeObstacleRedBoxInScreenshot(bitmap);
+function distanceFromPointToBoxAxis(
+  pointX: number,
+  pointY: number,
+  box: Pick<MotherlodeObstacleRedBox, "x" | "y" | "width" | "height">,
+): number {
+  const nearestX = clamp(pointX, box.x, box.x + box.width - 1);
+  const nearestY = clamp(pointY, box.y, box.y + box.height - 1);
+  return axisDistance(pointX - nearestX, pointY - nearestY);
+}
+
+function detectBestRedObstacleBoxInScreenshot(
+  bitmap: RobotBitmap,
+  playerBoxInCapture: PlayerBox | null,
+): MotherlodeObstacleRedBox | null {
+  const boxes = detectMotherlodeObstacleRedBoxesInScreenshot(bitmap);
+  if (boxes.length === 0) {
+    return null;
+  }
+
+  if (!playerBoxInCapture) {
+    return boxes[0] ?? null;
+  }
+
+  let best: MotherlodeObstacleRedBox | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  for (const box of boxes) {
+    if (!isPlayerCollidingWithObstacle(playerBoxInCapture, box)) {
+      continue;
+    }
+
+    const distance = distanceFromPointToBoxAxis(playerBoxInCapture.centerX, playerBoxInCapture.centerY, box);
+    if (!best || distance < bestDistance || (distance === bestDistance && box.score > best.score)) {
+      best = box;
+      bestDistance = distance;
+    }
+  }
+
+  return best;
 }
 
 function detectMineTargetBoxesInScreenshot(bitmap: RobotBitmap): MineTargetBox[] {
@@ -1193,6 +1235,42 @@ function findNearestDepositBox(
   return best;
 }
 
+function findSouthernDepositBox(
+  boxes: MotherlodeDepositBox[],
+  captureBounds: ScreenCaptureBounds,
+  anchor: { x: number; y: number } | null,
+): MotherlodeDepositBox | null {
+  if (boxes.length === 0) {
+    return null;
+  }
+
+  if (boxes.length === 1) {
+    return boxes[0] ?? null;
+  }
+
+  const anchorX = anchor?.x ?? Math.round(captureBounds.width / 2);
+  const anchorY = anchor?.y ?? Math.round(captureBounds.height / 2);
+
+  let best: MotherlodeDepositBox | null = null;
+  let bestSouthY = Number.NEGATIVE_INFINITY;
+  let bestCenterDistance = Number.POSITIVE_INFINITY;
+
+  for (const box of boxes) {
+    const southY = box.y + box.height - 1;
+    const centerDx = anchorX - box.centerX;
+    const centerDy = anchorY - box.centerY;
+    const centerDistance = axisDistance(centerDx, centerDy);
+
+    if (southY > bestSouthY || (southY === bestSouthY && centerDistance < bestCenterDistance)) {
+      best = box;
+      bestSouthY = southY;
+      bestCenterDistance = centerDistance;
+    }
+  }
+
+  return best;
+}
+
 function createInitialBotState(): BotState {
   const initialState: BotState = {
     loopIndex: 0,
@@ -1378,7 +1456,7 @@ function captureMineState(bitmap: RobotBitmap): MineCaptureResult {
   const boxes = detectMineTargetBoxesInScreenshot(bitmap);
   const bagFullDetection = detectMotherlodeBagFullBoxInScreenshot(bitmap);
   const playerBox = detectBestPlayerBoxInScreenshot(bitmap);
-  const obstacleBox = detectBestRedObstacleBoxInScreenshot(bitmap);
+  const obstacleBox = detectBestRedObstacleBoxInScreenshot(bitmap, playerBox);
   const playerAnchorInCapture = playerBox ? { x: playerBox.centerX, y: playerBox.centerY } : null;
 
   return {
@@ -2013,11 +2091,11 @@ const Osrs = {
       } as BotState;
     }
 
-    const cyanTarget = detectNearestCyanDepositBoxInScreenshot(tickCapture.bitmap, captureBounds);
+    const cyanTarget = detectSouthernBankingCyanDepositBoxInScreenshot(tickCapture.bitmap, captureBounds);
     if (!cyanTarget) {
       if (current.loopIndex % 3 === 0) {
         warn(
-          `Automate Bot (${BOT_NAME}): #${current.loopIndex} [search-bank-paydirt-deposit] +x=${payDirtInventoryCount}, but nearest cyan pay-dirt deposit target was not found.`,
+          `Automate Bot (${BOT_NAME}): #${current.loopIndex} [search-bank-paydirt-deposit] +x=${payDirtInventoryCount}, but southern cyan pay-dirt deposit target was not found.`,
         );
       }
       return current;
@@ -2030,7 +2108,7 @@ const Osrs = {
       actionLockTicks: DEPOSIT_CLICK_LOCK_TICKS,
     };
     log(
-      `Automate Bot (${BOT_NAME}): #${current.loopIndex} [search-bank-paydirt-deposit] +x=${payDirtInventoryCount}; nearest cyan deposit at (${interactionPoint.x},${interactionPoint.y}). Queueing move -> ${destination.phase}/${destination.currentFunction}.`,
+      `Automate Bot (${BOT_NAME}): #${current.loopIndex} [search-bank-paydirt-deposit] +x=${payDirtInventoryCount}; southern cyan deposit at (${interactionPoint.x},${interactionPoint.y}). Queueing move -> ${destination.phase}/${destination.currentFunction}.`,
     );
     return queueMoveState(current, { x: interactionPoint.x, y: interactionPoint.y }, destination);
   },
@@ -2066,7 +2144,7 @@ const Osrs = {
 
     if (payDirtInventoryCount === null) {
       warn(
-        `Automate Bot (${BOT_NAME}): #${current.loopIndex} [deposit-bank-paydirt] Could not read +x inventory count; re-searching nearest cyan deposit target.`,
+        `Automate Bot (${BOT_NAME}): #${current.loopIndex} [deposit-bank-paydirt] Could not read +x inventory count; re-searching southern cyan deposit target.`,
       );
       return {
         ...resetToBanking(current, "searchBankPayDirtDeposit"),
@@ -2074,10 +2152,10 @@ const Osrs = {
       } as BotState;
     }
 
-    const cyanTarget = detectNearestCyanDepositBoxInScreenshot(tickCapture.bitmap, captureBounds);
+    const cyanTarget = detectSouthernBankingCyanDepositBoxInScreenshot(tickCapture.bitmap, captureBounds);
     if (!cyanTarget) {
       warn(
-        `Automate Bot (${BOT_NAME}): #${current.loopIndex} [deposit-bank-paydirt] +x=${payDirtInventoryCount}, but nearest cyan deposit target was not found. Re-searching.`,
+        `Automate Bot (${BOT_NAME}): #${current.loopIndex} [deposit-bank-paydirt] +x=${payDirtInventoryCount}, but southern cyan deposit target was not found. Re-searching.`,
       );
       return {
         ...resetToBanking(current, "searchBankPayDirtDeposit"),
@@ -2087,7 +2165,7 @@ const Osrs = {
 
     const point = toDepositInteractionScreenPoint(cyanTarget, captureBounds);
     log(
-      `Automate Bot (${BOT_NAME}): #${current.loopIndex} [deposit-bank-paydirt] Clicking nearest cyan pay-dirt deposit at (${point.x},${point.y}) while +x=${payDirtInventoryCount}.`,
+      `Automate Bot (${BOT_NAME}): #${current.loopIndex} [deposit-bank-paydirt] Clicking southern cyan pay-dirt deposit at (${point.x},${point.y}) while +x=${payDirtInventoryCount}.`,
     );
     clickScreenPoint(point.x, point.y);
     moveMouseAwayFromClickedNode(point.x, point.y, captureBounds);
@@ -2214,7 +2292,7 @@ const Osrs = {
 
     if (payDirtInventoryCount !== null && payDirtInventoryCount > 0) {
       log(
-        `Automate Bot (${BOT_NAME}): #${current.loopIndex} [check-inventory-empty] +x still ${payDirtInventoryCount} after banking. Switching to nearest cyan pay-dirt deposit flow.`,
+        `Automate Bot (${BOT_NAME}): #${current.loopIndex} [check-inventory-empty] +x still ${payDirtInventoryCount} after banking. Switching to southern cyan pay-dirt deposit flow.`,
       );
       return {
         ...resetToBanking(current, "searchBankPayDirtDeposit"),
@@ -2369,7 +2447,7 @@ const Osrs = {
         return state;
       }
 
-      const targetDepositBox = detectBestCyanDepositBoxInScreenshot(tickCapture.bitmap);
+      const targetDepositBox = detectNearestCyanDepositBoxInScreenshot(tickCapture.bitmap, captureBounds);
 
       if (!targetDepositBox) {
         if (state.loopIndex % 3 === 0) {
@@ -2391,7 +2469,7 @@ const Osrs = {
     },
   clearRedObstacle: ({ tickCapture, state, nowMs, captureBounds }: BotEngineContext): BotState => {
     const playerBox = detectBestPlayerBoxInScreenshot(tickCapture.bitmap);
-    const obstacleBox = detectBestRedObstacleBoxInScreenshot(tickCapture.bitmap);
+    const obstacleBox = detectBestRedObstacleBoxInScreenshot(tickCapture.bitmap, playerBox);
 
     if (!shouldClearRedObstacle(playerBox, obstacleBox)) {
       return state;
