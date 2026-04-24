@@ -18,6 +18,7 @@ export type RunBotEngineOptions<State extends BotEngineLoopState<FunctionKey>, F
   isRunning: () => boolean;
   createInitialState: () => State;
   captureTick?: (params: { state: State; nowMs: number }) => Promise<TickCapture> | TickCapture;
+  observeTick?: (params: { state: State; nowMs: number; tickCapture: TickCapture }) => Promise<void> | void;
   functions: BotEngineFunctionMap<State, FunctionKey, TickCapture>;
   onTickError?: (error: unknown, state: State) => void;
 };
@@ -77,6 +78,15 @@ export function sleepWithAbort(ms: number, isRunning: () => boolean): Promise<vo
   });
 }
 
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "then" in value &&
+    typeof (value as PromiseLike<unknown>).then === "function"
+  );
+}
+
 export async function runBotEngine<State extends BotEngineLoopState<FunctionKey>, FunctionKey extends string, TickCapture = undefined>(
   options: RunBotEngineOptions<State, FunctionKey, TickCapture>,
 ): Promise<void> {
@@ -97,6 +107,25 @@ export async function runBotEngine<State extends BotEngineLoopState<FunctionKey>
             nowMs: tickStartedAt,
           })
         : (undefined as TickCapture);
+
+      if (options.observeTick) {
+        try {
+          const observationTask = options.observeTick({
+            state,
+            nowMs: tickStartedAt,
+            tickCapture,
+          });
+
+          if (isPromiseLike(observationTask)) {
+            void observationTask.catch((error) => {
+              options.onTickError?.(error, state);
+            });
+          }
+        } catch (error) {
+          options.onTickError?.(error, state);
+        }
+      }
+
       state = await tickFunction({
         state,
         nowMs: tickStartedAt,

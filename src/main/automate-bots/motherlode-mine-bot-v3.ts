@@ -39,6 +39,8 @@ import { PlayerBox, detectBestPlayerBoxInScreenshot, saveBitmapWithPlayerBoxes }
 import { detectOverlayBoxInScreenshot } from "./shared/coordinate-box-detector";
 import { isPlayerCollidingWithObstacle as isPlayerCollidingWithObstacleBox } from "./shared/player-obstacle-collision";
 import { createMineFunction, runBotEngine, sleepWithAbort } from "./engine/bot-engine";
+import { createAsyncWorldMapper } from "./mapping/async-world-mapper";
+import { readWorldMapObservationFromBitmap } from "./mapping/world-map-observation-reader";
 import { RobotBitmap } from "./shared/ocr-engine";
 
 const BOT_NAME = "Motherlode Mine V3";
@@ -50,6 +52,7 @@ const NORTH_KEY_HOLD_MS = 100;
 const GAME_TICK_MS = 600;
 const BASE_TICK_MS = GAME_TICK_MS;
 const TOOLTIP_SETTLE_MS = 400;
+const ENABLE_WORLD_MAPPER = false;
 const ENABLE_TILE_LOCATION_DETECTION = false;
 const ENABLE_NODE_HOVER_BEFORE_TILE_READ = true;
 const ENABLE_OBSTACLE_RED_CLICK = true;
@@ -2747,6 +2750,12 @@ async function runLoop(captureBounds: ScreenCaptureBounds): Promise<void> {
   captureBoundsRef = captureBounds;
   isLoopRunning = true;
   setAutomateBotCurrentStep(MINING_MOTHERLODE_MINE_V3_BOT_ID);
+  const worldMapper = ENABLE_WORLD_MAPPER
+    ? createAsyncWorldMapper({
+        botId: MINING_MOTHERLODE_MINE_V3_BOT_ID,
+        outputRootPath: AppState.outputFolderPath,
+      })
+    : null;
 
   try {
     await runBotEngine<BotState, EngineFunctionKey, EngineTickCapture>({
@@ -2757,6 +2766,21 @@ async function runLoop(captureBounds: ScreenCaptureBounds): Promise<void> {
         bitmap: captureScreenBitmap(captureBounds),
         captureBitmap: () => captureScreenBitmap(captureBounds),
       }),
+      observeTick: ({ tickCapture, nowMs }) => {
+        if (!worldMapper) {
+          return;
+        }
+        const observation = readWorldMapObservationFromBitmap({
+          bitmap: tickCapture.bitmap,
+          observedAtMs: nowMs,
+          windowsScalePercent: currentWindowsScalePercent,
+        });
+        if (observation) {
+          worldMapper.enqueueObservation(observation, {
+            screenshotBitmap: tickCapture.bitmap,
+          });
+        }
+      },
       functions: {
         mine: ({ state, nowMs, tickCapture }) => runMineFunction(state, nowMs, tickCapture),
         depositPayDirt: ({ state, nowMs, tickCapture }) => {
@@ -2923,6 +2947,14 @@ async function runLoop(captureBounds: ScreenCaptureBounds): Promise<void> {
       },
     });
   } finally {
+    if (worldMapper) {
+      try {
+        await worldMapper.stop();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        warn(`Automate Bot (${BOT_NAME}): world mapper flush failed: ${message}`);
+      }
+    }
     captureBoundsRef = null;
     isLoopRunning = false;
     startedAtMs = null;
@@ -2944,7 +2976,7 @@ export function onMotherlodeMineBotV3Start(): void {
 
   log(`Automate Bot STARTED (${BOT_NAME}).`);
   log(
-    `Automate Bot (${BOT_NAME}) config: engineTick=${BASE_TICK_MS}ms, engineFunctions={searchOre,searchDepositPayDirt,searchLadder,useLadder,searchSack,fillInventory,searchBankDeposit,searchBankPayDirtDeposit,depositBankPayDirt,searchBankOrb,closeBankAfterOrb,checkInventoryEmpty,searchReturnLadder,useReturnLadder,move,mine,depositPayDirt}, hover-before-read=${ENABLE_NODE_HOVER_BEFORE_TILE_READ ? "on" : "off"}, obstacle-red-click=${ENABLE_OBSTACLE_RED_CLICK ? "on" : "off"}.`,
+    `Automate Bot (${BOT_NAME}) config: engineTick=${BASE_TICK_MS}ms, engineFunctions={searchOre,searchDepositPayDirt,searchLadder,useLadder,searchSack,fillInventory,searchBankDeposit,searchBankPayDirtDeposit,depositBankPayDirt,searchBankOrb,closeBankAfterOrb,checkInventoryEmpty,searchReturnLadder,useReturnLadder,move,mine,depositPayDirt}, world-mapper=${ENABLE_WORLD_MAPPER ? "on" : "off"}, hover-before-read=${ENABLE_NODE_HOVER_BEFORE_TILE_READ ? "on" : "off"}, obstacle-red-click=${ENABLE_OBSTACLE_RED_CLICK ? "on" : "off"}.`,
   );
 
   const window = getRuneLite();
