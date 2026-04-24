@@ -17,18 +17,22 @@ import { detectOverlayBoxInScreenshot } from "./shared/coordinate-box-detector";
 import { detectInventoryCount } from "./shared/inventory-count-detector";
 import { detectBankDepositIconWithOrb } from "./shared/bank-deposit-orb-detector";
 import {
+  isTileWithinBounds,
   planBankApproachLocalPoint,
   TileBounds,
   TileCoord,
-  trackStableTileRead,
 } from "./shared/mining-guild-bank-approach";
 import { detectMiningBoxStatusInScreenshot } from "./shared/mining-box-status-detector";
 import { detectMithrilOreBoxesInScreenshot, MithrilOreBox } from "./shared/mithril-ore-detector";
 import { RobotBitmap } from "./shared/ocr-engine";
 import { detectBestPlayerBoxInScreenshot, PlayerBox } from "./shared/player-box-detector";
+import { saveBitmap } from "./shared/save-bitmap";
 
 const BOT_NAME = "Mining Guild Mithril Ore";
 const DEBUG_DIR = "ocr-debug";
+const COORDINATE_BOX_DEBUG_RELATIVE_DIR = path.join("test-images", "coordinate-box");
+const COORDINATE_BOX_UNVERIFIED_SUFFIX = "unverified";
+const COORDINATE_BOX_UNKNOWN_TOKEN = "unknown";
 const GAME_TICK_MS = 600;
 const ENABLE_WORLD_MAPPER = false;
 const CAMERA_PITCH_HOLD_MS = 2400;
@@ -63,7 +67,7 @@ const BANK_APPROACH_TARGET_TILE = { x: 3013, y: 9720 };
 const BANK_APPROACH_ARRIVAL_RADIUS_TILES = 1;
 const BANK_APPROACH_MAX_CLICK_DISTANCE_TILES = 9;
 const BANK_APPROACH_EDGE_MARGIN_PX = 24;
-const BANK_APPROACH_STABLE_READS_REQUIRED = 2;
+const CLICK_SAFE_EDGE_MARGIN_PX = 3;
 const BANK_APPROACH_VALID_TILE_BOUNDS: TileBounds = {
   minX: BANK_APPROACH_TARGET_TILE.x - 32,
   maxX: BANK_APPROACH_TARGET_TILE.x + 56,
@@ -121,8 +125,9 @@ type BotState = {
   bankOrbClickCount: number;
   bankDepositScreen: { x: number; y: number } | null;
   bankOrbFindAttemptCount: number;
-  bankOverlayTile: TileCoord | null;
-  bankOverlayStableReadCount: number;
+  bankApproachPlanEvaluated: boolean;
+  bankApproachClicksRemaining: number;
+  bankApproachClickPoint: { x: number; y: number } | null;
 };
 
 type TickCapture = {
@@ -136,6 +141,7 @@ let currentLogPhase: BotPhase | "startup" = "startup";
 let bankDepositOrbReferenceBitmap: RobotBitmap | null = null;
 let bankDepositOrbReferenceLoadAttempted = false;
 let currentWindowsScalePercent = 100;
+let currentMonitorTier: "2k" | "4k" = "2k";
 
 function formatElapsedSinceStart(): string {
   if (startedAtMs === null) {
@@ -195,6 +201,21 @@ function getWindowsDisplayScaleFactor(bounds: ScreenCaptureBounds): number {
     height: Math.max(1, bounds.height),
   });
   return Number.isFinite(display.scaleFactor) && display.scaleFactor > 0 ? display.scaleFactor : 1;
+}
+
+function getMonitorTier(bounds: ScreenCaptureBounds, scaleFactor: number): "2k" | "4k" {
+  const display = electronScreen.getDisplayMatching({
+    x: bounds.x,
+    y: bounds.y,
+    width: Math.max(1, bounds.width),
+    height: Math.max(1, bounds.height),
+  });
+
+  const scale = Number.isFinite(scaleFactor) && scaleFactor > 0 ? scaleFactor : 1;
+  const nativeWidth = Math.round(display.bounds.width * scale);
+  const nativeHeight = Math.round(display.bounds.height * scale);
+
+  return nativeWidth >= 3200 || nativeHeight >= 1800 ? "4k" : "2k";
 }
 
 function toPhysicalBounds(bounds: ScreenCaptureBounds, scaleFactor: number): ScreenCaptureBounds {
@@ -262,6 +283,91 @@ function parseTileCoord(matchedLine: string): TileCoord | null {
   }
 
   return { x, y, z };
+}
+
+function resolveCoordinateBoxDebugDir(): string {
+  const candidates = [
+    path.resolve(process.cwd(), COORDINATE_BOX_DEBUG_RELATIVE_DIR),
+    path.resolve(__dirname, "..", "..", "..", COORDINATE_BOX_DEBUG_RELATIVE_DIR),
+    path.resolve(__dirname, "..", "..", "..", "..", COORDINATE_BOX_DEBUG_RELATIVE_DIR),
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
+      return candidate;
+    }
+  }
+
+  return candidates[0];
+}
+
+function resolveCoordinateFilenameTokens(
+  tile: TileCoord | null,
+  matchedLine: string | null,
+): { xToken: string; yToken: string; zToken: string } {
+  if (tile) {
+    return {
+      xToken: String(tile.x),
+      yToken: String(tile.y),
+      zToken: String(tile.z),
+    };
+  }
+
+  if (matchedLine) {
+    const cleaned = matchedLine.replace(/[^0-9,]/g, "");
+    const delimited = cleaned.match(/(\d{4,5}),(\d{4,5}),(\d)/);
+    if (delimited) {
+      return {
+        xToken: delimited[1],
+        yToken: delimited[2],
+        zToken: delimited[3],
+      };
+    }
+
+    const partial = cleaned.match(/(\d{4,5}),(\d{4,5})/);
+    if (partial) {
+      return {
+        xToken: partial[1],
+        yToken: partial[2],
+        zToken: COORDINATE_BOX_UNKNOWN_TOKEN,
+      };
+    }
+  }
+
+  return {
+    xToken: COORDINATE_BOX_UNKNOWN_TOKEN,
+    yToken: COORDINATE_BOX_UNKNOWN_TOKEN,
+    zToken: COORDINATE_BOX_UNKNOWN_TOKEN,
+  };
+}
+
+function resolveUniqueCoordinateScreenshotPath(baseName: string): string {
+  const outputDir = resolveCoordinateBoxDebugDir();
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true });
+  }
+
+  const extension = ".png";
+  const firstPath = path.join(outputDir, `${baseName}${extension}`);
+  if (!fs.existsSync(firstPath)) {
+    return firstPath;
+  }
+
+  let index = 1;
+  while (true) {
+    const indexedPath = path.join(outputDir, `${baseName}-${index}${extension}`);
+    if (!fs.existsSync(indexedPath)) {
+      return indexedPath;
+    }
+    index += 1;
+  }
+}
+
+function saveCoordinateBoxReadScreenshot(bitmap: RobotBitmap, tile: TileCoord | null, matchedLine: string | null): void {
+  const { xToken, yToken, zToken } = resolveCoordinateFilenameTokens(tile, matchedLine);
+  const baseName = `${bitmap.width}x${bitmap.height}-${currentMonitorTier}-${currentWindowsScalePercent}-r-${xToken}-${yToken}-${zToken}-${COORDINATE_BOX_UNVERIFIED_SUFFIX}`;
+  const outputPath = resolveUniqueCoordinateScreenshotPath(baseName);
+  saveBitmap(bitmap, outputPath);
 }
 
 function formatTileCoord(tile: TileCoord): string {
@@ -417,6 +523,15 @@ function estimateBankMoveTravelTicks(
   return clamp(Math.max(BANK_MOVE_MIN_TICKS, Math.ceil(baseTicks * BANK_MOVE_TICK_MULTIPLIER)), 1, MOVE_MAX_WAIT_TICKS);
 }
 
+function estimateBankApproachClickCount(distanceTiles: number): number {
+  if (!Number.isFinite(distanceTiles) || distanceTiles <= BANK_APPROACH_ARRIVAL_RADIUS_TILES) {
+    return 0;
+  }
+
+  const remainingTiles = Math.max(0, distanceTiles - BANK_APPROACH_ARRIVAL_RADIUS_TILES);
+  return Math.max(1, Math.ceil(remainingTiles / BANK_APPROACH_MAX_CLICK_DISTANCE_TILES));
+}
+
 function resolveBankOrbMaxDistanceFromDepositPx(captureBounds: ScreenCaptureBounds): number {
   return clamp(
     Math.round(Math.min(captureBounds.width, captureBounds.height) * BANK_ORB_MAX_DISTANCE_FROM_DEPOSIT_RATIO),
@@ -488,8 +603,39 @@ function toOreTrackingScreenPoint(oreBox: MithrilOreBox, captureBounds: ScreenCa
   };
 }
 
-function clickScreenPoint(screenX: number, screenY: number): void {
-  moveMouse(screenX, screenY);
+function clickScreenPoint(screenX: number, screenY: number, captureBounds: ScreenCaptureBounds): void {
+  const requestedX = Math.round(screenX);
+  const requestedY = Math.round(screenY);
+
+  const absoluteMinX = captureBounds.x;
+  const absoluteMaxX = captureBounds.x + Math.max(0, captureBounds.width - 1);
+  const absoluteMinY = captureBounds.y;
+  const absoluteMaxY = captureBounds.y + Math.max(0, captureBounds.height - 1);
+
+  let safeMinX = absoluteMinX + CLICK_SAFE_EDGE_MARGIN_PX;
+  let safeMaxX = absoluteMaxX - CLICK_SAFE_EDGE_MARGIN_PX;
+  let safeMinY = absoluteMinY + CLICK_SAFE_EDGE_MARGIN_PX;
+  let safeMaxY = absoluteMaxY - CLICK_SAFE_EDGE_MARGIN_PX;
+
+  if (safeMinX > safeMaxX) {
+    safeMinX = absoluteMinX;
+    safeMaxX = absoluteMaxX;
+  }
+
+  if (safeMinY > safeMaxY) {
+    safeMinY = absoluteMinY;
+    safeMaxY = absoluteMaxY;
+  }
+
+  const safeX = clamp(requestedX, safeMinX, safeMaxX);
+  const safeY = clamp(requestedY, safeMinY, safeMaxY);
+  if (safeX !== requestedX || safeY !== requestedY) {
+    warn(
+      `Click target clamped from (${requestedX},${requestedY}) to (${safeX},${safeY}) to respect ${CLICK_SAFE_EDGE_MARGIN_PX}px edge safety margin.`,
+    );
+  }
+
+  moveMouse(safeX, safeY);
   mouseClick("left", false);
 }
 
@@ -674,13 +820,13 @@ function findLargestMagentaBlobInBitmap(
 
 function readPlayerTileFromOverlay(bitmap: RobotBitmap): OverlayTileReadResult {
   const overlayBox = detectOverlayBoxInScreenshot(bitmap, currentWindowsScalePercent);
-  if (!overlayBox) {
-    return { tile: null, matchedLine: null };
-  }
+  const matchedLine = overlayBox?.matchedLine ?? null;
+  const tile = matchedLine ? parseTileCoord(matchedLine) : null;
+  saveCoordinateBoxReadScreenshot(bitmap, tile, matchedLine);
 
   return {
-    tile: parseTileCoord(overlayBox.matchedLine),
-    matchedLine: overlayBox.matchedLine,
+    tile,
+    matchedLine,
   };
 }
 
@@ -721,28 +867,11 @@ function planBankApproachMove(
   };
 }
 
-function applyBankOverlayTileRead(state: BotState, tile: TileCoord | null): BotState {
-  const trackedTile = trackStableTileRead(
-    {
-      tile: state.bankOverlayTile,
-      stableReadCount: state.bankOverlayStableReadCount,
-    },
-    tile,
-    BANK_APPROACH_VALID_TILE_BOUNDS,
-  );
-
-  return {
-    ...state,
-    bankOverlayTile: trackedTile.tile,
-    bankOverlayStableReadCount: trackedTile.stableReadCount,
-  };
-}
-
 function clickDirectionalWalk(captureBounds: ScreenCaptureBounds, direction: WalkDirection): { x: number; y: number } {
   const ratioX = direction === "west" ? 0.2 : 0.8;
   const x = captureBounds.x + Math.round(captureBounds.width * ratioX);
   const y = captureBounds.y + Math.round(captureBounds.height * DIRECTIONAL_STEP_Y_RATIO);
-  clickScreenPoint(x, y);
+  clickScreenPoint(x, y, captureBounds);
   return { x, y };
 }
 
@@ -771,8 +900,9 @@ function resetToSearchingState(state: BotState, actionLockUntilMs: number = stat
     bankOrbClickCount: 0,
     bankDepositScreen: null,
     bankOrbFindAttemptCount: 0,
-    bankOverlayTile: null,
-    bankOverlayStableReadCount: 0,
+    bankApproachPlanEvaluated: false,
+    bankApproachClicksRemaining: 0,
+    bankApproachClickPoint: null,
   };
 }
 
@@ -791,8 +921,9 @@ function createInitialState(): BotState {
     bankOrbClickCount: 0,
     bankDepositScreen: null,
     bankOrbFindAttemptCount: 0,
-    bankOverlayTile: null,
-    bankOverlayStableReadCount: 0,
+    bankApproachPlanEvaluated: false,
+    bankApproachClicksRemaining: 0,
+    bankApproachClickPoint: null,
   };
 }
 
@@ -804,6 +935,9 @@ function transitionToMiningState(state: BotState): BotState {
     moveDeadlineMs: 0,
     moveWaitTicks: 0,
     moveDestinationPhase: "mining",
+    bankApproachPlanEvaluated: false,
+    bankApproachClicksRemaining: 0,
+    bankApproachClickPoint: null,
   };
 }
 
@@ -819,8 +953,9 @@ function transitionToBankingState(state: BotState, nowMs: number): BotState {
     bankOrbClickCount: 0,
     bankDepositScreen: null,
     bankOrbFindAttemptCount: 0,
-    bankOverlayTile: null,
-    bankOverlayStableReadCount: 0,
+    bankApproachPlanEvaluated: false,
+    bankApproachClicksRemaining: 0,
+    bankApproachClickPoint: null,
     actionLockUntilMs: deadlineFromNowTicks(1, nowMs),
   };
 }
@@ -833,6 +968,8 @@ function transitionToMoveState(
   moveDestinationPhase: MoveDestinationPhase,
   actionLockUntilMs: number = state.actionLockUntilMs,
 ): BotState {
+  const keepsBankApproachPlan = moveDestinationPhase === "banking-search-magenta";
+
   return {
     ...state,
     phase: "moving",
@@ -842,8 +979,9 @@ function transitionToMoveState(
     targetScreen,
     moveWaitTicks: 0,
     moveDestinationPhase,
-    bankOverlayTile: null,
-    bankOverlayStableReadCount: 0,
+    bankApproachPlanEvaluated: keepsBankApproachPlan ? state.bankApproachPlanEvaluated : false,
+    bankApproachClicksRemaining: keepsBankApproachPlan ? state.bankApproachClicksRemaining : 0,
+    bankApproachClickPoint: keepsBankApproachPlan ? state.bankApproachClickPoint : null,
   };
 }
 
@@ -865,8 +1003,9 @@ function transitionFromMoveState(state: BotState, inventoryCount: number | null)
     targetScreen: null,
     moveWaitTicks: 0,
     bankOrbFindAttemptCount: 0,
-    bankOverlayTile: null,
-    bankOverlayStableReadCount: 0,
+    bankApproachPlanEvaluated: state.moveDestinationPhase === "banking-search-magenta" ? state.bankApproachPlanEvaluated : false,
+    bankApproachClicksRemaining: state.moveDestinationPhase === "banking-search-magenta" ? state.bankApproachClicksRemaining : 0,
+    bankApproachClickPoint: state.moveDestinationPhase === "banking-search-magenta" ? state.bankApproachClickPoint : null,
   };
 }
 
@@ -940,7 +1079,7 @@ function runSearchOreTick(
     `Selected mithril ore center=(${selectedOre.centerX},${selectedOre.centerY}) size=${selectedOre.width}x${selectedOre.height} blue=${selectedOre.blueDominance.toFixed(1)} edge=${edgeDistance} tiles~${distanceTiles.toFixed(1)} anchor=${resolvedPlayer.source}; clicking (${interactionPoint.x},${interactionPoint.y}), move eta ~${moveTravelTicks} tick(s).`,
   );
 
-  clickScreenPoint(interactionPoint.x, interactionPoint.y);
+  clickScreenPoint(interactionPoint.x, interactionPoint.y, captureBounds);
 
   return transitionToMoveState(
     {
@@ -1075,64 +1214,106 @@ function runBankTick(
     const playerBox = detectBestPlayerBoxInScreenshot(tickCapture.bitmap);
     const magenta = findLargestMagentaBlobInBitmap(tickCapture.bitmap);
     if (!magenta) {
-      const overlayTile = readPlayerTileFromOverlay(tickCapture.bitmap);
-      const trackedOverlayState = applyBankOverlayTileRead(state, overlayTile.tile);
-      if (trackedOverlayState.bankOverlayTile) {
-        if (trackedOverlayState.bankOverlayStableReadCount < BANK_APPROACH_STABLE_READS_REQUIRED) {
-          if (state.loopIndex % 2 === 0) {
-            log(
-              `Bank overlay tile ${formatTileCoord(trackedOverlayState.bankOverlayTile)} seen ${trackedOverlayState.bankOverlayStableReadCount}/${BANK_APPROACH_STABLE_READS_REQUIRED} time(s); waiting for a stable banking coordinate before moving.`,
-            );
+      if (!state.bankApproachPlanEvaluated) {
+        const overlayTile = readPlayerTileFromOverlay(tickCapture.bitmap);
+        const plannedState: BotState = {
+          ...state,
+          bankApproachPlanEvaluated: true,
+          bankApproachClicksRemaining: 0,
+          bankApproachClickPoint: null,
+        };
+
+        if (overlayTile.tile && isTileWithinBounds(overlayTile.tile, BANK_APPROACH_VALID_TILE_BOUNDS)) {
+          const bankApproachMove = planBankApproachMove(captureBounds, playerBox, overlayTile.tile);
+          if (!bankApproachMove) {
+            if (state.loopIndex % 2 === 0) {
+              log(
+                `No large magenta target yet; initial tile ${formatTileCoord(overlayTile.tile)} is already within ${BANK_APPROACH_ARRIVAL_RADIUS_TILES} tile(s) of ${BANK_APPROACH_TARGET_TILE.x},${BANK_APPROACH_TARGET_TILE.y}. Holding position and retrying.`,
+              );
+            }
+
+            return {
+              ...plannedState,
+              inventoryCount,
+              actionLockUntilMs: deadlineFromNowTicks(1, nowMs),
+            };
           }
 
-          return {
-            ...trackedOverlayState,
-            inventoryCount,
-            actionLockUntilMs: deadlineFromNowTicks(1, nowMs),
-          };
+          const estimatedClicks = estimateBankApproachClickCount(bankApproachMove.distanceTiles);
+          const remainingPlannedClicks = Math.max(0, estimatedClicks - 1);
+          clickScreenPoint(bankApproachMove.point.x, bankApproachMove.point.y, captureBounds);
+          const moveTravelTicks = estimateBankMoveTravelTicks(bankApproachMove.point, captureBounds, playerBox);
+          log(
+            `No large magenta target yet; planned bank approach from tile ${formatTileCoord(overlayTile.tile)} toward ${BANK_APPROACH_TARGET_TILE.x},${BANK_APPROACH_TARGET_TILE.y} (dx=${bankApproachMove.deltaXTiles}, dy=${bankApproachMove.deltaYTiles}, remaining~${bankApproachMove.distanceTiles.toFixed(1)} tile(s), estimated-clicks=${estimatedClicks}) via click at (${bankApproachMove.point.x},${bankApproachMove.point.y}) with move eta ~${moveTravelTicks} tick(s).`,
+          );
+
+          return transitionToMoveState(
+            {
+              ...plannedState,
+              inventoryCount,
+              bankApproachClicksRemaining: remainingPlannedClicks,
+              bankApproachClickPoint: bankApproachMove.point,
+            },
+            nowMs,
+            bankApproachMove.point,
+            moveTravelTicks,
+            "banking-search-magenta",
+            0,
+          );
         }
 
-        const bankApproachMove = planBankApproachMove(captureBounds, playerBox, trackedOverlayState.bankOverlayTile);
-        if (!bankApproachMove) {
-          if (state.loopIndex % 2 === 0) {
-            log(
-              `No large magenta target yet; current tile ${formatTileCoord(trackedOverlayState.bankOverlayTile)} is already within ${BANK_APPROACH_ARRIVAL_RADIUS_TILES} tile(s) of ${BANK_APPROACH_TARGET_TILE.x},${BANK_APPROACH_TARGET_TILE.y}. Holding position and retrying.`,
-            );
-          }
-
-          return {
-            ...trackedOverlayState,
-            inventoryCount,
-            actionLockUntilMs: deadlineFromNowTicks(1, nowMs),
-          };
+        if (state.loopIndex % 3 === 0) {
+          warn(
+            overlayTile.matchedLine
+              ? overlayTile.tile
+                ? `Ignoring initial bank overlay tile '${overlayTile.matchedLine}' because it is outside the mining-guild banking corridor; using west-step fallback.`
+                : `Initial coordinate overlay matched '${overlayTile.matchedLine}' but current tile could not be parsed; using west-step fallback.`
+              : `Initial coordinate overlay unavailable while banking; using west-step fallback.`,
+          );
         }
 
-        clickScreenPoint(bankApproachMove.point.x, bankApproachMove.point.y);
-        const moveTravelTicks = estimateBankMoveTravelTicks(bankApproachMove.point, captureBounds, playerBox);
-        log(
-          `No large magenta target yet; aiming toward ${BANK_APPROACH_TARGET_TILE.x},${BANK_APPROACH_TARGET_TILE.y} from tile ${formatTileCoord(trackedOverlayState.bankOverlayTile)} (dx=${bankApproachMove.deltaXTiles}, dy=${bankApproachMove.deltaYTiles}, remaining~${bankApproachMove.distanceTiles.toFixed(1)} tile(s)) via click at (${bankApproachMove.point.x},${bankApproachMove.point.y}) with move eta ~${moveTravelTicks} tick(s).`,
-        );
-
+        const stepPoint = clickDirectionalWalk(captureBounds, "west");
+        const moveTravelTicks = estimateBankMoveTravelTicks(stepPoint, captureBounds, playerBox);
+        if (state.loopIndex % 2 === 0) {
+          log(
+            `No large magenta target yet; no valid initial coordinate plan, stepping west at (${stepPoint.x},${stepPoint.y}) with move eta ~${moveTravelTicks} tick(s).`,
+          );
+        }
         return transitionToMoveState(
           {
-            ...trackedOverlayState,
+            ...plannedState,
             inventoryCount,
           },
           nowMs,
-          bankApproachMove.point,
+          stepPoint,
           moveTravelTicks,
           "banking-search-magenta",
           0,
         );
       }
 
-      if (state.loopIndex % 3 === 0) {
-        warn(
-          overlayTile.matchedLine
-            ? overlayTile.tile
-              ? `Ignoring bank overlay tile '${overlayTile.matchedLine}' because it is outside the mining-guild banking corridor; falling back to west step.`
-              : `Coordinate overlay matched '${overlayTile.matchedLine}' but current tile could not be parsed; falling back to west step.`
-            : `Coordinate overlay unavailable while banking; falling back to west step.`,
+      if (state.bankApproachClicksRemaining > 0 && state.bankApproachClickPoint) {
+        const stepPoint = state.bankApproachClickPoint;
+        clickScreenPoint(stepPoint.x, stepPoint.y, captureBounds);
+        const moveTravelTicks = estimateBankMoveTravelTicks(stepPoint, captureBounds, playerBox);
+        const remainingClicks = Math.max(0, state.bankApproachClicksRemaining - 1);
+        if (state.loopIndex % 2 === 0) {
+          log(
+            `No large magenta target yet; using planned bank approach click at (${stepPoint.x},${stepPoint.y}) with ${remainingClicks} planned click(s) remaining and move eta ~${moveTravelTicks} tick(s).`,
+          );
+        }
+
+        return transitionToMoveState(
+          {
+            ...state,
+            inventoryCount,
+            bankApproachClicksRemaining: remainingClicks,
+          },
+          nowMs,
+          stepPoint,
+          moveTravelTicks,
+          "banking-search-magenta",
+          0,
         );
       }
 
@@ -1140,12 +1321,12 @@ function runBankTick(
       const moveTravelTicks = estimateBankMoveTravelTicks(stepPoint, captureBounds, playerBox);
       if (state.loopIndex % 2 === 0) {
         log(
-          `No large magenta target yet; stepping west at (${stepPoint.x},${stepPoint.y}) with move eta ~${moveTravelTicks} tick(s).`,
+          `No large magenta target yet; planned approach exhausted, stepping west at (${stepPoint.x},${stepPoint.y}) with move eta ~${moveTravelTicks} tick(s).`,
         );
       }
       return transitionToMoveState(
         {
-          ...trackedOverlayState,
+          ...state,
           inventoryCount,
         },
         nowMs,
@@ -1166,7 +1347,7 @@ function runBankTick(
     log(
       `Found magenta target size=${magenta.width}x${magenta.height} pixels=${magenta.pixelCount}; clicking (${targetScreenX},${targetScreenY}) with move eta ~${moveTravelTicks} tick(s) before bank-orb detection.`,
     );
-    clickScreenPoint(targetScreenX, targetScreenY);
+    clickScreenPoint(targetScreenX, targetScreenY, captureBounds);
 
     return transitionToMoveState(
       {
@@ -1174,6 +1355,9 @@ function runBankTick(
         inventoryCount,
         bankDepositScreen: { x: targetScreenX, y: targetScreenY },
         bankOrbFindAttemptCount: 0,
+        bankApproachPlanEvaluated: false,
+        bankApproachClicksRemaining: 0,
+        bankApproachClickPoint: null,
       },
       nowMs,
       { x: targetScreenX, y: targetScreenY },
@@ -1191,6 +1375,9 @@ function runBankTick(
       phase: "banking-search-magenta",
       currentFunction: "bank",
       actionLockUntilMs: deadlineFromNowTicks(BANKING_MOVE_COOLDOWN_TICKS, nowMs),
+      bankApproachPlanEvaluated: false,
+      bankApproachClicksRemaining: 0,
+      bankApproachClickPoint: null,
     };
   }
 
@@ -1209,6 +1396,9 @@ function runBankTick(
           currentFunction: "bank",
           actionLockUntilMs: deadlineFromNowTicks(BANKING_MOVE_COOLDOWN_TICKS, nowMs),
           bankOrbFindAttemptCount: 0,
+          bankApproachPlanEvaluated: false,
+          bankApproachClicksRemaining: 0,
+          bankApproachClickPoint: null,
         };
       }
 
@@ -1217,7 +1407,7 @@ function runBankTick(
       log(
         `Bank orb not found after ${nextAttemptCount} attempt(s); re-clicking bank deposit at (${state.bankDepositScreen.x},${state.bankDepositScreen.y}) with move eta ~${moveTravelTicks} tick(s).`,
       );
-      clickScreenPoint(state.bankDepositScreen.x, state.bankDepositScreen.y);
+      clickScreenPoint(state.bankDepositScreen.x, state.bankDepositScreen.y, captureBounds);
 
       return transitionToMoveState(
         {
@@ -1262,7 +1452,7 @@ function runBankTick(
         const playerBox = detectBestPlayerBoxInScreenshot(tickCapture.bitmap);
         const moveTravelTicks = estimateBankMoveTravelTicks(state.bankDepositScreen, captureBounds, playerBox);
         warn(`${rejectionMessage} Re-clicking bank deposit with move eta ~${moveTravelTicks} tick(s).`);
-        clickScreenPoint(state.bankDepositScreen.x, state.bankDepositScreen.y);
+        clickScreenPoint(state.bankDepositScreen.x, state.bankDepositScreen.y, captureBounds);
 
         return transitionToMoveState(
           {
@@ -1288,7 +1478,7 @@ function runBankTick(
     }
   }
 
-  clickScreenPoint(orbScreenX, orbScreenY);
+  clickScreenPoint(orbScreenX, orbScreenY, captureBounds);
 
   log(
     `Bank orb detected at (${orbResult.detection.centerX},${orbResult.detection.centerY}) score=${orbResult.detection.score.toFixed(1)}; clicked (${orbScreenX},${orbScreenY}) and waiting for inventory=28.`,
@@ -1397,7 +1587,7 @@ export function onMiningGuildMithrilOreBotStart(): void {
 
   log(`Automate Bot STARTED (${BOT_NAME}).`);
   log(
-    `Config: engineTick=${GAME_TICK_MS}ms, phases='search->move->mine', startup='hold-w+north', world-mapper=${ENABLE_WORLD_MAPPER ? "on" : "off"}, player-ore-max-edge=${PLAYER_ORE_MAX_EDGE_DISTANCE_PX}px, bank-approach=${BANK_APPROACH_TARGET_TILE.x},${BANK_APPROACH_TARGET_TILE.y}.`,
+    `Config: engineTick=${GAME_TICK_MS}ms, phases='search->move->mine', startup='hold-w+north', world-mapper=${ENABLE_WORLD_MAPPER ? "on" : "off"}, player-ore-max-edge=${PLAYER_ORE_MAX_EDGE_DISTANCE_PX}px, bank-approach=${BANK_APPROACH_TARGET_TILE.x},${BANK_APPROACH_TARGET_TILE.y}, click-edge-safety=${CLICK_SAFE_EDGE_MARGIN_PX}px.`,
   );
 
   const window = getRuneLite();
@@ -1439,6 +1629,7 @@ export function onMiningGuildMithrilOreBotStart(): void {
   const scaleFactor = getWindowsDisplayScaleFactor(logicalBounds);
   const captureBounds = toPhysicalBounds(logicalBounds, scaleFactor);
   currentWindowsScalePercent = Math.round(scaleFactor * 100);
+  currentMonitorTier = getMonitorTier(logicalBounds, scaleFactor);
 
   void (async () => {
     try {
