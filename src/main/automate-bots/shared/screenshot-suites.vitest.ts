@@ -94,6 +94,18 @@ const SCREENSHOT_SUITES: Record<string, ScreenshotSuite> = {
     script: "src/main/automate-bots/shared/bank-deposit-orb-detector.spec.ts",
     args: [],
   },
+  "test:screenshot:guardian-of-the-rift": {
+    script: "src/main/automate-bots/shared/guardian-of-the-rift-active-rune-detector.spec.ts",
+    args: ["test-images/runescrafting/guardian-of-the-rift/active-guardian/*.png"],
+  },
+  "test:screenshot:guardian-of-the-rift-timer": {
+    script: "src/main/automate-bots/shared/guardian-of-the-rift-timer-detector.spec.ts",
+    args: ["test-images/runescrafting/guardian-of-the-rift/timer/*.png"],
+  },
+  "test:screenshot:guardian-of-the-rift-uncharged-cell": {
+    script: "src/main/automate-bots/shared/guardian-of-the-rift-uncharged-cell-detector.spec.ts",
+    args: ["test-images/icon/guardin-of-the-rift/uncharged-cell/*.png"],
+  },
   "test:screenshot:mithril-ore": {
     script: "src/main/automate-bots/shared/mithril-ore-detector.spec.ts",
     args: ["test-images/mining-mining-guilde/mithril/*-ores.png"],
@@ -174,7 +186,9 @@ describe.sequential("Screenshot Suites", () => {
         if (result.exitCode !== 0) {
           const outputSnippet = buildOutputSnippet(result.output);
           const signalText = result.signal ? `, signal=${result.signal}` : "";
-          throw new Error(`Suite failed with exitCode=${result.exitCode}${signalText}\nCommand: ${result.command}\n\n${outputSnippet}`);
+          throw new Error(
+            `Suite failed with exitCode=${result.exitCode}${signalText}\nCommand: ${result.command}\n\n${outputSnippet}`,
+          );
         }
 
         expect(result.exitCode).toBe(0);

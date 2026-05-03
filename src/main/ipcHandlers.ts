@@ -16,9 +16,15 @@ import {
   ensureCsvFileInitialized,
   getSavedScreenshotNameSuffix,
   getSavedScreenshotSavePath,
+  getSavedGuardianOfTheRiftConfig,
   setSavedScreenshotNameSuffix,
   setSavedScreenshotSavePath,
+  setSavedGuardianOfTheRiftConfig,
 } from "./csvOperator";
+import {
+  normalizeGuardianOfTheRiftConfig,
+  type GuardianOfTheRiftConfig,
+} from "./automate-bots/guardian-of-the-rift-config";
 import { readActiveFileRows } from "./csvOperations";
 import { resolveInsideOutputFolder } from "./fileManager";
 import { getReplayTargetPoint } from "./utils";
@@ -121,24 +127,27 @@ export function setupIpcHandlers() {
     }
   });
 
-  ipcMain.handle(CHANNELS.RUN_SCREENSHOT_CAPTURE, async (_event, payload?: { filePath?: string; fileNameSuffix?: string }) => {
-    try {
-      const requestedPath = payload?.filePath?.trim() || undefined;
-      const requestedSuffix = payload?.fileNameSuffix?.trim() || undefined;
-      const result = runAgilityScreenshotCapture({
-        targetFilePath: requestedPath,
-        fileNameSuffix: requestedSuffix,
-      });
-      if (!result.ok) {
-        return { ok: false, error: result.error ?? "Screenshot capture failed." };
+  ipcMain.handle(
+    CHANNELS.RUN_SCREENSHOT_CAPTURE,
+    async (_event, payload?: { filePath?: string; fileNameSuffix?: string }) => {
+      try {
+        const requestedPath = payload?.filePath?.trim() || undefined;
+        const requestedSuffix = payload?.fileNameSuffix?.trim() || undefined;
+        const result = runAgilityScreenshotCapture({
+          targetFilePath: requestedPath,
+          fileNameSuffix: requestedSuffix,
+        });
+        if (!result.ok) {
+          return { ok: false, error: result.error ?? "Screenshot capture failed." };
+        }
+        return { ok: true, filePath: result.filePath };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`Could not capture screenshot: ${message}`);
+        return { ok: false, error: message };
       }
-      return { ok: true, filePath: result.filePath };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`Could not capture screenshot: ${message}`);
-      return { ok: false, error: message };
-    }
-  });
+    },
+  );
 
   ipcMain.handle(CHANNELS.PICK_SCREENSHOT_SAVE_PATH, async () => {
     try {
@@ -217,6 +226,30 @@ export function setupIpcHandlers() {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`Could not read debug folder: ${message}`);
       return { ok: true, files: [] };
+    }
+  });
+
+  ipcMain.handle(CHANNELS.GET_GUARDIAN_OF_THE_RIFT_CONFIG, () => {
+    try {
+      return {
+        ok: true,
+        config: getSavedGuardianOfTheRiftConfig(),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Could not get Guardian of the Rift config: ${message}`);
+      return { ok: false, error: message };
+    }
+  });
+
+  ipcMain.handle(CHANNELS.SET_GUARDIAN_OF_THE_RIFT_CONFIG, (_event, config: GuardianOfTheRiftConfig) => {
+    try {
+      setSavedGuardianOfTheRiftConfig(normalizeGuardianOfTheRiftConfig(config));
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Could not save Guardian of the Rift config: ${message}`);
+      return { ok: false, error: message };
     }
   });
 

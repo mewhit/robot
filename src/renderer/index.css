@@ -153,6 +153,42 @@
     @apply w-64 min-w-[16rem] h-full min-h-0;
   }
 
+  .automatebot-config-panel {
+    @apply border-t border-gray-200 bg-white p-2.5 flex flex-col gap-2 overflow-y-auto;
+  }
+
+  .automatebot-config-title {
+    @apply m-0 text-xs font-semibold text-slate-700 tracking-wide;
+  }
+
+  .automatebot-config-subtitle {
+    @apply m-0 text-[11px] text-slate-500;
+  }
+
+  .automatebot-element-grid {
+    @apply grid grid-cols-1 gap-1;
+  }
+
+  .automatebot-toggle-row {
+    @apply flex items-center gap-2 text-xs rounded border border-slate-200 bg-slate-50 px-2 py-1.5;
+  }
+
+  .automatebot-toggle-row-small {
+    @apply py-1;
+  }
+
+  .automatebot-toggle-row-disabled {
+    @apply opacity-40 cursor-not-allowed;
+  }
+
+  .automatebot-toggle-label {
+    @apply flex-1 min-w-0 text-slate-700;
+  }
+
+  .automatebot-toggle-value {
+    @apply text-[11px] font-semibold text-slate-500 min-w-6 text-right;
+  }
+
   .automatebot-main {
     @apply flex-1 min-w-0 h-full min-h-0 overflow-auto rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm text-slate-600;
   }

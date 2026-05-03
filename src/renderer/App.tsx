@@ -2,7 +2,19 @@ import React, { useState, useEffect, useCallback, useMemo } from "react";
 import type { IpcRenderer } from "electron";
 import ClickerTabs from "./clicker-tabs";
 import AutomateBot from "./automate-bot";
-import { AUTOMATE_BOTS, DEFAULT_AUTOMATE_BOT_ID } from "../main/automate-bots/definitions";
+import {
+  AUTOMATE_BOTS,
+  DEFAULT_AUTOMATE_BOT_ID,
+  RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID,
+} from "../main/automate-bots/definitions";
+import {
+  GUARDIAN_OF_THE_RIFT_ACTIVE_ELEMENTS,
+  createDefaultGuardianOfTheRiftConfig,
+  type GuardianOfTheRiftActiveElement,
+  type GuardianOfTheRiftConfig,
+  type GuardianOfTheRiftPouch,
+  normalizeGuardianOfTheRiftConfig,
+} from "../main/automate-bots/guardian-of-the-rift-config";
 import { CHANNELS } from "../main/ipcChannels";
 
 declare global {
@@ -193,6 +205,9 @@ export default function App() {
   const [debugNotice, setDebugNotice] = useState<{ text: string; tone: "success" | "error" } | null>(null);
   const [screenshotSavePath, setScreenshotSavePath] = useState("");
   const [screenshotNameSuffix, setScreenshotNameSuffix] = useState("");
+  const [guardianOfTheRiftConfig, setGuardianOfTheRiftConfig] = useState<GuardianOfTheRiftConfig>(() =>
+    createDefaultGuardianOfTheRiftConfig(),
+  );
   const [debugFolderFiles, setDebugFolderFiles] = useState<string[]>([]);
   const taskTree = useMemo<TaskNode[]>(() => {
     const groups = new Map<string, TaskNode>();
@@ -371,6 +386,19 @@ export default function App() {
         }
         setScreenshotSavePath(typeof result.path === "string" ? result.path : "");
         setScreenshotNameSuffix(typeof result.suffix === "string" ? result.suffix : "");
+      })
+      .catch(() => {
+        // Ignore non-critical config read failures.
+      });
+
+    void ipcRenderer
+      .invoke(CHANNELS.GET_GUARDIAN_OF_THE_RIFT_CONFIG)
+      .then((result: { ok?: boolean; config?: GuardianOfTheRiftConfig }) => {
+        if (!result?.ok || !result.config) {
+          return;
+        }
+
+        setGuardianOfTheRiftConfig(result.config);
       })
       .catch(() => {
         // Ignore non-critical config read failures.
@@ -559,6 +587,62 @@ export default function App() {
     });
   }, []);
 
+  const handleGuardianOfTheRiftElementEnabledChange = useCallback(
+    (element: GuardianOfTheRiftActiveElement, enabled: boolean) => {
+      setGuardianOfTheRiftConfig((prev) => {
+        const next: GuardianOfTheRiftConfig = {
+          ...prev,
+          activeGuardianElements: {
+            ...prev.activeGuardianElements,
+            [element]: enabled,
+          },
+        };
+
+        void ipcRenderer.invoke(CHANNELS.SET_GUARDIAN_OF_THE_RIFT_CONFIG, next).catch(() => {
+          // Ignore non-critical config write failures.
+        });
+
+        return next;
+      });
+    },
+    [],
+  );
+
+  const handleGuardianOfTheRiftUseAgilityCourseChange = useCallback((enabled: boolean) => {
+    setGuardianOfTheRiftConfig((prev) => {
+      const next: GuardianOfTheRiftConfig = {
+        ...prev,
+        useAgilityCourse: enabled,
+      };
+
+      void ipcRenderer.invoke(CHANNELS.SET_GUARDIAN_OF_THE_RIFT_CONFIG, next).catch(() => {
+        // Ignore non-critical config write failures.
+      });
+
+      return next;
+    });
+  }, []);
+
+  const handleGuardianOfTheRiftPouchChange = useCallback((pouch: GuardianOfTheRiftPouch, enabled: boolean) => {
+    setGuardianOfTheRiftConfig((prev) => {
+      const merged = {
+        ...prev,
+        pouches: {
+          ...prev.pouches,
+          [pouch]: enabled,
+        },
+      };
+      // normalizeGuardianOfTheRiftConfig enforces the abyssal-exclusive rule
+      const next = normalizeGuardianOfTheRiftConfig(merged);
+
+      void ipcRenderer.invoke(CHANNELS.SET_GUARDIAN_OF_THE_RIFT_CONFIG, next).catch(() => {
+        // Ignore non-critical config write failures.
+      });
+
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
     if (!debugNotice) {
       return;
@@ -700,7 +784,9 @@ export default function App() {
 
   const handleDelete = async () => {
     if (!contextMenu) return;
-    const selectedTargets = selectedFilePaths.includes(contextMenu.relativePath) ? selectedFilePaths : [contextMenu.relativePath];
+    const selectedTargets = selectedFilePaths.includes(contextMenu.relativePath)
+      ? selectedFilePaths
+      : [contextMenu.relativePath];
     const isMassDelete = selectedTargets.length > 1;
     const label = isMassDelete
       ? `${selectedTargets.length} selected files`
@@ -828,7 +914,9 @@ export default function App() {
   const canRenameContextTarget = contextMenuSelectedTargets.length === 1;
 
   const selectedCsvRow =
-    selectedCsvRowIndex === null ? null : (folderState.activeFileRows.find((row) => row.index === selectedCsvRowIndex) ?? null);
+    selectedCsvRowIndex === null
+      ? null
+      : (folderState.activeFileRows.find((row) => row.index === selectedCsvRowIndex) ?? null);
 
   const mouseLocationText = cursorPos ? `X: ${cursorPos.x} Y: ${cursorPos.y}` : "X: -- Y: --";
 
@@ -902,7 +990,10 @@ export default function App() {
       return;
     }
 
-    if ((elapsedMin !== null && !Number.isFinite(elapsedMin)) || (elapsedMax !== null && !Number.isFinite(elapsedMax))) {
+    if (
+      (elapsedMin !== null && !Number.isFinite(elapsedMin)) ||
+      (elapsedMax !== null && !Number.isFinite(elapsedMax))
+    ) {
       window.alert("Elapsed range values must be numeric or empty.");
       return;
     }
@@ -967,13 +1058,22 @@ export default function App() {
     <>
       <div className="panel">
         <div className="view-navigation">
-          <button className={`nav-tab ${activeView === "clicker" ? "active" : ""}`} onClick={() => setActiveView("clicker")}>
+          <button
+            className={`nav-tab ${activeView === "clicker" ? "active" : ""}`}
+            onClick={() => setActiveView("clicker")}
+          >
             Clicker
           </button>
-          <button className={`nav-tab ${activeView === "automateBot" ? "active" : ""}`} onClick={() => setActiveView("automateBot")}>
+          <button
+            className={`nav-tab ${activeView === "automateBot" ? "active" : ""}`}
+            onClick={() => setActiveView("automateBot")}
+          >
             Automate Bot
           </button>
-          <button className={`nav-tab ${activeView === "debug" ? "active" : ""}`} onClick={() => setActiveView("debug")}>
+          <button
+            className={`nav-tab ${activeView === "debug" ? "active" : ""}`}
+            onClick={() => setActiveView("debug")}
+          >
             Debug
           </button>
           <div className="nav-mouse-pos" title="Current mouse location">
@@ -1029,10 +1129,16 @@ export default function App() {
             isSelectedTaskRunning={isSelectedTaskRunning}
             currentStepId={currentStepId}
             logLines={automateBotLogLines}
+            showGuardianOfTheRiftConfig={selectedTaskNodeId === RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}
+            guardianOfTheRiftElements={GUARDIAN_OF_THE_RIFT_ACTIVE_ELEMENTS}
+            guardianOfTheRiftConfig={guardianOfTheRiftConfig}
             onToggleTaskNodeExpand={handleToggleTaskNodeExpand}
             onSelectTaskNode={setSelectedTaskNodeId}
             onToggleSelectedTaskRun={(taskNodeId) => void handleToggleSelectedTaskRun(taskNodeId)}
             onStepContextMenu={handleStepContextMenu}
+            onGuardianOfTheRiftElementEnabledChange={handleGuardianOfTheRiftElementEnabledChange}
+            onGuardianOfTheRiftUseAgilityCourseChange={handleGuardianOfTheRiftUseAgilityCourseChange}
+            onGuardianOfTheRiftPouchChange={handleGuardianOfTheRiftPouchChange}
           />
         ) : (
           <div className="debug-view">
@@ -1061,7 +1167,9 @@ export default function App() {
               />
             </div>
             {debugNotice && (
-              <p className={`debug-notice${debugNotice.tone === "error" ? " debug-notice-error" : ""}`}>{debugNotice.text}</p>
+              <p className={`debug-notice${debugNotice.tone === "error" ? " debug-notice-error" : ""}`}>
+                {debugNotice.text}
+              </p>
             )}
             <div className="debug-files-container">
               <h3 className="debug-files-title">Debug Folder Files</h3>
@@ -1083,26 +1191,40 @@ export default function App() {
         )}
       </div>
       {contextMenu && (
-        <div className="context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(e) => e.stopPropagation()}>
+        <div
+          className="context-menu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
           {canRenameContextTarget && (
             <div className="context-item" onClick={() => void handleRename()}>
               Rename
             </div>
           )}
           <div className="context-item context-item--danger" onClick={() => void handleDelete()}>
-            {contextMenuSelectedTargets.length > 1 ? `Delete Selected (${contextMenuSelectedTargets.length})` : "Delete"}
+            {contextMenuSelectedTargets.length > 1
+              ? `Delete Selected (${contextMenuSelectedTargets.length})`
+              : "Delete"}
           </div>
         </div>
       )}
       {stepContextMenu && (
-        <div className="context-menu" style={{ left: stepContextMenu.x, top: stepContextMenu.y }} onClick={(e) => e.stopPropagation()}>
+        <div
+          className="context-menu"
+          style={{ left: stepContextMenu.x, top: stepContextMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
           <div className="context-item" onClick={() => void handleResumeFromStep()}>
             Resume from {stepContextMenu.stepName}
           </div>
         </div>
       )}
       {csvRowContextMenu && (
-        <div className="context-menu" style={{ left: csvRowContextMenu.x, top: csvRowContextMenu.y }} onClick={(e) => e.stopPropagation()}>
+        <div
+          className="context-menu"
+          style={{ left: csvRowContextMenu.x, top: csvRowContextMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
           <div className="context-item" onClick={() => void handlePlayCsvRow()}>
             Play (row)
           </div>

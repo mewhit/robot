@@ -2,10 +2,21 @@ import * as fs from "fs";
 import * as path from "path";
 import { dialog, app, BrowserWindow, screen, type BrowserWindowConstructorOptions, type Rectangle } from "electron";
 import { AppState } from "./global-state";
-import { ensureOutputFolder, resolveInsideOutputFolder, toCsvFileName, listOutputFolderFiles, buildExplorerTree } from "./fileManager";
+import {
+  ensureOutputFolder,
+  resolveInsideOutputFolder,
+  toCsvFileName,
+  listOutputFolderFiles,
+  buildExplorerTree,
+} from "./fileManager";
 import { readActiveFileRows, listDataLineIndexes, formatCsvRow } from "./csvOperations";
 import { DEFAULT_OUTPUT_FILE_NAME, DEFAULT_ELAPSED_RANGE } from "./constants";
 import { CHANNELS } from "./ipcChannels";
+import {
+  createDefaultGuardianOfTheRiftConfig,
+  normalizeGuardianOfTheRiftConfig,
+  type GuardianOfTheRiftConfig,
+} from "./automate-bots/guardian-of-the-rift-config";
 
 const WINDOW_CONFIG_FILE_NAME = "window-config.json";
 const DEFAULT_WINDOW_WIDTH = 1280;
@@ -22,6 +33,7 @@ type WindowConfig = {
   screenshotSavePath?: string;
   screenshotNameSuffix?: string;
   selectedAutomateBotId?: string;
+  guardianOfTheRiftConfig?: GuardianOfTheRiftConfig;
 };
 
 function isFiniteNumber(value: unknown): value is number {
@@ -59,6 +71,14 @@ function normalizeSelectedAutomateBotId(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function normalizeSavedGuardianOfTheRiftConfig(value: unknown): GuardianOfTheRiftConfig | undefined {
+  if (typeof value === "undefined") {
+    return undefined;
+  }
+
+  return normalizeGuardianOfTheRiftConfig(value);
+}
+
 function toValidWindowConfig(raw: unknown): WindowConfig | null {
   if (!raw || typeof raw !== "object") {
     return null;
@@ -87,6 +107,7 @@ function toValidWindowConfig(raw: unknown): WindowConfig | null {
     screenshotSavePath: normalizeScreenshotSavePath(candidate.screenshotSavePath),
     screenshotNameSuffix: normalizeScreenshotNameSuffix(candidate.screenshotNameSuffix),
     selectedAutomateBotId: normalizeSelectedAutomateBotId(candidate.selectedAutomateBotId),
+    guardianOfTheRiftConfig: normalizeSavedGuardianOfTheRiftConfig(candidate.guardianOfTheRiftConfig),
   };
 }
 
@@ -169,6 +190,7 @@ function writeWindowConfig(window: BrowserWindow) {
     screenshotSavePath: currentConfig?.screenshotSavePath,
     screenshotNameSuffix: currentConfig?.screenshotNameSuffix,
     selectedAutomateBotId: currentConfig?.selectedAutomateBotId,
+    guardianOfTheRiftConfig: currentConfig?.guardianOfTheRiftConfig,
   };
 
   const configPath = getWindowConfigPath();
@@ -207,6 +229,10 @@ export function getSavedScreenshotNameSuffix(): string {
 
 export function getSavedSelectedAutomateBotId(): string {
   return readWindowConfig()?.selectedAutomateBotId ?? "";
+}
+
+export function getSavedGuardianOfTheRiftConfig(): GuardianOfTheRiftConfig {
+  return normalizeGuardianOfTheRiftConfig(readWindowConfig()?.guardianOfTheRiftConfig);
 }
 
 export function setSavedScreenshotSavePath(nextPath: string) {
@@ -255,6 +281,17 @@ export function setSavedSelectedAutomateBotId(nextBotId: string) {
   } else {
     delete payload.selectedAutomateBotId;
   }
+
+  const configPath = getWindowConfigPath();
+  fs.writeFileSync(configPath, JSON.stringify(payload, null, 2), "utf8");
+}
+
+export function setSavedGuardianOfTheRiftConfig(nextConfig: GuardianOfTheRiftConfig) {
+  const existing = readWindowConfig() ?? getWindowConfigFallback();
+  const payload: WindowConfig = {
+    ...existing,
+    guardianOfTheRiftConfig: normalizeGuardianOfTheRiftConfig(nextConfig),
+  };
 
   const configPath = getWindowConfigPath();
   fs.writeFileSync(configPath, JSON.stringify(payload, null, 2), "utf8");

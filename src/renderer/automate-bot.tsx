@@ -1,4 +1,10 @@
 import React, { useEffect, useMemo, useRef } from "react";
+import type {
+  GuardianOfTheRiftActiveElement,
+  GuardianOfTheRiftConfig,
+  GuardianOfTheRiftPouch,
+} from "../main/automate-bots/guardian-of-the-rift-config";
+import { GUARDIAN_OF_THE_RIFT_POUCHES } from "../main/automate-bots/guardian-of-the-rift-config";
 
 type TaskNode = {
   id: string;
@@ -14,11 +20,25 @@ type AutomateBotProps = {
   isSelectedTaskRunning: boolean;
   currentStepId: string | null;
   logLines: string[];
+  showGuardianOfTheRiftConfig: boolean;
+  guardianOfTheRiftElements: readonly GuardianOfTheRiftActiveElement[];
+  guardianOfTheRiftConfig: GuardianOfTheRiftConfig;
   onToggleTaskNodeExpand: (id: string) => void;
   onSelectTaskNode: (id: string) => void;
   onToggleSelectedTaskRun: (taskNodeId?: string) => void;
   onStepContextMenu: (e: React.MouseEvent, stepId: string, stepName: string) => void;
+  onGuardianOfTheRiftElementEnabledChange: (element: GuardianOfTheRiftActiveElement, enabled: boolean) => void;
+  onGuardianOfTheRiftUseAgilityCourseChange: (enabled: boolean) => void;
+  onGuardianOfTheRiftPouchChange: (pouch: GuardianOfTheRiftPouch, enabled: boolean) => void;
 };
+
+function formatGuardianElementLabel(value: GuardianOfTheRiftActiveElement): string {
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function formatGuardianPouchLabel(value: GuardianOfTheRiftPouch): string {
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
 
 function TaskNodeComponent({
   node,
@@ -125,10 +145,16 @@ export default function AutomateBot(props: AutomateBotProps) {
     isSelectedTaskRunning,
     currentStepId,
     logLines,
+    showGuardianOfTheRiftConfig,
+    guardianOfTheRiftElements,
+    guardianOfTheRiftConfig,
     onToggleTaskNodeExpand,
     onSelectTaskNode,
     onToggleSelectedTaskRun,
     onStepContextMenu,
+    onGuardianOfTheRiftElementEnabledChange,
+    onGuardianOfTheRiftUseAgilityCourseChange,
+    onGuardianOfTheRiftPouchChange,
   } = props;
 
   const logContainerRef = useRef<HTMLDivElement | null>(null);
@@ -169,6 +195,64 @@ export default function AutomateBot(props: AutomateBotProps) {
             ))
           )}
         </ul>
+        {showGuardianOfTheRiftConfig && (
+          <div className="automatebot-config-panel">
+            <h3 className="automatebot-config-title">Guardian of the Rift</h3>
+            <label className="automatebot-toggle-row">
+              <span className="automatebot-toggle-label">Use agility course</span>
+              <input
+                type="checkbox"
+                checked={guardianOfTheRiftConfig.useAgilityCourse}
+                onChange={(e) => onGuardianOfTheRiftUseAgilityCourseChange(e.target.checked)}
+              />
+              <span className="automatebot-toggle-value">
+                {guardianOfTheRiftConfig.useAgilityCourse ? "Yes" : "No"}
+              </span>
+            </label>
+            <p className="automatebot-config-subtitle">Pouches</p>
+            <div className="automatebot-element-grid">
+              {GUARDIAN_OF_THE_RIFT_POUCHES.map((pouch) => {
+                const isAbyssalSelected = guardianOfTheRiftConfig.pouches.abyssal;
+                const isChecked = guardianOfTheRiftConfig.pouches[pouch];
+                const isDisabled = pouch !== "abyssal" && isAbyssalSelected;
+
+                return (
+                  <label
+                    key={pouch}
+                    className={`automatebot-toggle-row automatebot-toggle-row-small${isDisabled ? " automatebot-toggle-row-disabled" : ""}`}
+                  >
+                    <span className="automatebot-toggle-label">{formatGuardianPouchLabel(pouch)}</span>
+                    <input
+                      type="checkbox"
+                      checked={isChecked}
+                      disabled={isDisabled}
+                      onChange={(e) => onGuardianOfTheRiftPouchChange(pouch, e.target.checked)}
+                    />
+                    <span className="automatebot-toggle-value">{isChecked ? "Yes" : "No"}</span>
+                  </label>
+                );
+              })}
+            </div>
+            <p className="automatebot-config-subtitle">Active guardian elements (12)</p>
+            <div className="automatebot-element-grid">
+              {guardianOfTheRiftElements.map((element) => {
+                const enabled = guardianOfTheRiftConfig.activeGuardianElements[element];
+
+                return (
+                  <label key={element} className="automatebot-toggle-row automatebot-toggle-row-small">
+                    <span className="automatebot-toggle-label">{formatGuardianElementLabel(element)}</span>
+                    <input
+                      type="checkbox"
+                      checked={enabled}
+                      onChange={(e) => onGuardianOfTheRiftElementEnabledChange(element, e.target.checked)}
+                    />
+                    <span className="automatebot-toggle-value">{enabled ? "Yes" : "No"}</span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </aside>
 
       <aside className="automatebot-log-panel">
