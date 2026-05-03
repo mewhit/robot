@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { PNG } from "pngjs";
 import {
+  detectCoalOreBoxesInScreenshot,
   detectMithrilOreBoxesInScreenshot,
   MithrilOreBox,
   saveBitmapWithMithrilOreBoxes,
@@ -23,6 +24,7 @@ type AnchorPoint = {
 
 type ScreenshotExpectation = {
   minimumOreCount?: number;
+  maximumOreCount?: number;
   selectedCenterX?: number;
   selectedCenterY?: number;
   tolerancePx?: number;
@@ -51,6 +53,27 @@ const EXPECTED_BY_SCREENSHOT: Record<string, ScreenshotExpectation> = {
     selectedCenterY: 1019,
     tolerancePx: 24,
   },
+};
+
+type OreDetectorUnderTest = {
+  name: string;
+  debugSuffix: string;
+  metricLabel: string;
+  detectOreBoxesInScreenshot: typeof detectMithrilOreBoxesInScreenshot;
+};
+
+const MITHRIL_DETECTOR_UNDER_TEST: OreDetectorUnderTest = {
+  name: "Mithril",
+  debugSuffix: "mithril",
+  metricLabel: "blue-dominance",
+  detectOreBoxesInScreenshot: detectMithrilOreBoxesInScreenshot,
+};
+
+const COAL_DETECTOR_UNDER_TEST: OreDetectorUnderTest = {
+  name: "Coal",
+  debugSuffix: "coal",
+  metricLabel: "olive-dominance",
+  detectOreBoxesInScreenshot: detectCoalOreBoxesInScreenshot,
 };
 
 async function loadScreenshot(filePath: string): Promise<RobotBitmap | null> {
@@ -161,8 +184,9 @@ function distanceToBox(anchor: AnchorPoint, box: MithrilOreBox): number {
 
 function selectNearestReachableOre(boxes: MithrilOreBox[], anchor: AnchorPoint): MithrilOreBox | null {
   let best: MithrilOreBox | null = null;
-  let bestEdgeDistance = Number.POSITIVE_INFINITY;
   let bestCenterDistanceSq = Number.POSITIVE_INFINITY;
+  let bestTopEdgeY = Number.POSITIVE_INFINITY;
+  let bestScore = Number.NEGATIVE_INFINITY;
 
   for (const box of boxes) {
     const edgeDistance = distanceToBox(anchor, box);
@@ -174,15 +198,27 @@ function selectNearestReachableOre(boxes: MithrilOreBox[], anchor: AnchorPoint):
     const centerDy = anchor.y - box.centerY;
     const centerDistanceSq = centerDx * centerDx + centerDy * centerDy;
 
-    if (edgeDistance < bestEdgeDistance) {
-      bestEdgeDistance = edgeDistance;
+    if (centerDistanceSq < bestCenterDistanceSq) {
       bestCenterDistanceSq = centerDistanceSq;
+      bestTopEdgeY = box.y;
+      bestScore = box.score;
       best = box;
       continue;
     }
 
-    if (Math.abs(edgeDistance - bestEdgeDistance) < 0.5 && centerDistanceSq < bestCenterDistanceSq) {
-      bestCenterDistanceSq = centerDistanceSq;
+    if (Math.abs(centerDistanceSq - bestCenterDistanceSq) >= 0.5) {
+      continue;
+    }
+
+    if (box.y < bestTopEdgeY) {
+      bestTopEdgeY = box.y;
+      bestScore = box.score;
+      best = box;
+      continue;
+    }
+
+    if (box.y === bestTopEdgeY && box.score > bestScore) {
+      bestScore = box.score;
       best = box;
     }
   }
@@ -190,10 +226,16 @@ function selectNearestReachableOre(boxes: MithrilOreBox[], anchor: AnchorPoint):
   return best;
 }
 
-function getDebugPath(screenshotPath: string, failed: boolean): string {
+function getDetectorUnderTest(screenshotPath: string): OreDetectorUnderTest {
+  return screenshotPath.replace(/\\/g, "/").toLowerCase().includes("/coal/")
+    ? COAL_DETECTOR_UNDER_TEST
+    : MITHRIL_DETECTOR_UNDER_TEST;
+}
+
+function getDebugPath(screenshotPath: string, failed: boolean, detector: OreDetectorUnderTest): string {
   const debugOutputDir = "./test-image-debug";
   const basenameNoExt = path.basename(screenshotPath, path.extname(screenshotPath));
-  const suffix = failed ? "-mithril-ore-boxes-failed.png" : "-mithril-ore-boxes.png";
+  const suffix = failed ? `-${detector.debugSuffix}-ore-boxes-failed.png` : `-${detector.debugSuffix}-ore-boxes.png`;
   return path.join(debugOutputDir, `${basenameNoExt}${suffix}`);
 }
 
@@ -204,8 +246,9 @@ function saveDetectionDebugImage(
   selected: MithrilOreBox | null,
   playerBox: DebugPlayerBox | null,
   failed: boolean,
+  detector: OreDetectorUnderTest,
 ): string {
-  const debugPath = getDebugPath(screenshotPath, failed);
+  const debugPath = getDebugPath(screenshotPath, failed, detector);
   saveBitmapWithMithrilOreBoxes(
     bitmap,
     boxes,
@@ -225,7 +268,8 @@ async function testDetection(screenshotPath: string): Promise<boolean> {
     return false;
   }
 
-  const boxes = detectMithrilOreBoxesInScreenshot(bitmap);
+  const detector = getDetectorUnderTest(screenshotPath);
+  const boxes = detector.detectOreBoxesInScreenshot(bitmap);
   const playerBox = detectBestPlayerBoxInScreenshot(bitmap);
   const basename = path.basename(screenshotPath);
   const expectedNearest = EXPECTED_BY_SCREENSHOT[basename];
@@ -242,7 +286,7 @@ async function testDetection(screenshotPath: string): Promise<boolean> {
       console.log(`Player center=(${playerAnchor.x}, ${playerAnchor.y})`);
     }
 
-    const debugPath = saveDetectionDebugImage(bitmap, screenshotPath, boxes, selected, playerBox, true);
+    const debugPath = saveDetectionDebugImage(bitmap, screenshotPath, boxes, selected, playerBox, true, detector);
     console.log(`Failure debug image: ${debugPath}`);
     return false;
   };
@@ -250,6 +294,12 @@ async function testDetection(screenshotPath: string): Promise<boolean> {
   if (minimumOreCount !== null && boxes.length < minimumOreCount) {
     return failWithDebug(
       `Expected at least ${minimumOreCount} detected ore(s) from ${expectedNearest?.minimumOreCount !== undefined ? `fixture expectation for ${basename}` : `filename suffix '-${minimumOreCount}-ores'`}, but detected ${boxes.length}.`,
+    );
+  }
+
+  if (expectedNearest?.maximumOreCount !== undefined && boxes.length > expectedNearest.maximumOreCount) {
+    return failWithDebug(
+      `Expected at most ${expectedNearest.maximumOreCount} detected ore(s) from fixture expectation for ${basename}, but detected ${boxes.length}.`,
     );
   }
 
@@ -265,12 +315,12 @@ async function testDetection(screenshotPath: string): Promise<boolean> {
   for (const [index, box] of reachableBoxes.entries()) {
     const distance = playerAnchor ? distanceToBox(playerAnchor, box) : -1;
     console.log(
-      `#${index + 1} reachable ore at (${box.x}, ${box.y}) ${box.width}x${box.height} center=(${box.centerX}, ${box.centerY}) pixels=${box.pixelCount} fill=${box.fillRatio.toFixed(3)} blue-dominance=${box.blueDominance.toFixed(1)} edge=${distance} score=${box.score.toFixed(1)}`,
+      `#${index + 1} reachable ore at (${box.x}, ${box.y}) ${box.width}x${box.height} center=(${box.centerX}, ${box.centerY}) pixels=${box.pixelCount} fill=${box.fillRatio.toFixed(3)} ${detector.metricLabel}=${box.blueDominance.toFixed(1)} edge=${distance} score=${box.score.toFixed(1)}`,
     );
   }
 
   if (requiresSelectedOreExpectation && !selected) {
-    return failWithDebug(`Could not select a reachable mithril ore near the player.`);
+    return failWithDebug(`Could not select a reachable ${detector.name.toLowerCase()} ore near the player.`);
   }
 
   if (
@@ -289,7 +339,7 @@ async function testDetection(screenshotPath: string): Promise<boolean> {
     }
   }
 
-  const debugPath = saveDetectionDebugImage(bitmap, screenshotPath, boxes, selected, playerBox, false);
+  const debugPath = saveDetectionDebugImage(bitmap, screenshotPath, boxes, selected, playerBox, false, detector);
 
   if (playerAnchor) {
     console.log(`Player center=(${playerAnchor.x}, ${playerAnchor.y})`);
@@ -310,7 +360,7 @@ async function main(): Promise<void> {
   const screenshots = args.length > 0 ? args : ["test-images/mining-mithril-mining-guilde/*-ores.png"];
   const expandedScreenshots = expandScreenshotArgs(screenshots);
 
-  console.log(`\nMithril Ore Detector Test Suite`);
+  console.log(`\nMining Ore Detector Test Suite`);
   console.log(`Testing ${expandedScreenshots.length} screenshot(s)...`);
 
   let successCount = 0;

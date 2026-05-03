@@ -96,11 +96,15 @@ const SCREENSHOT_SUITES: Record<string, ScreenshotSuite> = {
   },
   "test:screenshot:mithril-ore": {
     script: "src/main/automate-bots/shared/mithril-ore-detector.spec.ts",
-    args: ["test-images/mining-mithril-mining-guilde/*-ores.png"],
+    args: ["test-images/mining-mining-guilde/mithril/*-ores.png"],
+  },
+  "test:screenshot:coal-ore": {
+    script: "src/main/automate-bots/shared/mithril-ore-detector.spec.ts",
+    args: ["test-images/mining-mining-guilde/coal/*-ores.png"],
   },
   "test:screenshot:mithril-active-marker": {
     script: "src/main/automate-bots/shared/mithril-active-marker-detector.spec.ts",
-    args: ["test-images/mining-mithril-mining-guilde/tini-yellow-circle.png"],
+    args: ["test-images/mining-mining-guilde/tini-yellow-circle.png"],
   },
   "test:screenshot:inventory-count": {
     script: "src/main/automate-bots/shared/inventory-count-detector.spec.ts",

@@ -1,19 +1,23 @@
 export const AGILITY_BOT_ID = "agility";
 export const ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID = "attack-zamorak-warrior-safe-spot";
 export const COMBAT_AUTO_BOT_ID = "combat-auto";
+export const MINING_GUILD_COAL_ORE_BOT_ID = "mining-guild-coal-ore";
 export const MINING_GUILD_MITHRIL_ORE_BOT_ID = "mining-guild-mithril-ore";
 export const MINING_MOTHERLODE_MINE_BOT_ID = "mining-motherlode-mine";
 export const MINING_MOTHERLODE_MINE_V2_BOT_ID = "mining-motherlode-mine-v2";
 export const MINING_MOTHERLODE_MINE_V3_BOT_ID = "mining-motherlode-mine-v3";
+export const RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID = "runecrafting-guardian-of-the-rift";
 
 export type AutomateBotId =
   | typeof AGILITY_BOT_ID
   | typeof ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID
   | typeof COMBAT_AUTO_BOT_ID
+  | typeof MINING_GUILD_COAL_ORE_BOT_ID
   | typeof MINING_GUILD_MITHRIL_ORE_BOT_ID
   | typeof MINING_MOTHERLODE_MINE_BOT_ID
   | typeof MINING_MOTHERLODE_MINE_V2_BOT_ID
-  | typeof MINING_MOTHERLODE_MINE_V3_BOT_ID;
+  | typeof MINING_MOTHERLODE_MINE_V3_BOT_ID
+  | typeof RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID;
 
 export type AutomateBotDefinition = {
   id: AutomateBotId;
@@ -30,6 +34,11 @@ export const AUTOMATE_BOTS: AutomateBotDefinition[] = [
     id: COMBAT_AUTO_BOT_ID,
     name: "Auto",
     group: "Combat",
+  },
+  {
+    id: MINING_GUILD_COAL_ORE_BOT_ID,
+    name: "Mining Guild Coal Ore (engine)",
+    group: "Mining",
   },
   {
     id: MINING_GUILD_MITHRIL_ORE_BOT_ID,
@@ -55,6 +64,11 @@ export const AUTOMATE_BOTS: AutomateBotDefinition[] = [
     id: MINING_MOTHERLODE_MINE_V3_BOT_ID,
     name: "Motherlode Mine V3 (engine)",
     group: "Mining",
+  },
+  {
+    id: RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID,
+    name: "Guardian of the Rift",
+    group: "Runecrafting",
   },
 ];
 

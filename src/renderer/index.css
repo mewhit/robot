@@ -182,7 +182,7 @@
   }
 
   .debug-view {
-    @apply w-full flex flex-col items-start gap-2 p-2;
+    @apply w-full flex flex-col items-start gap-2 p-2 overflow-y-auto;
   }
 
   .debug-save-row {
@@ -207,6 +207,26 @@
 
   .debug-notice-error {
     @apply text-red-700;
+  }
+
+  .debug-files-container {
+    @apply w-full flex flex-col gap-2 mt-4 p-3 bg-slate-50 rounded-md border border-slate-200 flex-1 min-h-0;
+  }
+
+  .debug-files-title {
+    @apply m-0 text-sm font-bold text-slate-700 flex-shrink-0;
+  }
+
+  .debug-files-list {
+    @apply m-0 p-0 list-none flex-1 overflow-y-auto min-h-0;
+  }
+
+  .debug-file-item {
+    @apply px-2 py-1 text-xs text-slate-600 bg-white border border-slate-200 rounded mb-1 break-all;
+  }
+
+  .debug-files-empty {
+    @apply m-0 text-xs text-slate-500 italic;
   }
 
   .title {

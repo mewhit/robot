@@ -9,7 +9,7 @@ import { CHANNELS } from "../ipcChannels";
 import * as logger from "../logger";
 import { getRuneLite } from "../runeLiteWindow";
 import { captureScreenBitmap } from "../windowsScreenCapture";
-import { MINING_GUILD_MITHRIL_ORE_BOT_ID } from "./definitions";
+import { MINING_GUILD_COAL_ORE_BOT_ID, MINING_GUILD_MITHRIL_ORE_BOT_ID } from "./definitions";
 import { runBotEngine, sleepWithAbort } from "./engine/bot-engine";
 import { createAsyncWorldMapper } from "./mapping/async-world-mapper";
 import { readWorldMapObservationFromBitmap } from "./mapping/world-map-observation-reader";
@@ -23,12 +23,41 @@ import {
   TileCoord,
 } from "./shared/mining-guild-bank-approach";
 import { detectMiningBoxStatusInScreenshot } from "./shared/mining-box-status-detector";
-import { detectMithrilOreBoxesInScreenshot, MithrilOreBox } from "./shared/mithril-ore-detector";
+import {
+  detectCoalOreBoxesInScreenshot,
+  detectMithrilOreBoxesInScreenshot,
+  MithrilOreBox,
+} from "./shared/mithril-ore-detector";
 import { RobotBitmap } from "./shared/ocr-engine";
 import { detectBestPlayerBoxInScreenshot, PlayerBox } from "./shared/player-box-detector";
 import { saveBitmap } from "./shared/save-bitmap";
 
-const BOT_NAME = "Mining Guild Mithril Ore";
+type MiningGuildOreBotConfig = {
+  botId: string;
+  botName: string;
+  oreLabel: string;
+  colorMetricLabel: string;
+  inventoryFullCount: number;
+  detectOreBoxesInScreenshot: typeof detectMithrilOreBoxesInScreenshot;
+};
+
+const MITHRIL_ORE_BOT_CONFIG: MiningGuildOreBotConfig = {
+  botId: MINING_GUILD_MITHRIL_ORE_BOT_ID,
+  botName: "Mining Guild Mithril Ore",
+  oreLabel: "mithril ore",
+  colorMetricLabel: "blue",
+  inventoryFullCount: 28,
+  detectOreBoxesInScreenshot: detectMithrilOreBoxesInScreenshot,
+};
+
+const COAL_ORE_BOT_CONFIG: MiningGuildOreBotConfig = {
+  botId: MINING_GUILD_COAL_ORE_BOT_ID,
+  botName: "Mining Guild Coal Ore",
+  oreLabel: "coal ore",
+  colorMetricLabel: "olive",
+  inventoryFullCount: 27,
+  detectOreBoxesInScreenshot: detectCoalOreBoxesInScreenshot,
+};
 const DEBUG_DIR = "ocr-debug";
 const COORDINATE_BOX_DEBUG_RELATIVE_DIR = path.join("test-images", "coordinate-box");
 const COORDINATE_BOX_UNVERIFIED_SUFFIX = "unverified";
@@ -46,15 +75,16 @@ const MOVE_TILE_PX_MIN = 24;
 const MOVE_TILE_PX_MAX = 96;
 const MOVE_WAIT_EXTRA_TICKS = 1;
 const BANK_MOVE_MIN_TICKS = 6;
-const BANK_MOVE_TICK_MULTIPLIER = 2.5;
+const BANK_MOVE_TICK_MULTIPLIER = 1.2;
 const MOVE_EARLY_COMPLETE_MAX_REMAINING_TICKS = 1;
 const MOVE_EARLY_COMPLETE_RADIUS_TILES = 1.2;
 const SAME_ORE_MATCH_RADIUS_PX = 56;
 const TARGET_ORE_MATCH_RADIUS_PX = 110;
 const PLAYER_ORE_MAX_EDGE_DISTANCE_PX = 500;
 const INVENTORY_EMPTY_COUNT = 0;
-const INVENTORY_FULL_COUNT = 28;
 const BANK_DEPOSIT_ORB_REFERENCE_ICON = "test-images/icon/bank-deposit/bank-deposit-icon.png";
+const BANK_DEPOSIT_ORB_REFERENCE_WIDTH_PX = 42;
+const EMPTY_BAG_IN_BANK_OFFSET_FROM_ORB_REFERENCE = { x: -67.5, y: 1.5 };
 const BANKING_MAGENTA_MIN_PIXELS = 120;
 const BANKING_MOVE_COOLDOWN_TICKS = 2;
 const BANK_ORB_FIND_RETRY_MAX = 3;
@@ -124,6 +154,8 @@ type BotState = {
   inventoryCount: number | null;
   bankOrbClickCount: number;
   bankDepositScreen: { x: number; y: number } | null;
+  bankOrbScreen: { x: number; y: number } | null;
+  emptyBagInBankScreen: { x: number; y: number } | null;
   bankOrbFindAttemptCount: number;
   bankApproachPlanEvaluated: boolean;
   bankApproachClicksRemaining: number;
@@ -363,7 +395,11 @@ function resolveUniqueCoordinateScreenshotPath(baseName: string): string {
   }
 }
 
-function saveCoordinateBoxReadScreenshot(bitmap: RobotBitmap, tile: TileCoord | null, matchedLine: string | null): void {
+function saveCoordinateBoxReadScreenshot(
+  bitmap: RobotBitmap,
+  tile: TileCoord | null,
+  matchedLine: string | null,
+): void {
   const { xToken, yToken, zToken } = resolveCoordinateFilenameTokens(tile, matchedLine);
   const baseName = `${bitmap.width}x${bitmap.height}-${currentMonitorTier}-${currentWindowsScalePercent}-r-${xToken}-${yToken}-${zToken}-${COORDINATE_BOX_UNVERIFIED_SUFFIX}`;
   const outputPath = resolveUniqueCoordinateScreenshotPath(baseName);
@@ -407,33 +443,37 @@ function selectNearestMithrilOre(
   const candidates = nearbyBoxes.length > 0 ? nearbyBoxes : boxes;
 
   let best: MithrilOreBox | null = null;
-  let bestEdgeDistance = Number.POSITIVE_INFINITY;
   let bestCenterDistanceSquared = Number.POSITIVE_INFINITY;
+  let bestTopEdgeY = Number.POSITIVE_INFINITY;
+  let bestScore = Number.NEGATIVE_INFINITY;
 
   for (const box of candidates) {
-    const edgeDistance = distanceToBox(anchorX, anchorY, box);
     const centerDx = anchorX - box.centerX;
     const centerDy = anchorY - box.centerY;
     const centerDistanceSquared = centerDx * centerDx + centerDy * centerDy;
-
-    if (edgeDistance < bestEdgeDistance) {
-      bestEdgeDistance = edgeDistance;
-      bestCenterDistanceSquared = centerDistanceSquared;
-      best = box;
-      continue;
-    }
-
-    if (Math.abs(edgeDistance - bestEdgeDistance) >= 0.5) {
-      continue;
-    }
+    const topEdgeY = box.y;
 
     if (centerDistanceSquared < bestCenterDistanceSquared) {
+      best = box;
       bestCenterDistanceSquared = centerDistanceSquared;
+      bestTopEdgeY = topEdgeY;
+      bestScore = box.score;
+      continue;
+    }
+
+    if (Math.abs(centerDistanceSquared - bestCenterDistanceSquared) >= 0.5) {
+      continue;
+    }
+
+    if (topEdgeY < bestTopEdgeY) {
+      bestTopEdgeY = topEdgeY;
+      bestScore = box.score;
       best = box;
       continue;
     }
 
-    if (Math.abs(centerDistanceSquared - bestCenterDistanceSquared) < 0.5 && best && box.score > best.score) {
+    if (topEdgeY === bestTopEdgeY && box.score > bestScore) {
+      bestScore = box.score;
       best = box;
     }
   }
@@ -637,6 +677,20 @@ function clickScreenPoint(screenX: number, screenY: number, captureBounds: Scree
 
   moveMouse(safeX, safeY);
   mouseClick("left", false);
+}
+
+function resolveEmptyBagInBankScreenPoint(
+  orbDetection: { centerX: number; centerY: number; width: number },
+  captureBounds: ScreenCaptureBounds,
+): { x: number; y: number } {
+  const scale =
+    Number.isFinite(orbDetection.width) && orbDetection.width > 0
+      ? orbDetection.width / BANK_DEPOSIT_ORB_REFERENCE_WIDTH_PX
+      : 1;
+  return {
+    x: captureBounds.x + orbDetection.centerX + EMPTY_BAG_IN_BANK_OFFSET_FROM_ORB_REFERENCE.x * scale,
+    y: captureBounds.y + orbDetection.centerY + EMPTY_BAG_IN_BANK_OFFSET_FROM_ORB_REFERENCE.y * scale,
+  };
 }
 
 function deadlineFromNowTicks(ticks: number, nowMs: number = Date.now()): number {
@@ -899,6 +953,8 @@ function resetToSearchingState(state: BotState, actionLockUntilMs: number = stat
     moveDestinationPhase: "mining",
     bankOrbClickCount: 0,
     bankDepositScreen: null,
+    bankOrbScreen: null,
+    emptyBagInBankScreen: null,
     bankOrbFindAttemptCount: 0,
     bankApproachPlanEvaluated: false,
     bankApproachClicksRemaining: 0,
@@ -920,6 +976,8 @@ function createInitialState(): BotState {
     inventoryCount: null,
     bankOrbClickCount: 0,
     bankDepositScreen: null,
+    bankOrbScreen: null,
+    emptyBagInBankScreen: null,
     bankOrbFindAttemptCount: 0,
     bankApproachPlanEvaluated: false,
     bankApproachClicksRemaining: 0,
@@ -952,6 +1010,8 @@ function transitionToBankingState(state: BotState, nowMs: number): BotState {
     moveDestinationPhase: "banking-search-magenta",
     bankOrbClickCount: 0,
     bankDepositScreen: null,
+    bankOrbScreen: null,
+    emptyBagInBankScreen: null,
     bankOrbFindAttemptCount: 0,
     bankApproachPlanEvaluated: false,
     bankApproachClicksRemaining: 0,
@@ -1003,9 +1063,12 @@ function transitionFromMoveState(state: BotState, inventoryCount: number | null)
     targetScreen: null,
     moveWaitTicks: 0,
     bankOrbFindAttemptCount: 0,
-    bankApproachPlanEvaluated: state.moveDestinationPhase === "banking-search-magenta" ? state.bankApproachPlanEvaluated : false,
-    bankApproachClicksRemaining: state.moveDestinationPhase === "banking-search-magenta" ? state.bankApproachClicksRemaining : 0,
-    bankApproachClickPoint: state.moveDestinationPhase === "banking-search-magenta" ? state.bankApproachClickPoint : null,
+    bankApproachPlanEvaluated:
+      state.moveDestinationPhase === "banking-search-magenta" ? state.bankApproachPlanEvaluated : false,
+    bankApproachClicksRemaining:
+      state.moveDestinationPhase === "banking-search-magenta" ? state.bankApproachClicksRemaining : 0,
+    bankApproachClickPoint:
+      state.moveDestinationPhase === "banking-search-magenta" ? state.bankApproachClickPoint : null,
   };
 }
 
@@ -1014,6 +1077,7 @@ function runSearchOreTick(
   nowMs: number,
   tickCapture: TickCapture,
   captureBounds: ScreenCaptureBounds,
+  config: MiningGuildOreBotConfig,
 ): BotState {
   const inventoryResult = detectInventoryCount(tickCapture.bitmap);
   const inventoryCount = inventoryResult.count;
@@ -1024,7 +1088,7 @@ function runSearchOreTick(
 
   const playerBox = detectBestPlayerBoxInScreenshot(tickCapture.bitmap);
   const tilePxHint = estimateMoveTilePxFromPlayerBox(playerBox);
-  const oreBoxes = detectMithrilOreBoxesInScreenshot(tickCapture.bitmap, { tilePxHint });
+  const oreBoxes = config.detectOreBoxesInScreenshot(tickCapture.bitmap, { tilePxHint });
   const resolvedPlayer = resolveMithrilPlayerAnchor(oreBoxes, tickCapture.bitmap, playerBox);
   const sameOreLocked = isActionLocked(state, nowMs) && !!state.lastClickedOreScreen;
   const selectableOreBoxes =
@@ -1044,9 +1108,11 @@ function runSearchOreTick(
   }
 
   if (!selectedOre) {
-    if (inventoryCount === INVENTORY_FULL_COUNT && !isActionLocked(state, nowMs)) {
+    if (inventoryCount === config.inventoryFullCount && !isActionLocked(state, nowMs)) {
       const point = clickDirectionalWalk(captureBounds, "east");
-      log(`Inventory is full (28) and no ore visible; stepping east via click at (${point.x},${point.y}).`);
+      log(
+        `Inventory is full (${config.inventoryFullCount}) and no ore visible; stepping east via click at (${point.x},${point.y}).`,
+      );
       return {
         ...state,
         inventoryCount,
@@ -1056,7 +1122,7 @@ function runSearchOreTick(
 
     if (state.loopIndex % 3 === 0) {
       warn(
-        `No mithril ore found (boxes=${oreBoxes.length}, selectable=${selectableOreBoxes.length}, anchor=${resolvedPlayer.anchorInCapture.x},${resolvedPlayer.anchorInCapture.y}, anchor-source=${resolvedPlayer.source}).`,
+        `No ${config.oreLabel} found (boxes=${oreBoxes.length}, selectable=${selectableOreBoxes.length}, anchor=${resolvedPlayer.anchorInCapture.x},${resolvedPlayer.anchorInCapture.y}, anchor-source=${resolvedPlayer.source}).`,
       );
     }
     return {
@@ -1076,7 +1142,7 @@ function runSearchOreTick(
   );
 
   log(
-    `Selected mithril ore center=(${selectedOre.centerX},${selectedOre.centerY}) size=${selectedOre.width}x${selectedOre.height} blue=${selectedOre.blueDominance.toFixed(1)} edge=${edgeDistance} tiles~${distanceTiles.toFixed(1)} anchor=${resolvedPlayer.source}; clicking (${interactionPoint.x},${interactionPoint.y}), move eta ~${moveTravelTicks} tick(s).`,
+    `Selected ${config.oreLabel} center=(${selectedOre.centerX},${selectedOre.centerY}) size=${selectedOre.width}x${selectedOre.height} ${config.colorMetricLabel}=${selectedOre.blueDominance.toFixed(1)} edge=${edgeDistance} tiles~${distanceTiles.toFixed(1)} anchor=${resolvedPlayer.source}; clicking (${interactionPoint.x},${interactionPoint.y}), move eta ~${moveTravelTicks} tick(s).`,
   );
 
   clickScreenPoint(interactionPoint.x, interactionPoint.y, captureBounds);
@@ -1153,6 +1219,7 @@ function runMineTick(
   nowMs: number,
   tickCapture: TickCapture,
   captureBounds: ScreenCaptureBounds,
+  config: MiningGuildOreBotConfig,
 ): BotState {
   const inventoryResult = detectInventoryCount(tickCapture.bitmap);
   const inventoryCount = inventoryResult.count;
@@ -1194,12 +1261,13 @@ function runBankTick(
   nowMs: number,
   tickCapture: TickCapture,
   captureBounds: ScreenCaptureBounds,
+  config: MiningGuildOreBotConfig,
 ): BotState {
   const inventoryResult = detectInventoryCount(tickCapture.bitmap);
   const inventoryCount = inventoryResult.count;
 
-  if (inventoryCount === INVENTORY_FULL_COUNT) {
-    log(`Inventory reached 28; returning to ore search.`);
+  if (inventoryCount === config.inventoryFullCount) {
+    log(`Inventory reached ${config.inventoryFullCount}; returning to ore search.`);
     return resetToSearchingState({ ...state, inventoryCount }, nowMs);
   }
 
@@ -1354,6 +1422,8 @@ function runBankTick(
         ...state,
         inventoryCount,
         bankDepositScreen: { x: targetScreenX, y: targetScreenY },
+        bankOrbScreen: null,
+        emptyBagInBankScreen: null,
         bankOrbFindAttemptCount: 0,
         bankApproachPlanEvaluated: false,
         bankApproachClicksRemaining: 0,
@@ -1367,6 +1437,22 @@ function runBankTick(
     );
   }
 
+  if (state.bankOrbScreen && state.emptyBagInBankScreen) {
+    clickScreenPoint(state.bankOrbScreen.x, state.bankOrbScreen.y, captureBounds);
+    clickScreenPoint(state.emptyBagInBankScreen.x, state.emptyBagInBankScreen.y, captureBounds);
+    log(
+      `Re-clicking cached bank orb (${state.bankOrbScreen.x},${state.bankOrbScreen.y}) and empty-bag (${state.emptyBagInBankScreen.x},${state.emptyBagInBankScreen.y}) without re-detecting.`,
+    );
+
+    return {
+      ...state,
+      inventoryCount,
+      bankOrbClickCount: state.bankOrbClickCount + 1,
+      bankOrbFindAttemptCount: 0,
+      actionLockUntilMs: deadlineFromNowTicks(2, nowMs),
+    };
+  }
+
   const orbReferenceBitmap = getBankDepositOrbReferenceBitmap();
   if (!orbReferenceBitmap) {
     return {
@@ -1375,6 +1461,8 @@ function runBankTick(
       phase: "banking-search-magenta",
       currentFunction: "bank",
       actionLockUntilMs: deadlineFromNowTicks(BANKING_MOVE_COOLDOWN_TICKS, nowMs),
+      bankOrbScreen: null,
+      emptyBagInBankScreen: null,
       bankApproachPlanEvaluated: false,
       bankApproachClicksRemaining: 0,
       bankApproachClickPoint: null,
@@ -1396,6 +1484,8 @@ function runBankTick(
           currentFunction: "bank",
           actionLockUntilMs: deadlineFromNowTicks(BANKING_MOVE_COOLDOWN_TICKS, nowMs),
           bankOrbFindAttemptCount: 0,
+          bankOrbScreen: null,
+          emptyBagInBankScreen: null,
           bankApproachPlanEvaluated: false,
           bankApproachClicksRemaining: 0,
           bankApproachClickPoint: null,
@@ -1479,31 +1569,41 @@ function runBankTick(
   }
 
   clickScreenPoint(orbScreenX, orbScreenY, captureBounds);
+  const emptyBagScreen = resolveEmptyBagInBankScreenPoint(orbResult.detection, captureBounds);
+  clickScreenPoint(emptyBagScreen.x, emptyBagScreen.y, captureBounds);
 
   log(
-    `Bank orb detected at (${orbResult.detection.centerX},${orbResult.detection.centerY}) score=${orbResult.detection.score.toFixed(1)}; clicked (${orbScreenX},${orbScreenY}) and waiting for inventory=28.`,
+    `Bank orb detected at (${orbResult.detection.centerX},${orbResult.detection.centerY}) score=${orbResult.detection.score.toFixed(1)}; clicked bank orb (${orbScreenX},${orbScreenY}) and empty-bag (${Math.round(emptyBagScreen.x)},${Math.round(emptyBagScreen.y)}) using relative offset, then waiting for inventory=${config.inventoryFullCount}.`,
   );
 
   return {
     ...state,
     inventoryCount,
     bankOrbClickCount: state.bankOrbClickCount + 1,
+    bankOrbScreen: {
+      x: Math.round(orbScreenX),
+      y: Math.round(orbScreenY),
+    },
+    emptyBagInBankScreen: {
+      x: Math.round(emptyBagScreen.x),
+      y: Math.round(emptyBagScreen.y),
+    },
     bankOrbFindAttemptCount: 0,
     actionLockUntilMs: deadlineFromNowTicks(2, nowMs),
   };
 }
 
-async function runLoop(captureBounds: ScreenCaptureBounds): Promise<void> {
+async function runLoop(captureBounds: ScreenCaptureBounds, config: MiningGuildOreBotConfig): Promise<void> {
   if (isLoopRunning) {
     log(`Loop already running.`);
     return;
   }
 
   isLoopRunning = true;
-  setAutomateBotCurrentStep(MINING_GUILD_MITHRIL_ORE_BOT_ID);
+  setAutomateBotCurrentStep(config.botId);
   const worldMapper = ENABLE_WORLD_MAPPER
     ? createAsyncWorldMapper({
-        botId: MINING_GUILD_MITHRIL_ORE_BOT_ID,
+        botId: config.botId,
         outputRootPath: AppState.outputFolderPath,
       })
     : null;
@@ -1535,7 +1635,9 @@ async function runLoop(captureBounds: ScreenCaptureBounds): Promise<void> {
         searchOre: ({ state, nowMs, tickCapture }) => {
           setCurrentLogLoopIndex(state.loopIndex);
           setCurrentLogPhase(state.phase);
-          return state.phase === "searching" ? runSearchOreTick(state, nowMs, tickCapture, captureBounds) : state;
+          return state.phase === "searching"
+            ? runSearchOreTick(state, nowMs, tickCapture, captureBounds, config)
+            : state;
         },
         move: ({ state, nowMs, tickCapture }) => {
           setCurrentLogLoopIndex(state.loopIndex);
@@ -1545,13 +1647,13 @@ async function runLoop(captureBounds: ScreenCaptureBounds): Promise<void> {
         mine: ({ state, nowMs, tickCapture }) => {
           setCurrentLogLoopIndex(state.loopIndex);
           setCurrentLogPhase(state.phase);
-          return state.phase === "mining" ? runMineTick(state, nowMs, tickCapture, captureBounds) : state;
+          return state.phase === "mining" ? runMineTick(state, nowMs, tickCapture, captureBounds, config) : state;
         },
         bank: ({ state, nowMs, tickCapture }) => {
           setCurrentLogLoopIndex(state.loopIndex);
           setCurrentLogPhase(state.phase);
           return state.phase === "banking-search-magenta" || state.phase === "banking-find-orb"
-            ? runBankTick(state, nowMs, tickCapture, captureBounds)
+            ? runBankTick(state, nowMs, tickCapture, captureBounds, config)
             : state;
         },
       },
@@ -1577,7 +1679,7 @@ async function runLoop(captureBounds: ScreenCaptureBounds): Promise<void> {
   }
 }
 
-export function onMiningGuildMithrilOreBotStart(): void {
+function startMiningGuildOreBot(config: MiningGuildOreBotConfig): void {
   setCurrentLogLoopIndex(0);
   setCurrentLogPhase("searching");
 
@@ -1585,14 +1687,14 @@ export function onMiningGuildMithrilOreBotStart(): void {
     startedAtMs = Date.now();
   }
 
-  log(`Automate Bot STARTED (${BOT_NAME}).`);
+  log(`Automate Bot STARTED (${config.botName}).`);
   log(
     `Config: engineTick=${GAME_TICK_MS}ms, phases='search->move->mine', startup='hold-w+north', world-mapper=${ENABLE_WORLD_MAPPER ? "on" : "off"}, player-ore-max-edge=${PLAYER_ORE_MAX_EDGE_DISTANCE_PX}px, bank-approach=${BANK_APPROACH_TARGET_TILE.x},${BANK_APPROACH_TARGET_TILE.y}, click-edge-safety=${CLICK_SAFE_EDGE_MARGIN_PX}px.`,
   );
 
   const window = getRuneLite();
   if (!window) {
-    const message = `${BOT_NAME} could not start because the RuneLite window was not found.`;
+    const message = `${config.botName} could not start because the RuneLite window was not found.`;
     warn(message);
     notifyUserAndStop(message);
     return;
@@ -1638,11 +1740,19 @@ export function onMiningGuildMithrilOreBotStart(): void {
         return;
       }
 
-      await runLoop(captureBounds);
+      await runLoop(captureBounds, config);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       warn(`Startup failed: ${message}`);
       notifyUserAndStop(message);
     }
   })();
+}
+
+export function onMiningGuildMithrilOreBotStart(): void {
+  startMiningGuildOreBot(MITHRIL_ORE_BOT_CONFIG);
+}
+
+export function onMiningGuildCoalOreBotStart(): void {
+  startMiningGuildOreBot(COAL_ORE_BOT_CONFIG);
 }

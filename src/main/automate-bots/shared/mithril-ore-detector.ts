@@ -24,6 +24,8 @@ export type DetectMithrilOreOptions = {
   tilePxHint?: number | null;
 };
 
+export type DetectCoalOreOptions = DetectMithrilOreOptions;
+
 type BoxCandidate = {
   minX: number;
   minY: number;
@@ -53,6 +55,30 @@ const SPLIT_MIN_CENTER_DISTANCE_TILES = 0.45;
 const SPLIT_MIN_REDUCTION_RATIO = 0.88;
 const SPLIT_KMEANS_ITERATIONS = 6;
 
+type OreDetectorConfig = {
+  isOrePixel: (r: number, g: number, b: number) => boolean;
+  minColorDominance: number;
+  minPixelCount?: number;
+  duplicateCenterDistancePx?: number;
+  rejectUiRegions?: boolean;
+  getColorDominance: (avgRed: number, avgGreen: number, avgBlue: number) => number;
+};
+
+const MITHRIL_ORE_DETECTOR_CONFIG: OreDetectorConfig = {
+  isOrePixel: isMithrilOrePixel,
+  minColorDominance: MIN_BLUE_DOMINANCE,
+  getColorDominance: (avgRed, avgGreen, avgBlue) => avgBlue - (avgRed + avgGreen) / 2,
+};
+
+const COAL_ORE_DETECTOR_CONFIG: OreDetectorConfig = {
+  isOrePixel: isCoalOrePixel,
+  minColorDominance: 8,
+  minPixelCount: 270,
+  duplicateCenterDistancePx: 24,
+  rejectUiRegions: true,
+  getColorDominance: (avgRed, avgGreen, avgBlue) => (avgRed + avgGreen) / 2 - avgBlue,
+};
+
 function isMithrilOrePixel(r: number, g: number, b: number): boolean {
   return (
     r <= 96 &&
@@ -62,6 +88,23 @@ function isMithrilOrePixel(r: number, g: number, b: number): boolean {
     Math.abs(r - g) <= 18 &&
     b - r >= 10 &&
     b - g >= 8
+  );
+}
+
+function isCoalOrePixel(r: number, g: number, b: number): boolean {
+  const brightness = (r + g + b) / 3;
+  return (
+    brightness >= 18 &&
+    brightness <= 55 &&
+    r >= 22 &&
+    r <= 68 &&
+    g >= 22 &&
+    g <= 60 &&
+    b >= 14 &&
+    b <= 32 &&
+    r - g <= 6 &&
+    g - b >= 8 &&
+    r - b >= 8
   );
 }
 
@@ -117,7 +160,7 @@ function drawRectangleOnPng(
   }
 }
 
-function buildMithrilOreMask(bitmap: RobotBitmap): Uint8Array {
+function buildOreMask(bitmap: RobotBitmap, config: OreDetectorConfig): Uint8Array {
   const mask = new Uint8Array(bitmap.width * bitmap.height);
 
   for (let y = 0; y < bitmap.height; y += 1) {
@@ -126,7 +169,7 @@ function buildMithrilOreMask(bitmap: RobotBitmap): Uint8Array {
       const b = bitmap.image[offset];
       const g = bitmap.image[offset + 1];
       const r = bitmap.image[offset + 2];
-      if (!isMithrilOrePixel(r, g, b)) {
+      if (!config.isOrePixel(r, g, b)) {
         continue;
       }
 
@@ -404,6 +447,7 @@ function trySplitCandidateByKMeans(
   mask: Uint8Array,
   bitmap: RobotBitmap,
   tilePxHint: number,
+  config: OreDetectorConfig,
 ): BoxCandidate[] | null {
   const width = getCandidateWidth(candidate);
   const height = getCandidateHeight(candidate);
@@ -452,8 +496,8 @@ function trySplitCandidateByKMeans(
 
     const candidateA = clusters[0].candidate;
     const candidateB = clusters[1].candidate;
-    const boxA = toMithrilOreBox(candidateA, bitmap);
-    const boxB = toMithrilOreBox(candidateB, bitmap);
+    const boxA = toOreBox(candidateA, bitmap, config);
+    const boxB = toOreBox(candidateB, bitmap, config);
     if (!boxA || !boxB) {
       continue;
     }
@@ -479,18 +523,19 @@ function splitOversizedCandidate(
   mask: Uint8Array,
   bitmap: RobotBitmap,
   tilePxHint: number | null,
+  config: OreDetectorConfig,
   depth: number = 0,
 ): BoxCandidate[] {
   if (!tilePxHint || !Number.isFinite(tilePxHint) || depth >= 2) {
     return [candidate];
   }
 
-  const split = trySplitCandidateByKMeans(candidate, mask, bitmap, tilePxHint);
+  const split = trySplitCandidateByKMeans(candidate, mask, bitmap, tilePxHint, config);
   if (!split) {
     return [candidate];
   }
 
-  return split.flatMap((child) => splitOversizedCandidate(child, mask, bitmap, tilePxHint, depth + 1));
+  return split.flatMap((child) => splitOversizedCandidate(child, mask, bitmap, tilePxHint, config, depth + 1));
 }
 
 function resolveMaxBoxWidth(sourceWidth: number): number {
@@ -501,7 +546,7 @@ function resolveMaxBoxHeight(sourceHeight: number): number {
   return Math.max(MAX_BOX_HEIGHT_PX, Math.round(sourceHeight * MAX_BOX_HEIGHT_RATIO));
 }
 
-function toMithrilOreBox(candidate: BoxCandidate, bitmap: RobotBitmap): MithrilOreBox | null {
+function toOreBox(candidate: BoxCandidate, bitmap: RobotBitmap, config: OreDetectorConfig): MithrilOreBox | null {
   const width = candidate.maxX - candidate.minX + 1;
   const height = candidate.maxY - candidate.minY + 1;
   const fillRatio = candidate.pixelCount / (width * height);
@@ -509,7 +554,7 @@ function toMithrilOreBox(candidate: BoxCandidate, bitmap: RobotBitmap): MithrilO
   const maxBoxWidth = resolveMaxBoxWidth(bitmap.width);
   const maxBoxHeight = resolveMaxBoxHeight(bitmap.height);
 
-  if (candidate.pixelCount < MIN_PIXEL_COUNT) {
+  if (candidate.pixelCount < (config.minPixelCount ?? MIN_PIXEL_COUNT)) {
     return null;
   }
 
@@ -532,13 +577,17 @@ function toMithrilOreBox(candidate: BoxCandidate, bitmap: RobotBitmap): MithrilO
   const avgRed = candidate.redSum / candidate.pixelCount;
   const avgGreen = candidate.greenSum / candidate.pixelCount;
   const avgBlue = candidate.blueSum / candidate.pixelCount;
-  const blueDominance = avgBlue - (avgRed + avgGreen) / 2;
-  if (blueDominance < MIN_BLUE_DOMINANCE) {
+  const blueDominance = config.getColorDominance(avgRed, avgGreen, avgBlue);
+  if (blueDominance < config.minColorDominance) {
     return null;
   }
 
   const centerX = Math.round(candidate.minX + width / 2);
   const centerY = Math.round(candidate.minY + height / 2);
+  if (config.rejectUiRegions && isLikelyUiRegion(centerX, centerY, bitmap)) {
+    return null;
+  }
+
   const dx = centerX - bitmap.width / 2;
   const dy = centerY - bitmap.height / 2;
   const distanceFromCenter = Math.sqrt(dx * dx + dy * dy);
@@ -582,17 +631,64 @@ function sortBoxes(boxes: MithrilOreBox[]): MithrilOreBox[] {
   });
 }
 
-export function detectMithrilOreBoxesInScreenshot(bitmap: RobotBitmap, options: DetectMithrilOreOptions = {}): MithrilOreBox[] {
-  const mask = buildMithrilOreMask(bitmap);
+function removeNearbyDuplicateBoxes(boxes: MithrilOreBox[], maxCenterDistancePx: number | undefined): MithrilOreBox[] {
+  if (!maxCenterDistancePx || maxCenterDistancePx <= 0) {
+    return boxes;
+  }
+
+  const kept: MithrilOreBox[] = [];
+  for (const box of boxes) {
+    const isDuplicate = kept.some((keptBox) => {
+      const dx = box.centerX - keptBox.centerX;
+      const dy = box.centerY - keptBox.centerY;
+      return Math.sqrt(dx * dx + dy * dy) <= maxCenterDistancePx;
+    });
+    if (!isDuplicate) {
+      kept.push(box);
+    }
+  }
+
+  return kept;
+}
+
+function detectOreBoxesInScreenshot(
+  bitmap: RobotBitmap,
+  options: DetectMithrilOreOptions,
+  config: OreDetectorConfig,
+): MithrilOreBox[] {
+  const mask = buildOreMask(bitmap, config);
   const components = collectConnectedComponents(mask, bitmap).filter((candidate) => candidate.pixelCount >= 8);
   const mergedComponents = mergeNearbyComponents(components, MERGE_GAP_PX);
   const inferredTilePxHint = estimateTilePxHintFromComponents(mergedComponents);
   const resolvedTilePxHint = resolveSplitTilePxHint(options.tilePxHint, inferredTilePxHint);
   const refinedComponents = mergedComponents.flatMap((candidate) =>
-    splitOversizedCandidate(candidate, mask, bitmap, resolvedTilePxHint),
+    splitOversizedCandidate(candidate, mask, bitmap, resolvedTilePxHint, config),
   );
-  const boxes = refinedComponents.map((candidate) => toMithrilOreBox(candidate, bitmap)).filter((box): box is MithrilOreBox => box !== null);
-  return sortBoxes(boxes);
+  const boxes = refinedComponents
+    .map((candidate) => toOreBox(candidate, bitmap, config))
+    .filter((box): box is MithrilOreBox => box !== null);
+  return removeNearbyDuplicateBoxes(sortBoxes(boxes), config.duplicateCenterDistancePx);
+}
+
+function isLikelyUiRegion(centerX: number, centerY: number, bitmap: RobotBitmap): boolean {
+  const rightPanelX = bitmap.width * 0.72;
+  const lowerPanelY = bitmap.height * 0.7;
+  const chatPanelY = bitmap.height * 0.86;
+  return (centerX >= rightPanelX && centerY >= lowerPanelY) || centerY >= chatPanelY;
+}
+
+export function detectMithrilOreBoxesInScreenshot(
+  bitmap: RobotBitmap,
+  options: DetectMithrilOreOptions = {},
+): MithrilOreBox[] {
+  return detectOreBoxesInScreenshot(bitmap, options, MITHRIL_ORE_DETECTOR_CONFIG);
+}
+
+export function detectCoalOreBoxesInScreenshot(
+  bitmap: RobotBitmap,
+  options: DetectCoalOreOptions = {},
+): MithrilOreBox[] {
+  return detectOreBoxesInScreenshot(bitmap, options, COAL_ORE_DETECTOR_CONFIG);
 }
 
 export function saveBitmapWithMithrilOreBoxes(

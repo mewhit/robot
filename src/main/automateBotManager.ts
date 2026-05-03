@@ -2,19 +2,25 @@ import { AppState } from "./global-state";
 import { onAgilityBotStart } from "./automate-bots/agility-bot";
 import { onAttackZamorakWarriorSafeSpotBotStart } from "./automate-bots/attack-zamorak-warrior-safe-spot-bot";
 import { onCombatAutoBotStart } from "./automate-bots/combat/auto-bot";
-import { onMiningGuildMithrilOreBotStart } from "./automate-bots/mining-guild-mithril-ore-bot";
+import {
+  onMiningGuildCoalOreBotStart,
+  onMiningGuildMithrilOreBotStart,
+} from "./automate-bots/mining-guild-mithril-ore-bot";
 import { onMotherlodeMineBotStart } from "./automate-bots/motherlode-mine-bot";
 import { onMotherlodeMineBotV2Start } from "./automate-bots/motherlode-mine-bot-v2";
 import { onMotherlodeMineBotV3Start } from "./automate-bots/motherlode-mine-bot-v3";
+import { onRunecraftingGuardianOfTheRiftBotStart } from "./automate-bots/runecrafting-guardian-of-the-rift-bot";
 import {
   AGILITY_BOT_ID,
   ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID,
   COMBAT_AUTO_BOT_ID,
   DEFAULT_AUTOMATE_BOT_ID,
+  MINING_GUILD_COAL_ORE_BOT_ID,
   MINING_GUILD_MITHRIL_ORE_BOT_ID,
   MINING_MOTHERLODE_MINE_BOT_ID,
   MINING_MOTHERLODE_MINE_V2_BOT_ID,
   MINING_MOTHERLODE_MINE_V3_BOT_ID,
+  RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID,
   isAutomateBotId,
 } from "./automate-bots/definitions";
 import { flushOcrDebugDirectory } from "./automate-bots/shared/ocr-engine";
@@ -26,10 +32,12 @@ const botStartHandlers = new Map<string, () => void>([
   [AGILITY_BOT_ID, onAgilityBotStart],
   [ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID, onAttackZamorakWarriorSafeSpotBotStart],
   [COMBAT_AUTO_BOT_ID, onCombatAutoBotStart],
+  [MINING_GUILD_COAL_ORE_BOT_ID, onMiningGuildCoalOreBotStart],
   [MINING_GUILD_MITHRIL_ORE_BOT_ID, onMiningGuildMithrilOreBotStart],
   [MINING_MOTHERLODE_MINE_BOT_ID, onMotherlodeMineBotStart],
   [MINING_MOTHERLODE_MINE_V2_BOT_ID, onMotherlodeMineBotV2Start],
   [MINING_MOTHERLODE_MINE_V3_BOT_ID, onMotherlodeMineBotV3Start],
+  [RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID, onRunecraftingGuardianOfTheRiftBotStart],
 ]);
 
 const botStartFromStepHandlers = new Map<string, (stepId: string) => void>();

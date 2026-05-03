@@ -27,6 +27,9 @@ const MIN_PIXEL_COUNT = 15;
 const MIN_BOX_SIZE_PX = 1;
 const MIN_FILL_RATIO = 0.06;
 const MAX_FILL_RATIO = 0.95;
+const MAX_PLAYER_BOX_WIDTH_PX = 70;
+const MAX_PLAYER_BOX_HEIGHT_PX = 70;
+const MAX_PLAYER_BOX_FILL_RATIO = 0.45;
 const MERGE_GAP_PX = 1;
 
 // Player highlight color is magenta RGB (255, 0, 255) and variations
@@ -226,10 +229,12 @@ function toPlayerBox(candidate: BoxCandidate): PlayerBox | null {
   const height = candidate.maxY - candidate.minY + 1;
   const fillRatio = candidate.pixelCount / (width * height);
 
-  // Player tile on minimap should be quite small and narrow (2x23 pixels)
-  // Don't accept large flat regions that are likely UI elements
-  if (width > 50 && height < 30) {
-    return null; // Reject large wide but short regions
+  if (width > MAX_PLAYER_BOX_WIDTH_PX || height > MAX_PLAYER_BOX_HEIGHT_PX) {
+    return null;
+  }
+
+  if (fillRatio > MAX_PLAYER_BOX_FILL_RATIO) {
+    return null;
   }
 
   if (candidate.pixelCount < MIN_PIXEL_COUNT) {
@@ -246,8 +251,8 @@ function toPlayerBox(candidate: BoxCandidate): PlayerBox | null {
 
   const centerX = Math.round(candidate.minX + width / 2);
   const centerY = Math.round(candidate.minY + height / 2);
-  // Prefer smaller, denser components (more likely to be actual player tile)
-  const score = candidate.pixelCount + fillRatio * 200 - width * 3 - height * 1;
+  const sizePenalty = Math.abs(width - height) * 2 + Math.max(width, height) * 0.5;
+  const score = candidate.pixelCount + fillRatio * 260 - sizePenalty;
 
   return {
     x: candidate.minX,

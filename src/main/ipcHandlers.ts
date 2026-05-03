@@ -200,6 +200,26 @@ export function setupIpcHandlers() {
     }
   });
 
+  ipcMain.handle(CHANNELS.GET_DEBUG_FOLDER_FILES, (_event, folderPath: string) => {
+    try {
+      if (!folderPath) {
+        return { ok: true, files: [] };
+      }
+
+      const files = fs.readdirSync(folderPath, { withFileTypes: true });
+      const fileNames = files
+        .filter((file) => file.isFile())
+        .map((file) => file.name)
+        .sort();
+
+      return { ok: true, files: fileNames };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Could not read debug folder: ${message}`);
+      return { ok: true, files: [] };
+    }
+  });
+
   ipcMain.on(CHANNELS.SET_REPLAY_REPEAT, (_event, enabled: boolean) => {
     AppState.replayRepeatEnabled = Boolean(enabled);
     sendReplayRepeatState();

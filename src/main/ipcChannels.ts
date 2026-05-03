@@ -11,6 +11,7 @@ export const CHANNELS = {
   GET_SCREENSHOT_SAVE_PATH: "get-screenshot-save-path",
   SET_SCREENSHOT_SAVE_PATH: "set-screenshot-save-path",
   SET_SCREENSHOT_NAME_SUFFIX: "set-screenshot-name-suffix",
+  GET_DEBUG_FOLDER_FILES: "get-debug-folder-files",
   SET_REPLAY_REPEAT: "set-replay-repeat",
   SET_REPLAY_CLICK_DELAY_MS: "set-replay-click-delay-ms",
   STOP_REPLAY: "stop-replay",

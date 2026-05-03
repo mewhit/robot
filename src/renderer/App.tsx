@@ -193,6 +193,7 @@ export default function App() {
   const [debugNotice, setDebugNotice] = useState<{ text: string; tone: "success" | "error" } | null>(null);
   const [screenshotSavePath, setScreenshotSavePath] = useState("");
   const [screenshotNameSuffix, setScreenshotNameSuffix] = useState("");
+  const [debugFolderFiles, setDebugFolderFiles] = useState<string[]>([]);
   const taskTree = useMemo<TaskNode[]>(() => {
     const groups = new Map<string, TaskNode>();
     const result: TaskNode[] = [];
@@ -463,6 +464,25 @@ export default function App() {
     [selectedTaskNodeId],
   );
 
+  const refreshDebugFolderFiles = useCallback(async () => {
+    if (!screenshotSavePath) {
+      setDebugFolderFiles([]);
+      return;
+    }
+
+    try {
+      const result = await ipcRenderer.invoke(CHANNELS.GET_DEBUG_FOLDER_FILES, screenshotSavePath);
+      if (result?.ok) {
+        setDebugFolderFiles(result.files || []);
+      } else {
+        setDebugFolderFiles([]);
+      }
+    } catch (error) {
+      console.error("Failed to fetch debug folder files:", error);
+      setDebugFolderFiles([]);
+    }
+  }, [screenshotSavePath]);
+
   const handleRunScreenshotCapture = useCallback(async () => {
     try {
       const result = await ipcRenderer.invoke(CHANNELS.RUN_SCREENSHOT_CAPTURE, {
@@ -476,6 +496,8 @@ export default function App() {
         });
         return;
       }
+
+      await refreshDebugFolderFiles();
 
       if (result.filePath) {
         const normalizedPath = String(result.filePath).replace(/\\/g, "/");
@@ -497,7 +519,7 @@ export default function App() {
         tone: "error",
       });
     }
-  }, [screenshotNameSuffix, screenshotSavePath]);
+  }, [refreshDebugFolderFiles, screenshotNameSuffix, screenshotSavePath]);
 
   const handleChooseScreenshotSavePath = useCallback(async () => {
     try {
@@ -550,6 +572,10 @@ export default function App() {
       window.clearTimeout(timer);
     };
   }, [debugNotice]);
+
+  useEffect(() => {
+    void refreshDebugFolderFiles();
+  }, [refreshDebugFolderFiles]);
 
   const handleStepContextMenu = useCallback((e: React.MouseEvent, stepId: string, stepName: string) => {
     e.preventDefault();
@@ -1037,6 +1063,22 @@ export default function App() {
             {debugNotice && (
               <p className={`debug-notice${debugNotice.tone === "error" ? " debug-notice-error" : ""}`}>{debugNotice.text}</p>
             )}
+            <div className="debug-files-container">
+              <h3 className="debug-files-title">Debug Folder Files</h3>
+              {debugFolderFiles.length > 0 ? (
+                <ul className="debug-files-list">
+                  {debugFolderFiles.map((file) => (
+                    <li key={file} className="debug-file-item">
+                      {file}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="debug-files-empty">
+                  {screenshotSavePath ? "No files in folder" : "Select a folder to view files"}
+                </p>
+              )}
+            </div>
           </div>
         )}
       </div>
