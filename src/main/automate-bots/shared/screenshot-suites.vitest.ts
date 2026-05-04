@@ -99,6 +99,13 @@ const SCREENSHOT_SUITES: Record<string, ScreenshotSuite> = {
     script: "src/main/automate-bots/shared/guardian-of-the-rift-active-rune-detector.spec.ts",
     args: ["test-images/runescrafting/guardian-of-the-rift/active-guardian/*.png"],
   },
+  "test:screenshot:guardian-of-the-rift-mind-rune": {
+    script: "src/main/automate-bots/shared/guardian-of-the-rift-mind-rune-icon-detector.spec.ts",
+    args: [
+      "test-images/icon/guardin-of-the-rift/mind-rune-indicator.png",
+      "test-images/runescrafting/guardian-of-the-rift/active-guardian/*.png",
+    ],
+  },
   "test:screenshot:guardian-of-the-rift-timer": {
     script: "src/main/automate-bots/shared/guardian-of-the-rift-timer-detector.spec.ts",
     args: [

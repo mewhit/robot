@@ -22,8 +22,12 @@ type SearchBounds = {
   maxY: number;
 };
 
-const ALTAR_YELLOW_MIN_PIXELS = 80;
+const ALTAR_YELLOW_MIN_PIXELS = 5_000;
 const ALTAR_SEARCH_BOUNDS = { minXRatio: 0.04, minYRatio: 0.12, maxXRatio: 0.74, maxYRatio: 0.86 };
+const ALTAR_MIN_SIZE_TO_SCREEN_HEIGHT_RATIO = 0.065;
+const ALTAR_MAX_SIZE_TO_SCREEN_HEIGHT_RATIO = 0.11;
+const ALTAR_MAX_ASPECT_RATIO = 1.35;
+const ALTAR_MIN_FILL_RATIO = 0.65;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -41,6 +45,21 @@ function resolveAltarSearchBounds(bitmap: RobotBitmap): SearchBounds {
     maxX: clamp(Math.round(bitmap.width * ALTAR_SEARCH_BOUNDS.maxXRatio), 0, bitmap.width - 1),
     maxY: clamp(Math.round(bitmap.height * ALTAR_SEARCH_BOUNDS.maxYRatio), 0, bitmap.height - 1),
   };
+}
+
+function isAltarSizedComponent(bitmap: RobotBitmap, width: number, height: number, fillRatio: number): boolean {
+  const minSize = bitmap.height * ALTAR_MIN_SIZE_TO_SCREEN_HEIGHT_RATIO;
+  const maxSize = bitmap.height * ALTAR_MAX_SIZE_TO_SCREEN_HEIGHT_RATIO;
+  const aspectRatio = Math.max(width / height, height / width);
+
+  return (
+    width >= minSize &&
+    height >= minSize &&
+    width <= maxSize &&
+    height <= maxSize &&
+    fillRatio >= ALTAR_MIN_FILL_RATIO &&
+    aspectRatio <= ALTAR_MAX_ASPECT_RATIO
+  );
 }
 
 export function detectGuardianOfTheRiftAltarMarkersInScreenshot(
@@ -128,14 +147,10 @@ export function detectGuardianOfTheRiftAltarMarkersInScreenshot(
       const componentWidth = maxX - minX + 1;
       const componentHeight = maxY - minY + 1;
       const fillRatio = pixelCount / (componentWidth * componentHeight);
-      const aspectRatio = Math.max(componentWidth / componentHeight, componentHeight / componentWidth);
       if (
         componentWidth < 4 ||
         componentHeight < 4 ||
-        componentWidth > Math.round(bitmap.width * 0.16) ||
-        componentHeight > Math.round(bitmap.height * 0.16) ||
-        fillRatio < 0.06 ||
-        aspectRatio > 4.5
+        !isAltarSizedComponent(bitmap, componentWidth, componentHeight, fillRatio)
       ) {
         continue;
       }

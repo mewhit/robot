@@ -41,6 +41,7 @@ import { isPlayerCollidingWithObstacle as isPlayerCollidingWithObstacleBox } fro
 import { createMineFunction, runBotEngine, sleepWithAbort } from "./engine/bot-engine";
 import { createAsyncWorldMapper } from "./mapping/async-world-mapper";
 import { readWorldMapObservationFromBitmap } from "./mapping/world-map-observation-reader";
+import { estimateTilePxFromPlayerBox } from "./shared/osrs-helper";
 import { RobotBitmap } from "./shared/ocr-engine";
 
 const BOT_NAME = "Motherlode Mine V3";
@@ -1563,12 +1564,11 @@ function selectNearestMineNodeByAnchor(
 }
 
 function estimateMoveTilePxFromPlayerBox(playerBoxInCapture: PlayerBox | null): number {
-  if (!playerBoxInCapture) {
-    return MOVE_TILE_PX_FALLBACK;
-  }
-
-  const estimatedTilePx = Math.round((playerBoxInCapture.width + playerBoxInCapture.height) / 2);
-  return clamp(estimatedTilePx, MOVE_TILE_PX_MIN, MOVE_TILE_PX_MAX);
+  return estimateTilePxFromPlayerBox(playerBoxInCapture, {
+    fallbackTilePx: MOVE_TILE_PX_FALLBACK,
+    minTilePx: MOVE_TILE_PX_MIN,
+    maxTilePx: MOVE_TILE_PX_MAX,
+  });
 }
 
 function estimateMoveTravelTicks(

@@ -17,6 +17,13 @@ type AltarExpectation = {
   shouldDetect: boolean;
 };
 
+type SyntheticAltarComponent = {
+  name: string;
+  width: number;
+  height: number;
+  shouldDetect: boolean;
+};
+
 function patternToRegex(pattern: string): RegExp {
   const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
   return new RegExp(`^${escaped}$`, "i");
@@ -109,6 +116,28 @@ async function loadScreenshot(filePath: string): Promise<RobotBitmap | null> {
   });
 }
 
+function createSyntheticBitmap(width: number, height: number): RobotBitmap {
+  return {
+    width,
+    height,
+    byteWidth: width * 4,
+    bytesPerPixel: 4,
+    image: Buffer.alloc(width * height * 4),
+  };
+}
+
+function paintYellowRectangle(bitmap: RobotBitmap, x: number, y: number, width: number, height: number): void {
+  for (let py = y; py < y + height; py += 1) {
+    for (let px = x; px < x + width; px += 1) {
+      const offset = py * bitmap.byteWidth + px * bitmap.bytesPerPixel;
+      bitmap.image[offset] = 0;
+      bitmap.image[offset + 1] = 220;
+      bitmap.image[offset + 2] = 255;
+      bitmap.image[offset + 3] = 255;
+    }
+  }
+}
+
 function getDebugPath(screenshotPath: string, failed: boolean): string {
   const basename = path.basename(screenshotPath, path.extname(screenshotPath));
   const suffix = failed ? "-guardian-altar-failed.png" : "-guardian-altar.png";
@@ -141,6 +170,41 @@ async function testDetection(screenshotPath: string): Promise<boolean> {
   return false;
 }
 
+function testSyntheticShapeFilters(): { passed: number; failed: number } {
+  const cases: SyntheticAltarComponent[] = [
+    { name: "valid altar-sized square", width: 135, height: 132, shouldDetect: true },
+    { name: "earth altar angled marker", width: 126, height: 102, shouldDetect: true },
+    { name: "thin edge sliver", width: 14, height: 54, shouldDetect: false },
+    { name: "tall yellow strip", width: 44, height: 134, shouldDetect: false },
+    { name: "oversized yellow blob", width: 199, height: 197, shouldDetect: false },
+  ];
+
+  let passed = 0;
+  let failed = 0;
+
+  for (const testCase of cases) {
+    const bitmap = createSyntheticBitmap(1298, 1549);
+    paintYellowRectangle(bitmap, 420, 520, testCase.width, testCase.height);
+    const detections = detectGuardianOfTheRiftAltarMarkersInScreenshot(bitmap);
+    const success = testCase.shouldDetect ? detections.length === 1 : detections.length === 0;
+    if (success) {
+      console.log(
+        `PASS  synthetic ${testCase.name}  expected=${testCase.shouldDetect ? "altar" : "no-altar"}  candidates=${formatGuardianOfTheRiftAltarCandidates(detections)}`,
+      );
+      passed += 1;
+      continue;
+    }
+
+    console.error(
+      `FAIL  synthetic ${testCase.name}  expected=${testCase.shouldDetect ? "altar" : "no-altar"}  candidates=${formatGuardianOfTheRiftAltarCandidates(detections)}`,
+    );
+    failed += 1;
+  }
+
+  console.log(`Synthetic shape filters: ${passed} passed, ${failed} failed`);
+  return { passed, failed };
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const screenshotPaths = expandScreenshotArgs(args.length > 0 ? args : [DEFAULT_SCREENSHOT_GLOB]);
@@ -148,8 +212,9 @@ async function main(): Promise<void> {
   console.log("\nGuardian of the Rift Altar Detector Test Suite");
   console.log(`Testing ${screenshotPaths.length} screenshot(s)...`);
 
-  let passed = 0;
-  let failed = 0;
+  const syntheticResults = testSyntheticShapeFilters();
+  let passed = syntheticResults.passed;
+  let failed = syntheticResults.failed;
 
   for (const screenshotPath of screenshotPaths) {
     const success = await testDetection(screenshotPath);

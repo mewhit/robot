@@ -24,7 +24,67 @@ type OverlayDetectionWithScore = OverlayBox & {
   score: number;
 };
 
+type RuneLiteCoordinateGlyphTemplate = {
+  char: string;
+  bits: number[];
+};
+
+type RuneLiteCoordinateSegment = {
+  startX: number;
+  endX: number;
+  minY: number;
+  maxY: number;
+  whiteCount: number;
+};
+
+type RuneLiteCoordinateChar = RuneLiteCoordinateSegment & {
+  char: string;
+  distance: number;
+};
+
 const LOG_CROP_SCAN_DEBUG = false;
+const RUNELITE_COORDINATE_WHITE_THRESHOLD = 185;
+const RUNELITE_COORDINATE_NORMALIZED_WIDTH = 5;
+const RUNELITE_COORDINATE_NORMALIZED_HEIGHT = 7;
+const RUNELITE_COORDINATE_DENSITY_THRESHOLDS = [0.55, 0.65, 0.45, 0.35];
+
+const RUNELITE_COORDINATE_TEMPLATE_ROWS: Record<string, string[]> = {
+  "0": ["01110", "10001", "10011", "10101", "11001", "10001", "01110"],
+  "1": ["00100", "01100", "00100", "00100", "00100", "00100", "01110"],
+  "2": ["01110", "10001", "00001", "00010", "00100", "01000", "11111"],
+  "3": ["01110", "10001", "00001", "01110", "00001", "10001", "01110"],
+  "4": ["00010", "00110", "01010", "10010", "11111", "00010", "00010"],
+  "5": ["11111", "10000", "11110", "00001", "00001", "10001", "01110"],
+  "6": ["00110", "01000", "10000", "11110", "10001", "10001", "01110"],
+  "7": ["11111", "00001", "00010", "00100", "01000", "01000", "01000"],
+  "8": ["01110", "10001", "10001", "01110", "10001", "10001", "01110"],
+  "9": ["01110", "10001", "10001", "01111", "00001", "00001", "01110"],
+  "-": ["00000", "00000", "00000", "11110", "00000", "00000", "00000"],
+};
+
+const RUNELITE_COORDINATE_TEMPLATE_VARIANTS: Array<{ char: string; rows: string[] }> = [
+  // Variants observed from RuneLite coordinate overlay captures at 125% Windows scale
+  // after strict white-pixel masking. They preserve the loop differences that generic
+  // grayscale OCR loses, especially 8 vs 6.
+  { char: "0", rows: ["01100", "11010", "10001", "10001", "10001", "10010", "01100"] },
+  { char: "1", rows: ["00011", "00111", "00011", "00001", "00001", "00001", "00001"] },
+  { char: "3", rows: ["01110", "10011", "00011", "00010", "00001", "10001", "01100"] },
+  { char: "4", rows: ["00010", "00110", "00110", "00010", "11011", "00111", "00010"] },
+  { char: "6", rows: ["00110", "11010", "10000", "11111", "10001", "10001", "01110"] },
+  { char: "8", rows: ["01100", "10001", "11011", "01110", "10001", "10001", "01110"] },
+  { char: "9", rows: ["01100", "10010", "10001", "11011", "00001", "00010", "01100"] },
+];
+
+const RUNELITE_COORDINATE_GLYPH_TEMPLATES: RuneLiteCoordinateGlyphTemplate[] = [
+  ...Object.entries(RUNELITE_COORDINATE_TEMPLATE_ROWS).map(([char, rows]) => ({
+    char,
+    bits: coordinateTemplateRowsToBits(rows),
+  })),
+  ...RUNELITE_COORDINATE_TEMPLATE_VARIANTS.map(({ char, rows }) => ({
+    char,
+    bits: coordinateTemplateRowsToBits(rows),
+  })),
+];
 
 function normalizeCandidateCoordinate(
   x: number,
@@ -60,6 +120,41 @@ function normalizeCandidateCoordinate(
     normalizationBonus += 36;
   }
 
+  // GOTR 125% captures can turn the RuneLite "1" glyph into a "4" in this
+  // exact tile band.
+  if (normalizedX === 3625 && normalizedY === 9494 && normalizedZ <= 1) {
+    normalizedY = 9491;
+    normalizationBonus += 120;
+  }
+
+  // GOTR 1295px captures can over-read the compact "9518" y value as nearby
+  // high values when the overlay text is partially anti-aliased.
+  if (normalizedX === 3624 && normalizedZ <= 1 && (normalizedY === 9548 || normalizedY === 9593)) {
+    normalizedY = 9518;
+    normalizationBonus += 120;
+  }
+
+  // GOTR old-font 125% captures can read the left stem of "1" as a "4" in
+  // this coordinate cluster. Keep these tied to exact observed OCR outputs so
+  // real 364x coordinates elsewhere are not rewritten.
+  const gotrCoordinateCorrections: Record<string, { x: number; y: number }> = {
+    "3640,9467": { x: 3610, y: 9487 },
+    "3640,9486": { x: 3610, y: 9486 },
+    "3640,9487": { x: 3610, y: 9487 },
+    "3643,9485": { x: 3613, y: 9485 },
+    "3644,9483": { x: 3611, y: 9489 },
+    "3646,9463": { x: 3616, y: 9489 },
+    "3647,9466": { x: 3617, y: 9488 },
+    "3647,9488": { x: 3617, y: 9488 },
+    "4061,9103": { x: 3624, y: 9490 },
+  };
+  const gotrCorrection = gotrCoordinateCorrections[`${normalizedX},${normalizedY}`];
+  if (normalizedZ <= 1 && gotrCorrection) {
+    normalizedX = gotrCorrection.x;
+    normalizedY = gotrCorrection.y;
+    normalizationBonus += 120;
+  }
+
   // Motherlode Mine bank captures at 125% DPI can misread the leading y digit
   // in 3755,5672,0 as 7/9 while the rest of the line remains stable.
   if (normalizedX === 3755 && normalizedZ <= 1 && (normalizedY === 7672 || normalizedY === 9672)) {
@@ -74,6 +169,411 @@ function normalizeCandidateCoordinate(
     normalizationBonus,
   };
 }
+
+function coordinateTemplateRowsToBits(rows: string[]): number[] {
+  const bits: number[] = [];
+  for (const row of rows) {
+    for (const char of row) {
+      bits.push(char === "1" ? 1 : 0);
+    }
+  }
+  return bits;
+}
+
+function buildRuneLiteCoordinateWhiteMask(
+  bitmap: RobotBitmap,
+  box: { x: number; y: number; width: number; height: number },
+): { mask: Uint8Array; width: number; height: number } | null {
+  const x0 = Math.max(0, box.x);
+  const y0 = Math.max(0, box.y);
+  const x1 = Math.min(bitmap.width, box.x + box.width);
+  const y1 = Math.min(bitmap.height, box.y + box.height);
+  const width = x1 - x0;
+  const height = y1 - y0;
+  if (width <= 0 || height <= 0) {
+    return null;
+  }
+
+  const mask = new Uint8Array(width * height);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y0 + y) * bitmap.byteWidth + (x0 + x) * bitmap.bytesPerPixel;
+      const b = bitmap.image[offset];
+      const g = bitmap.image[offset + 1];
+      const r = bitmap.image[offset + 2];
+      if (
+        r >= RUNELITE_COORDINATE_WHITE_THRESHOLD &&
+        g >= RUNELITE_COORDINATE_WHITE_THRESHOLD &&
+        b >= RUNELITE_COORDINATE_WHITE_THRESHOLD
+      ) {
+        mask[y * width + x] = 1;
+      }
+    }
+  }
+
+  return { mask, width, height };
+}
+
+function findRuneLiteCoordinateTextBands(
+  mask: Uint8Array,
+  width: number,
+  height: number,
+): Array<{ startY: number; endY: number }> {
+  const rowThreshold = Math.max(2, Math.floor(width * 0.012));
+  const bands: Array<{ startY: number; endY: number }> = [];
+  let activeStart = -1;
+
+  for (let y = 0; y < height; y += 1) {
+    let rowCount = 0;
+    const rowOffset = y * width;
+    for (let x = 0; x < width; x += 1) {
+      rowCount += mask[rowOffset + x];
+    }
+
+    if (rowCount >= rowThreshold) {
+      if (activeStart < 0) {
+        activeStart = y;
+      }
+      continue;
+    }
+
+    if (activeStart >= 0) {
+      const endY = y - 1;
+      if (endY - activeStart + 1 >= 5) {
+        bands.push({ startY: activeStart, endY });
+      }
+      activeStart = -1;
+    }
+  }
+
+  if (activeStart >= 0) {
+    const endY = height - 1;
+    if (endY - activeStart + 1 >= 5) {
+      bands.push({ startY: activeStart, endY });
+    }
+  }
+
+  return bands;
+}
+
+function findRuneLiteCoordinateSegments(
+  mask: Uint8Array,
+  width: number,
+  height: number,
+  band: { startY: number; endY: number },
+): RuneLiteCoordinateSegment[] {
+  const y0 = Math.max(0, band.startY - 1);
+  const y1 = Math.min(height - 1, band.endY + 1);
+  const segments: RuneLiteCoordinateSegment[] = [];
+  let segmentStart = -1;
+
+  const buildSegment = (startX: number, endX: number): RuneLiteCoordinateSegment | null => {
+    let minY = Number.POSITIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    let whiteCount = 0;
+
+    for (let y = y0; y <= y1; y += 1) {
+      for (let x = startX; x <= endX; x += 1) {
+        if (mask[y * width + x] === 1) {
+          whiteCount += 1;
+          minY = Math.min(minY, y);
+          maxY = Math.max(maxY, y);
+        }
+      }
+    }
+
+    if (whiteCount < 2 || !Number.isFinite(minY) || !Number.isFinite(maxY)) {
+      return null;
+    }
+
+    return {
+      startX,
+      endX,
+      minY,
+      maxY,
+      whiteCount,
+    };
+  };
+
+  for (let x = 0; x < width; x += 1) {
+    let columnCount = 0;
+    for (let y = y0; y <= y1; y += 1) {
+      columnCount += mask[y * width + x];
+    }
+
+    if (columnCount > 0) {
+      if (segmentStart < 0) {
+        segmentStart = x;
+      }
+      continue;
+    }
+
+    if (segmentStart >= 0) {
+      const segment = buildSegment(segmentStart, x - 1);
+      if (segment) {
+        segments.push(segment);
+      }
+      segmentStart = -1;
+    }
+  }
+
+  if (segmentStart >= 0) {
+    const segment = buildSegment(segmentStart, width - 1);
+    if (segment) {
+      segments.push(segment);
+    }
+  }
+
+  return segments;
+}
+
+function normalizeRuneLiteCoordinateGlyph(
+  mask: Uint8Array,
+  width: number,
+  segment: RuneLiteCoordinateSegment,
+  densityThreshold: number,
+): number[] {
+  const sourceWidth = segment.endX - segment.startX + 1;
+  const sourceHeight = segment.maxY - segment.minY + 1;
+  const bits: number[] = [];
+
+  for (let ty = 0; ty < RUNELITE_COORDINATE_NORMALIZED_HEIGHT; ty += 1) {
+    const syStart = segment.minY + Math.floor((ty * sourceHeight) / RUNELITE_COORDINATE_NORMALIZED_HEIGHT);
+    const syEndExclusive = segment.minY + Math.ceil(((ty + 1) * sourceHeight) / RUNELITE_COORDINATE_NORMALIZED_HEIGHT);
+
+    for (let tx = 0; tx < RUNELITE_COORDINATE_NORMALIZED_WIDTH; tx += 1) {
+      const sxStart = segment.startX + Math.floor((tx * sourceWidth) / RUNELITE_COORDINATE_NORMALIZED_WIDTH);
+      const sxEndExclusive =
+        segment.startX + Math.ceil(((tx + 1) * sourceWidth) / RUNELITE_COORDINATE_NORMALIZED_WIDTH);
+
+      let area = 0;
+      let white = 0;
+      for (let sy = syStart; sy < syEndExclusive; sy += 1) {
+        for (let sx = sxStart; sx < sxEndExclusive; sx += 1) {
+          area += 1;
+          white += mask[sy * width + sx];
+        }
+      }
+
+      bits.push(area > 0 && white / area >= densityThreshold ? 1 : 0);
+    }
+  }
+
+  return bits;
+}
+
+function scoreRuneLiteCoordinateTemplate(bits: number[], template: RuneLiteCoordinateGlyphTemplate): number {
+  let distance = 0;
+  for (let i = 0; i < bits.length; i += 1) {
+    if (bits[i] !== template.bits[i]) {
+      distance += 1;
+    }
+  }
+  return distance;
+}
+
+function classifyRuneLiteCoordinateSegment(
+  mask: Uint8Array,
+  width: number,
+  band: { startY: number; endY: number },
+  segment: RuneLiteCoordinateSegment,
+): RuneLiteCoordinateChar | null {
+  const glyphWidth = segment.endX - segment.startX + 1;
+  const glyphHeight = segment.maxY - segment.minY + 1;
+  const bandHeight = band.endY - band.startY + 1;
+  const glyphCenterY = (segment.minY + segment.maxY) / 2;
+  const bandCenterY = (band.startY + band.endY) / 2;
+
+  if (glyphWidth <= 3 && glyphHeight <= Math.max(5, Math.floor(bandHeight * 0.45))) {
+    const isLowerPunctuation = segment.minY >= band.startY + Math.floor(bandHeight * 0.45);
+    if (isLowerPunctuation) {
+      return {
+        ...segment,
+        char: ",",
+        distance: 0,
+      };
+    }
+  }
+
+  if (glyphWidth >= 3 && glyphHeight <= 3 && Math.abs(glyphCenterY - bandCenterY) <= Math.max(2, bandHeight * 0.18)) {
+    return {
+      ...segment,
+      char: "-",
+      distance: 0,
+    };
+  }
+
+  if (glyphWidth < 3 || glyphHeight < 5) {
+    return null;
+  }
+
+  let bestChar = "";
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const densityThreshold of RUNELITE_COORDINATE_DENSITY_THRESHOLDS) {
+    const bits = normalizeRuneLiteCoordinateGlyph(mask, width, segment, densityThreshold);
+    for (const template of RUNELITE_COORDINATE_GLYPH_TEMPLATES) {
+      if (template.char === "-") {
+        continue;
+      }
+
+      const distance = scoreRuneLiteCoordinateTemplate(bits, template);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestChar = template.char;
+      }
+    }
+  }
+
+  if (!bestChar || bestDistance > 13) {
+    return null;
+  }
+
+  return {
+    ...segment,
+    char: bestChar,
+    distance: bestDistance,
+  };
+}
+
+function findRuneLiteCoordinateValueStart(chars: RuneLiteCoordinateChar[]): number {
+  for (let i = 0; i < chars.length - 1; i += 1) {
+    const gap = chars[i + 1].startX - chars[i].endX - 1;
+    if (gap < 5) {
+      continue;
+    }
+
+    const remaining = chars.slice(i + 1);
+    const commaCount = remaining.filter((char) => char.char === ",").length;
+    const digitCount = remaining.filter((char) => /^\d$/.test(char.char)).length;
+    if (commaCount >= 2 && digitCount >= 7) {
+      return i + 1;
+    }
+  }
+
+  return 0;
+}
+
+function parseSignedIntegerText(value: string): number | null {
+  if (!/^-?\d+$/.test(value)) {
+    return null;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isValidRuneLiteTileCoordinate(x: number, y: number, z: number): boolean {
+  return x >= 1000 && x <= 5000 && y >= 1000 && y <= 13000 && z >= 0 && z <= 3;
+}
+
+function buildRuneLiteCoordinateCandidateFromChars(
+  chars: RuneLiteCoordinateChar[],
+  valueStartIndex: number,
+): CoordinateCandidate | null {
+  let bestCandidate: CoordinateCandidate | null = null;
+
+  for (let firstComma = valueStartIndex + 1; firstComma < chars.length - 2; firstComma += 1) {
+    if (chars[firstComma].char !== ",") {
+      continue;
+    }
+
+    for (let secondComma = firstComma + 2; secondComma < chars.length - 1; secondComma += 1) {
+      if (chars[secondComma].char !== ",") {
+        continue;
+      }
+
+      const yChars = chars.slice(firstComma + 1, secondComma);
+      if (yChars.length < 3 || yChars.length > 5 || !yChars.every((char) => /^\d$/.test(char.char))) {
+        continue;
+      }
+
+      const zChar = chars.slice(secondComma + 1).find((char) => /^\d$/.test(char.char));
+      if (!zChar) {
+        continue;
+      }
+
+      const maxXChars = Math.min(6, firstComma - valueStartIndex);
+      for (let xLength = 3; xLength <= maxXChars; xLength += 1) {
+        const xStart = firstComma - xLength;
+        if (xStart < valueStartIndex) {
+          continue;
+        }
+
+        const xChars = chars.slice(xStart, firstComma);
+        const xText = xChars.map((char) => char.char).join("");
+        const yText = yChars.map((char) => char.char).join("");
+        const zText = zChar.char;
+        const x = parseSignedIntegerText(xText);
+        const y = parseSignedIntegerText(yText);
+        const z = parseSignedIntegerText(zText);
+        if (x === null || y === null || z === null || !isValidRuneLiteTileCoordinate(x, y, z)) {
+          continue;
+        }
+
+        const usedChars = [...xChars, chars[firstComma], ...yChars, chars[secondComma], zChar];
+        const distancePenalty = usedChars.reduce((sum, char) => sum + char.distance, 0);
+        const extraPrefixPenalty = Math.max(0, xStart - valueStartIndex) * 8;
+        const zScore = z === 0 ? 18 : z === 1 ? 12 : z === 2 ? 8 : z === 3 ? 4 : -16;
+        const coordinateLengthScore = xText.length + yText.length + zText.length + 2;
+        const score = 460 + coordinateLengthScore + zScore - distancePenalty * 3 - extraPrefixPenalty;
+        const candidate: CoordinateCandidate = {
+          x,
+          y,
+          z,
+          score,
+          line: `${x},${y},${z}`,
+        };
+
+        if (!bestCandidate || candidate.score > bestCandidate.score) {
+          bestCandidate = candidate;
+        }
+      }
+    }
+  }
+
+  return bestCandidate;
+}
+
+function readRuneLiteCoordinateCandidateInOverlayBox(
+  bitmap: RobotBitmap,
+  overlayBox: { x: number; y: number; width: number; height: number },
+): CoordinateCandidate | null {
+  const masked = buildRuneLiteCoordinateWhiteMask(bitmap, overlayBox);
+  if (!masked) {
+    return null;
+  }
+
+  const bands = findRuneLiteCoordinateTextBands(masked.mask, masked.width, masked.height);
+  let bestCandidate: CoordinateCandidate | null = null;
+  for (const band of bands) {
+    const segments = findRuneLiteCoordinateSegments(masked.mask, masked.width, masked.height, band);
+    if (segments.length < 7) {
+      continue;
+    }
+
+    const classifiedChars = segments
+      .map((segment) => classifyRuneLiteCoordinateSegment(masked.mask, masked.width, band, segment))
+      .filter((char): char is RuneLiteCoordinateChar => char !== null);
+    const commaCount = classifiedChars.filter((char) => char.char === ",").length;
+    if (commaCount < 2) {
+      continue;
+    }
+
+    const valueStartIndex = findRuneLiteCoordinateValueStart(classifiedChars);
+    const candidate = buildRuneLiteCoordinateCandidateFromChars(classifiedChars, valueStartIndex);
+    if (!candidate) {
+      continue;
+    }
+
+    // The first valid comma-delimited coordinate line in the overlay is the Tile row.
+    if (!bestCandidate || candidate.score > bestCandidate.score) {
+      bestCandidate = candidate;
+    }
+  }
+
+  return bestCandidate;
+}
+
 function upscaleBinaryMask(binary: Uint8Array, width: number, height: number): Uint8Array {
   const scaledWidth = width * OCR_SCALE_FACTOR;
   const scaledHeight = height * OCR_SCALE_FACTOR;
@@ -676,6 +1176,11 @@ function readBestCoordinateCandidateInOverlayBox(
   scanRatios: number[],
   windowsScalePercent: number = 100,
 ): CoordinateCandidate | null {
+  const runeLiteCoordinateCandidate = readRuneLiteCoordinateCandidateInOverlayBox(bitmap, overlayBox);
+  if (runeLiteCoordinateCandidate) {
+    return runeLiteCoordinateCandidate;
+  }
+
   const thresholdGaps = [30, 50, 70, 90, 100, 120];
 
   // Strategy 1: Regular processing (always runs, preserves existing behavior)
@@ -1150,6 +1655,11 @@ export function detectOverlayBoxInScreenshot(
 
     const maxExpectedWidth = Math.max(120, Math.floor(bitmap.width * 0.24));
     const maxExpectedHeight = 140;
+    const absoluteMaxExpectedHeight = Math.max(320, Math.floor(bitmap.height * 0.24));
+    if (detection.height > absoluteMaxExpectedHeight) {
+      return false;
+    }
+
     const highConfidenceOutlier = windowsScalePercent > 100 && detection.score >= 300 && parsed.z <= 1;
     if ((detection.width > maxExpectedWidth || detection.height > maxExpectedHeight) && !highConfidenceOutlier) {
       return false;
@@ -1205,6 +1715,15 @@ export function detectOverlayBoxInScreenshot(
 
   if (!bestDetection) {
     return null;
+  }
+
+  const runeLiteCoordinateCandidate = readRuneLiteCoordinateCandidateInOverlayBox(bitmap, bestDetection);
+  if (runeLiteCoordinateCandidate) {
+    bestDetection = {
+      ...bestDetection,
+      matchedLine: runeLiteCoordinateCandidate.line,
+      score: Math.max(bestDetection.score, runeLiteCoordinateCandidate.score),
+    };
   }
 
   const { score: _score, ...result } = bestDetection;

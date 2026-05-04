@@ -50,6 +50,7 @@ import { selectNearestGreenMotherlodeNode } from "./shared/motherlode-target-sel
 import { screen as electronScreen } from "electron";
 import { detectTileLocationBoxInScreenshot } from "./shared/tile-location-detection";
 import { detectOverlayBoxInScreenshot } from "./shared/coordinate-box-detector";
+import { estimateTilePxFromPlayerBox } from "./shared/osrs-helper";
 import { RobotBitmap } from "./shared/ocr-engine";
 
 const BOT_NAME = "Motherlode Mine V2";
@@ -1276,12 +1277,11 @@ function estimateBankTravelToScreenPoint(
 }
 
 function estimateBankTilePxFromPlayerBox(playerBoxInCapture: PlayerBox | null): number {
-  if (!playerBoxInCapture) {
-    return BANK_TILE_PX_FALLBACK;
-  }
-
-  const estimatedTilePx = Math.round((playerBoxInCapture.width + playerBoxInCapture.height) / 2);
-  return clamp(estimatedTilePx, BANK_TILE_PX_MIN, BANK_TILE_PX_MAX);
+  return estimateTilePxFromPlayerBox(playerBoxInCapture, {
+    fallbackTilePx: BANK_TILE_PX_FALLBACK,
+    minTilePx: BANK_TILE_PX_MIN,
+    maxTilePx: BANK_TILE_PX_MAX,
+  });
 }
 
 function isPlayerNearDepositBox(

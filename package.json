@@ -29,6 +29,7 @@
     "test:screenshot:player": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:player\"",
     "test:screenshot:bank-deposit-orb": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:bank-deposit-orb\"",
     "test:screenshot:guardian-of-the-rift": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:guardian-of-the-rift\"",
+    "test:screenshot:guardian-of-the-rift-mind-rune": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:guardian-of-the-rift-mind-rune\"",
     "test:screenshot:guardian-of-the-rift-timer": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:guardian-of-the-rift-timer\"",
     "test:screenshot:guardian-of-the-rift-uncharged-cell": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:guardian-of-the-rift-uncharged-cell\"",
     "test:screenshot:guardian-of-the-rift-altar": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:guardian-of-the-rift-altar\"",

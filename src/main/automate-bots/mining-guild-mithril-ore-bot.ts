@@ -16,6 +16,7 @@ import { readWorldMapObservationFromBitmap } from "./mapping/world-map-observati
 import { detectOverlayBoxInScreenshot } from "./shared/coordinate-box-detector";
 import { detectInventoryCount } from "./shared/inventory-count-detector";
 import { detectBankDepositIconWithOrb } from "./shared/bank-deposit-orb-detector";
+import { estimateTilePxFromPlayerBox } from "./shared/osrs-helper";
 import {
   isTileWithinBounds,
   planBankApproachLocalPoint,
@@ -532,12 +533,11 @@ function resolveMithrilPlayerAnchor(
 }
 
 function estimateMoveTilePxFromPlayerBox(playerBoxInCapture: PlayerBox | null): number {
-  if (!playerBoxInCapture) {
-    return MOVE_TILE_PX_FALLBACK;
-  }
-
-  const estimatedTilePx = Math.round((playerBoxInCapture.width + playerBoxInCapture.height) / 2);
-  return clamp(estimatedTilePx, MOVE_TILE_PX_MIN, MOVE_TILE_PX_MAX);
+  return estimateTilePxFromPlayerBox(playerBoxInCapture, {
+    fallbackTilePx: MOVE_TILE_PX_FALLBACK,
+    minTilePx: MOVE_TILE_PX_MIN,
+    maxTilePx: MOVE_TILE_PX_MAX,
+  });
 }
 
 function estimateMoveTravelTicks(

@@ -34,12 +34,42 @@ type PixelExtents = {
   count: number;
 };
 
-const STATUS_SEARCH_LEFT_RATIO = 0.009;
-const STATUS_SEARCH_RIGHT_RATIO = 0.05;
-const STATUS_SEARCH_TOP_RATIO = 0.04;
-const STATUS_SEARCH_BOTTOM_RATIO = 0.075;
-const MIN_STATUS_SEARCH_WIDTH = 160;
-const MIN_STATUS_SEARCH_HEIGHT = 110;
+type SearchRoiProfile = {
+  leftRatio: number;
+  rightRatio: number;
+  topRatio: number;
+  bottomRatio: number;
+  minWidth: number;
+  minHeight: number;
+};
+
+type StatusCandidateDetection = {
+  greenPixelCount: number;
+  redPixelCount: number;
+  status: MiningBoxStatus;
+  dominantPixelCount: number;
+  confidence: number;
+  detectionRoi: Roi;
+};
+
+const STATUS_SEARCH_PROFILES: SearchRoiProfile[] = [
+  {
+    leftRatio: 0.009,
+    rightRatio: 0.05,
+    topRatio: 0.04,
+    bottomRatio: 0.075,
+    minWidth: 160,
+    minHeight: 110,
+  },
+  {
+    leftRatio: 0.003,
+    rightRatio: 0.15,
+    topRatio: 0.17,
+    bottomRatio: 0.235,
+    minWidth: 180,
+    minHeight: 110,
+  },
+];
 
 const MIN_STATUS_PIXEL_COUNT = 12;
 const MIN_DOMINANCE_RATIO = 0.62;
@@ -50,16 +80,16 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-function resolveStatusRoi(bitmap: RobotBitmap): Roi {
-  const x0 = Math.round(bitmap.width * STATUS_SEARCH_LEFT_RATIO);
-  const x1 = Math.round(bitmap.width * STATUS_SEARCH_RIGHT_RATIO);
-  const y0 = Math.round(bitmap.height * STATUS_SEARCH_TOP_RATIO);
-  const y1 = Math.round(bitmap.height * STATUS_SEARCH_BOTTOM_RATIO);
+function resolveStatusRoi(bitmap: RobotBitmap, profile: SearchRoiProfile): Roi {
+  const x0 = Math.round(bitmap.width * profile.leftRatio);
+  const x1 = Math.round(bitmap.width * profile.rightRatio);
+  const y0 = Math.round(bitmap.height * profile.topRatio);
+  const y1 = Math.round(bitmap.height * profile.bottomRatio);
 
   const x = clamp(x0, 0, bitmap.width - 1);
   const y = clamp(y0, 0, bitmap.height - 1);
-  const maxX = clamp(Math.max(x0 + MIN_STATUS_SEARCH_WIDTH - 1, x1), 0, bitmap.width - 1);
-  const maxY = clamp(Math.max(y0 + MIN_STATUS_SEARCH_HEIGHT - 1, y1), 0, bitmap.height - 1);
+  const maxX = clamp(Math.max(x0 + profile.minWidth - 1, x1), 0, bitmap.width - 1);
+  const maxY = clamp(Math.max(y0 + profile.minHeight - 1, y1), 0, bitmap.height - 1);
 
   return {
     x,
@@ -203,8 +233,7 @@ function resolveDetectedStatusBox(
   return searchRoi;
 }
 
-export function detectMiningBoxStatusInScreenshot(bitmap: RobotBitmap): MiningBoxStatusDetection {
-  const searchRoi = resolveStatusRoi(bitmap);
+function buildStatusCandidate(bitmap: RobotBitmap, searchRoi: Roi): StatusCandidateDetection {
   const counts = countStatusPixels(bitmap, searchRoi);
   const classification = classifyStatus(counts.greenPixelCount, counts.redPixelCount);
   const detectionRoi = resolveDetectedStatusBox(
@@ -216,17 +245,57 @@ export function detectMiningBoxStatusInScreenshot(bitmap: RobotBitmap): MiningBo
   );
 
   return {
-    status: classification.status,
-    isMining: classification.status === "mining",
-    x: detectionRoi.x,
-    y: detectionRoi.y,
-    width: detectionRoi.width,
-    height: detectionRoi.height,
     greenPixelCount: counts.greenPixelCount,
     redPixelCount: counts.redPixelCount,
-    totalStatusPixelCount: counts.greenPixelCount + counts.redPixelCount,
+    status: classification.status,
     dominantPixelCount: classification.dominantPixelCount,
     confidence: classification.confidence,
+    detectionRoi,
+  };
+}
+
+function scoreStatusCandidate(candidate: StatusCandidateDetection): number {
+  const totalStatusPixelCount = candidate.greenPixelCount + candidate.redPixelCount;
+  if (candidate.status === "unknown") {
+    return totalStatusPixelCount;
+  }
+
+  return 10_000 + candidate.confidence * 1_000 + candidate.dominantPixelCount;
+}
+
+function pickBestStatusCandidate(candidates: StatusCandidateDetection[]): StatusCandidateDetection {
+  let best = candidates[0];
+  let bestScore = scoreStatusCandidate(best);
+
+  for (const candidate of candidates.slice(1)) {
+    const score = scoreStatusCandidate(candidate);
+    if (score > bestScore) {
+      best = candidate;
+      bestScore = score;
+    }
+  }
+
+  return best;
+}
+
+export function detectMiningBoxStatusInScreenshot(bitmap: RobotBitmap): MiningBoxStatusDetection {
+  const candidates = STATUS_SEARCH_PROFILES.map((profile) =>
+    buildStatusCandidate(bitmap, resolveStatusRoi(bitmap, profile)),
+  );
+  const bestCandidate = pickBestStatusCandidate(candidates);
+
+  return {
+    status: bestCandidate.status,
+    isMining: bestCandidate.status === "mining",
+    x: bestCandidate.detectionRoi.x,
+    y: bestCandidate.detectionRoi.y,
+    width: bestCandidate.detectionRoi.width,
+    height: bestCandidate.detectionRoi.height,
+    greenPixelCount: bestCandidate.greenPixelCount,
+    redPixelCount: bestCandidate.redPixelCount,
+    totalStatusPixelCount: bestCandidate.greenPixelCount + bestCandidate.redPixelCount,
+    dominantPixelCount: bestCandidate.dominantPixelCount,
+    confidence: bestCandidate.confidence,
   };
 }
 

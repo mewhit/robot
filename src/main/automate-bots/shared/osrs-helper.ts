@@ -32,6 +32,8 @@ export type CenteredScreenBox = {
   centerY: number;
   width: number;
   height: number;
+  pixelCount?: number;
+  fillRatio?: number;
 };
 
 export type PostClickMouseMoveMode = "off" | "top-left" | "offset";
@@ -79,6 +81,7 @@ const DEFAULT_POINT_PICK_ATTEMPTS = 12;
 const DEFAULT_PREFERRED_Y_BAND_RATIO = 0.45;
 const DEFAULT_POST_CLICK_OFFSET_PX = 200;
 const DEFAULT_POST_CLICK_CORNER_MARGIN_PX = 6;
+const FILLED_PLAYER_TILE_MIN_FILL_RATIO = 0.35;
 
 export function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -231,6 +234,18 @@ export function estimateTilePxFromPlayerBox(
 ): number {
   if (!playerBox) {
     return options.fallbackTilePx;
+  }
+
+  if (
+    typeof playerBox.pixelCount === "number" &&
+    typeof playerBox.fillRatio === "number" &&
+    Number.isFinite(playerBox.pixelCount) &&
+    Number.isFinite(playerBox.fillRatio) &&
+    playerBox.pixelCount > 0 &&
+    playerBox.fillRatio >= FILLED_PLAYER_TILE_MIN_FILL_RATIO
+  ) {
+    const estimatedTilePxFromArea = Math.round(Math.sqrt(playerBox.pixelCount));
+    return clamp(estimatedTilePxFromArea, options.minTilePx, options.maxTilePx);
   }
 
   const estimatedTilePx = Math.round((playerBox.width + playerBox.height) / 2);

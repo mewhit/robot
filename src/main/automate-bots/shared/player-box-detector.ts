@@ -26,17 +26,25 @@ type BoxCandidate = {
 const MIN_PIXEL_COUNT = 15;
 const MIN_BOX_SIZE_PX = 1;
 const MIN_FILL_RATIO = 0.06;
-const MAX_FILL_RATIO = 0.95;
+const MAX_FILL_RATIO = 1;
 const MAX_PLAYER_BOX_WIDTH_PX = 70;
 const MAX_PLAYER_BOX_HEIGHT_PX = 70;
-const MAX_PLAYER_BOX_FILL_RATIO = 0.45;
+const MAX_PLAYER_BOX_FILL_RATIO = 1;
 const MERGE_GAP_PX = 1;
 
-// Player highlight color is magenta RGB (255, 0, 255) and variations
-// This is the tile that shows the player position on the minimap
+// Player highlight color is cyan ARGB FF00FFFF, stored here as RGB (0, 255, 255).
+// This is the tile that shows the player position on the minimap.
 function isPlayerHighlightPixel(r: number, g: number, b: number): boolean {
-  // Magenta: R and B high, G very low
-  // Primary: (255, 0, 255), Variations: (170, 0, 255) and similar
+  if (r === 0 && g === 255 && b === 255) {
+    return true;
+  }
+
+  const cyanPlayerTile = r <= 80 && g >= 180 && b >= 180 && Math.abs(g - b) <= 80;
+  if (cyanPlayerTile) {
+    return true;
+  }
+
+  // Legacy screenshots used a magenta marker; keep them readable while the bot moves to cyan.
   return r >= 150 && g <= 100 && b >= 150 && Math.abs(r - b) <= 100;
 }
 

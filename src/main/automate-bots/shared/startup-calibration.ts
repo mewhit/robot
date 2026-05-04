@@ -17,6 +17,7 @@ export type StartupPlayerTileCalibration = {
   coordinateLine: string | null;
   playerBox: PlayerBox | null;
   playerBoxScreenCenter: { x: number; y: number } | null;
+  rawTilePx: number | null;
   tilePx: number;
   tilePxSource: "player-box" | "fallback";
 };
@@ -78,6 +79,10 @@ function formatPlayerBox(calibration: StartupPlayerTileCalibration): string {
   return `local=(${playerBox.x},${playerBox.y}) size=${playerBox.width}x${playerBox.height} center=(${playerBox.centerX},${playerBox.centerY})${screenCenterText} pixels=${playerBox.pixelCount}`;
 }
 
+function estimateRawTilePx(playerBox: PlayerBox | null): number | null {
+  return playerBox ? Math.round((playerBox.width + playerBox.height) / 2) : null;
+}
+
 export function readStartupPlayerTileCalibration(window: Window): StartupPlayerTileCalibration | null {
   const logicalBounds = getLogicalWindowBounds(window);
   if (!logicalBounds) {
@@ -92,6 +97,7 @@ export function readStartupPlayerTileCalibration(window: Window): StartupPlayerT
   const coordinateLine = coordinateBox?.matchedLine ?? null;
   const playerTile = coordinateLine ? parseWorldTileFromMatchedLine(coordinateLine) : null;
   const playerBox = detectBestPlayerBoxInScreenshot(bitmap);
+  const rawTilePx = estimateRawTilePx(playerBox);
   const tilePx = estimateTilePxFromPlayerBox(playerBox, {
     fallbackTilePx: STARTUP_TILE_PX_FALLBACK,
     minTilePx: STARTUP_TILE_PX_MIN,
@@ -108,8 +114,9 @@ export function readStartupPlayerTileCalibration(window: Window): StartupPlayerT
       ? {
           x: captureBounds.x + playerBox.centerX,
           y: captureBounds.y + playerBox.centerY,
-        }
+      }
       : null,
+    rawTilePx,
     tilePx,
     tilePxSource: playerBox ? "player-box" : "fallback",
   };
@@ -125,8 +132,9 @@ export function formatStartupPlayerTileCalibrationLog(
     `coordinate=${formatCoordinateLine(calibration.coordinateLine)}`,
     `playerBox=${formatPlayerBox(calibration)}`,
     `tilePx=${calibration.tilePx}px`,
+    `rawTilePx=${calibration.rawTilePx ?? "unavailable"}px`,
     `tilePxSource=${calibration.tilePxSource}`,
-    `tilePxClamp=${STARTUP_TILE_PX_MIN}-${STARTUP_TILE_PX_MAX}px`,
+    `tilePxSafetyClamp=${STARTUP_TILE_PX_MIN}-${STARTUP_TILE_PX_MAX}px`,
     `capture=${calibration.captureBounds.width}x${calibration.captureBounds.height}`,
     `scale=${calibration.windowsScalePercent}%.`,
   ].join(" ");
