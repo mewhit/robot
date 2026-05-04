@@ -23,8 +23,11 @@ const SEARCH_BOTTOM_RATIO = 0.9;
 const MIN_BOTTOM_RIGHT_SEARCH_WIDTH = 700;
 const MIN_BOTTOM_RIGHT_SEARCH_HEIGHT = 420;
 
-// Minimum cyan pixels per row to qualify as a text row
+// Minimum cyan pixels per row to qualify as a text row.
+// Keep this low enough for sparse single-digit counts; oversized bands are capped below.
 const TEXT_ROW_THRESHOLD_RATIO = 0.002;
+const MIN_GLYPH_WIDTH_PX = 4;
+const MAX_DIGIT_GAP_PX = 6;
 // Maximum height of a text band (in screen pixels)
 const MAX_BAND_HEIGHT_RATIO = 0.06;
 // Minimum height of a text band (in screen pixels)
@@ -125,6 +128,17 @@ function findTextBands(cropped: RobotBitmap): TextBand[] {
   const bands: TextBand[] = [];
   let activeStart = -1;
 
+  const pushBand = (startY: number, endY: number) => {
+    if (startY < 0 || endY < startY) {
+      return;
+    }
+
+    const bandHeight = endY - startY + 1;
+    if (bandHeight >= MIN_BAND_HEIGHT_PX && bandHeight <= maxBandHeight) {
+      bands.push({ startY, endY });
+    }
+  };
+
   for (let y = 0; y < cropped.height; y += 1) {
     let rowCount = 0;
 
@@ -143,23 +157,22 @@ function findTextBands(cropped: RobotBitmap): TextBand[] {
       if (activeStart < 0) {
         activeStart = y;
       }
+
+      if (y - activeStart + 1 > maxBandHeight) {
+        pushBand(activeStart, activeStart + maxBandHeight - 1);
+        activeStart = -1;
+      }
       continue;
     }
 
     if (activeStart >= 0) {
-      const bandHeight = y - 1 - activeStart + 1;
-      if (bandHeight >= MIN_BAND_HEIGHT_PX && bandHeight <= maxBandHeight) {
-        bands.push({ startY: activeStart, endY: y - 1 });
-      }
+      pushBand(activeStart, y - 1);
       activeStart = -1;
     }
   }
 
   if (activeStart >= 0) {
-    const bandHeight = cropped.height - 1 - activeStart + 1;
-    if (bandHeight >= MIN_BAND_HEIGHT_PX && bandHeight <= maxBandHeight) {
-      bands.push({ startY: activeStart, endY: cropped.height - 1 });
-    }
+    pushBand(activeStart, cropped.height - 1);
   }
 
   return bands;
@@ -170,22 +183,30 @@ function pickBestBand(bands: TextBand[]): TextBand | null {
     return null;
   }
 
-  // Prefer bands with the most total cyan pixels (the count number will dominate)
-  let best = bands[0];
-  let bestPixels = 0;
+  return bands.sort((a, b) => {
+    const startDelta = a.startY - b.startY;
+    if (startDelta !== 0) {
+      return startDelta;
+    }
 
-  for (const band of bands) {
-    const height = band.endY - band.startY + 1;
-    if (height >= MIN_BAND_HEIGHT_PX && height <= 28) {
-      const pixels = height; // proxy: taller bands have more pixels
-      if (pixels > bestPixels) {
-        bestPixels = pixels;
-        best = band;
-      }
+    return b.endY - b.startY - (a.endY - a.startY);
+  })[0];
+}
+
+function parseInventoryCountRawText(rawText: string): number | null {
+  const parsed = Number(rawText);
+  if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 28) {
+    return parsed;
+  }
+
+  if (rawText.length === 2 && rawText[0] === rawText[1]) {
+    const duplicatedDigit = Number(rawText[0]);
+    if (Number.isFinite(duplicatedDigit) && duplicatedDigit >= 0 && duplicatedDigit <= 9) {
+      return duplicatedDigit;
     }
   }
 
-  return best;
+  return null;
 }
 
 // ============================================
@@ -359,8 +380,25 @@ function readInventoryCountLine(mask: Uint8Array, origWidth: number, origHeight:
     merged.push(current);
   }
 
+  const glyphSegments = merged.filter(
+    (seg) => (seg.endX - seg.startX + 1) / OCR_SCALE_FACTOR >= MIN_GLYPH_WIDTH_PX,
+  );
+  const segmentGroups: Array<Array<{ startX: number; endX: number }>> = [];
+  for (const seg of glyphSegments) {
+    const previousGroup = segmentGroups[segmentGroups.length - 1];
+    const previousSegment = previousGroup?.[previousGroup.length - 1];
+    const gapPx = previousSegment ? (seg.startX - previousSegment.endX - 1) / OCR_SCALE_FACTOR : Number.POSITIVE_INFINITY;
+
+    if (previousGroup && gapPx <= MAX_DIGIT_GAP_PX) {
+      previousGroup.push(seg);
+    } else {
+      segmentGroups.push([seg]);
+    }
+  }
+
+  const selectedSegments = segmentGroups.length > 0 ? segmentGroups[segmentGroups.length - 1].slice(-2) : [];
   let output = "";
-  for (const seg of merged) {
+  for (const seg of selectedSegments) {
     const glyph = classifyInventoryCountDigit(mask, scaledWidth, y0, y1, seg.startX, seg.endX);
     output += glyph;
   }
@@ -400,8 +438,7 @@ export function detectInventoryCount(bitmap: RobotBitmap): InventoryCountResult 
     return { count: null, rawText: null, searchRoi };
   }
 
-  const parsed = Number(rawText);
-  const count = Number.isFinite(parsed) && parsed >= 0 && parsed <= 28 ? parsed : null;
+  const count = parseInventoryCountRawText(rawText);
 
   return { count, rawText, searchRoi };
 }

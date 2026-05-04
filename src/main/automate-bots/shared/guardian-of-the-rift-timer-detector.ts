@@ -12,6 +12,15 @@ export type GuardianOfTheRiftTimerDetection = {
   height: number;
 };
 
+export type GuardianOfTheRiftPortalTimeDetection = {
+  secondsElapsed: number | null;
+  rawText: string | null;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
 type Roi = {
   x: number;
   y: number;
@@ -27,20 +36,42 @@ type TextBand = {
 type TimerMaskProfile = {
   minLuminance: number;
   maxChannelSpread: number;
+  minChannel?: number;
+  minMaxChannel?: number;
 };
 
-const TIMER_ROI: Roi = {
+type DigitComponent = {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+  pixelCount: number;
+};
+
+const TIMER_ROIS: Roi[] = [{
   x: 96,
   y: 116,
   width: 46,
   height: 25,
-};
+}, {
+  x: 96,
+  y: 122,
+  width: 46,
+  height: 19,
+}];
 
 const MIN_ROW_PIXELS = 2;
+const PORTAL_TIME_ROI: Roi = {
+  x: 300,
+  y: 38,
+  width: 380,
+  height: 42,
+};
 
 const TIMER_MASK_PROFILES: TimerMaskProfile[] = [
   { minLuminance: 145, maxChannelSpread: 70 },
   { minLuminance: 125, maxChannelSpread: 90 },
+  { minLuminance: 160, maxChannelSpread: 45, minChannel: 130, minMaxChannel: 170 },
 ];
 
 const TIMER_DIGIT_TEMPLATE_ROWS: Record<string, string[][]> = {
@@ -110,6 +141,35 @@ const TIMER_DIGIT_TEMPLATES = Object.entries(TIMER_DIGIT_TEMPLATE_ROWS).flatMap(
   })),
 );
 
+const SMALL_GREEN_DIGIT_TEMPLATE_ROWS: Record<string, string[][]> = {
+  "0": [
+    ["11110", "11011", "10111", "11110", "11111", "11110", "01100"],
+  ],
+  "1": [
+    ["11100", "11100", "01100", "01100", "01100", "01100", "11111"],
+    ["01110", "11110", "00110", "00110", "00110", "00110", "11111"],
+    ["11100", "11100", "01100", "01100", "01100", "11111", "11111"],
+  ],
+  "4": [
+    ["10000", "10000", "10000", "10110", "11111", "11111", "00110"],
+    ["11000", "10000", "10000", "10110", "10110", "11111", "00110"],
+    ["00111", "01100", "11000", "10011", "11111", "11000", "10000"],
+  ],
+  "7": [
+    ["00001", "00011", "00010", "00110", "01100", "11100", "11000"],
+  ],
+  "8": [
+    ["11111", "11011", "11111", "11111", "11011", "10001", "11111"],
+  ],
+};
+
+const SMALL_GREEN_DIGIT_TEMPLATES = Object.entries(SMALL_GREEN_DIGIT_TEMPLATE_ROWS).flatMap(([digit, variants]) =>
+  variants.map((rows) => ({
+    digit,
+    bits: rows.join("").split("").map((value) => (value === "1" ? 1 : 0)),
+  })),
+);
+
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
@@ -152,7 +212,16 @@ function isTimerTextPixel(r: number, g: number, b: number, profile: TimerMaskPro
   const minChannel = Math.min(r, g, b);
   const luminance = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
 
-  return luminance >= profile.minLuminance && maxChannel - minChannel <= profile.maxChannelSpread;
+  return (
+    luminance >= profile.minLuminance &&
+    maxChannel - minChannel <= profile.maxChannelSpread &&
+    minChannel >= (profile.minChannel ?? 0) &&
+    maxChannel >= (profile.minMaxChannel ?? 0)
+  );
+}
+
+function isPortalTimeGreenPixel(r: number, g: number, b: number): boolean {
+  return g >= 165 && r <= 90 && b <= 90 && g - r >= 110 && g - b >= 110;
 }
 
 function buildTimerTextMask(bitmap: RobotBitmap, profile: TimerMaskProfile): Uint8Array {
@@ -431,21 +500,207 @@ function detectGuardianOfTheRiftTimerWithProfile(
   };
 }
 
-export function detectGuardianOfTheRiftTimer(bitmap: RobotBitmap): GuardianOfTheRiftTimerDetection {
-  const roi = clampRoi(bitmap, TIMER_ROI);
-  const cropped = cropBitmap(bitmap, roi);
+function collectPortalTimeDigitComponents(bitmap: RobotBitmap, roi: Roi): DigitComponent[] {
+  const clampedRoi = clampRoi(bitmap, roi);
+  const visited = new Uint8Array(bitmap.width * bitmap.height);
+  const components: DigitComponent[] = [];
+  const minX = clampedRoi.x;
+  const minY = clampedRoi.y;
+  const maxX = clampedRoi.x + clampedRoi.width - 1;
+  const maxY = clampedRoi.y + clampedRoi.height - 1;
 
-  for (const profile of TIMER_MASK_PROFILES) {
-    const detection = detectGuardianOfTheRiftTimerWithProfile(cropped, roi, profile);
-    if (detection) {
-      return detection;
+  for (let y = minY; y <= maxY; y += 1) {
+    for (let x = minX; x <= maxX; x += 1) {
+      const startIndex = y * bitmap.width + x;
+      if (visited[startIndex]) {
+        continue;
+      }
+
+      visited[startIndex] = 1;
+      const offset = y * bitmap.byteWidth + x * bitmap.bytesPerPixel;
+      const b = bitmap.image[offset];
+      const g = bitmap.image[offset + 1];
+      const r = bitmap.image[offset + 2];
+
+      if (!isPortalTimeGreenPixel(r, g, b)) {
+        continue;
+      }
+
+      const stack = [{ x, y }];
+      let pixelCount = 0;
+      let componentMinX = x;
+      let componentMinY = y;
+      let componentMaxX = x;
+      let componentMaxY = y;
+
+      while (stack.length > 0) {
+        const current = stack.pop();
+        if (!current) {
+          break;
+        }
+
+        pixelCount += 1;
+        componentMinX = Math.min(componentMinX, current.x);
+        componentMinY = Math.min(componentMinY, current.y);
+        componentMaxX = Math.max(componentMaxX, current.x);
+        componentMaxY = Math.max(componentMaxY, current.y);
+
+        for (let dy = -1; dy <= 1; dy += 1) {
+          for (let dx = -1; dx <= 1; dx += 1) {
+            if (dx === 0 && dy === 0) {
+              continue;
+            }
+
+            const nextX = current.x + dx;
+            const nextY = current.y + dy;
+            if (nextX < minX || nextY < minY || nextX > maxX || nextY > maxY) {
+              continue;
+            }
+
+            const nextIndex = nextY * bitmap.width + nextX;
+            if (visited[nextIndex]) {
+              continue;
+            }
+
+            visited[nextIndex] = 1;
+            const nextOffset = nextY * bitmap.byteWidth + nextX * bitmap.bytesPerPixel;
+            const nextB = bitmap.image[nextOffset];
+            const nextG = bitmap.image[nextOffset + 1];
+            const nextR = bitmap.image[nextOffset + 2];
+            if (isPortalTimeGreenPixel(nextR, nextG, nextB)) {
+              stack.push({ x: nextX, y: nextY });
+            }
+          }
+        }
+      }
+
+      const width = componentMaxX - componentMinX + 1;
+      const height = componentMaxY - componentMinY + 1;
+      if (pixelCount >= 8 && width <= 12 && height >= 8 && height <= 18) {
+        components.push({
+          minX: componentMinX,
+          minY: componentMinY,
+          maxX: componentMaxX,
+          maxY: componentMaxY,
+          pixelCount,
+        });
+      }
+    }
+  }
+
+  return components.sort((a, b) => a.minX - b.minX);
+}
+
+function normalizePortalDigit(bitmap: RobotBitmap, component: DigitComponent): number[] {
+  const bits: number[] = [];
+  const targetWidth = 5;
+  const targetHeight = 7;
+  const sourceWidth = component.maxX - component.minX + 1;
+  const sourceHeight = component.maxY - component.minY + 1;
+
+  for (let targetY = 0; targetY < targetHeight; targetY += 1) {
+    const sourceY0 = component.minY + Math.floor((targetY * sourceHeight) / targetHeight);
+    const sourceY1 = component.minY + Math.ceil(((targetY + 1) * sourceHeight) / targetHeight);
+
+    for (let targetX = 0; targetX < targetWidth; targetX += 1) {
+      const sourceX0 = component.minX + Math.floor((targetX * sourceWidth) / targetWidth);
+      const sourceX1 = component.minX + Math.ceil(((targetX + 1) * sourceWidth) / targetWidth);
+      let area = 0;
+      let green = 0;
+
+      for (let y = sourceY0; y < sourceY1; y += 1) {
+        for (let x = sourceX0; x < sourceX1; x += 1) {
+          const offset = y * bitmap.byteWidth + x * bitmap.bytesPerPixel;
+          const b = bitmap.image[offset];
+          const g = bitmap.image[offset + 1];
+          const r = bitmap.image[offset + 2];
+          area += 1;
+          if (isPortalTimeGreenPixel(r, g, b)) {
+            green += 1;
+          }
+        }
+      }
+
+      bits.push(area > 0 && green / area >= 0.25 ? 1 : 0);
+    }
+  }
+
+  return bits;
+}
+
+function classifyPortalTimeDigit(bitmap: RobotBitmap, component: DigitComponent): string | null {
+  const bits = normalizePortalDigit(bitmap, component);
+  let bestDigit: string | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  for (const template of SMALL_GREEN_DIGIT_TEMPLATES) {
+    let distance = 0;
+    for (let index = 0; index < bits.length; index += 1) {
+      if (bits[index] !== template.bits[index]) {
+        distance += 1;
+      }
+    }
+
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestDigit = template.digit;
+    }
+  }
+
+  return bestDistance <= 5 ? bestDigit : null;
+}
+
+export function detectGuardianOfTheRiftPortalTime(bitmap: RobotBitmap): GuardianOfTheRiftPortalTimeDetection {
+  const components = collectPortalTimeDigitComponents(bitmap, PORTAL_TIME_ROI).filter(
+    (component) => component.minY >= PORTAL_TIME_ROI.y && component.maxY <= PORTAL_TIME_ROI.y + 26,
+  );
+  let rawText = "";
+
+  for (const component of components) {
+    const digit = classifyPortalTimeDigit(bitmap, component);
+    if (digit === null) {
+      continue;
+    }
+    rawText += digit;
+  }
+
+  const x = components.length > 0 ? Math.min(...components.map((component) => component.minX)) : PORTAL_TIME_ROI.x;
+  const y = components.length > 0 ? Math.min(...components.map((component) => component.minY)) : PORTAL_TIME_ROI.y;
+  const maxX = components.length > 0 ? Math.max(...components.map((component) => component.maxX)) : PORTAL_TIME_ROI.x + PORTAL_TIME_ROI.width - 1;
+  const maxY = components.length > 0 ? Math.max(...components.map((component) => component.maxY)) : PORTAL_TIME_ROI.y + PORTAL_TIME_ROI.height - 1;
+  const parsed = rawText.length > 0 ? Number(rawText) : Number.NaN;
+  const secondsElapsed = Number.isFinite(parsed) && parsed >= 0 && parsed <= 120 ? parsed : null;
+
+  return {
+    secondsElapsed,
+    rawText: rawText.length > 0 ? rawText : null,
+    x,
+    y,
+    width: maxX - x + 1,
+    height: maxY - y + 1,
+  };
+}
+
+export function detectGuardianOfTheRiftTimer(bitmap: RobotBitmap): GuardianOfTheRiftTimerDetection {
+  let fallbackRoi = clampRoi(bitmap, TIMER_ROIS[0]);
+
+  for (const timerRoi of TIMER_ROIS) {
+    const roi = clampRoi(bitmap, timerRoi);
+    fallbackRoi = roi;
+    const cropped = cropBitmap(bitmap, roi);
+
+    for (const profile of TIMER_MASK_PROFILES) {
+      const detection = detectGuardianOfTheRiftTimerWithProfile(cropped, roi, profile);
+      if (detection) {
+        return detection;
+      }
     }
   }
 
   return {
     secondsRemaining: null,
     rawText: null,
-    ...roi,
+    ...fallbackRoi,
   };
 }
 

@@ -24,6 +24,7 @@ const SCREENSHOT_SUITES: Record<string, ScreenshotSuite> = {
   "test:screenshot:coordinate": {
     script: "src/main/automate-bots/shared/coordinate-box-detector.spec.ts",
     args: ["test-images/coordinate-box/*r-*.png"],
+    timeoutMs: 900_000,
   },
   "test:screenshot:agility": {
     script: "src/main/automate-bots/shared/agility-box-detector.spec.ts",
@@ -100,11 +101,20 @@ const SCREENSHOT_SUITES: Record<string, ScreenshotSuite> = {
   },
   "test:screenshot:guardian-of-the-rift-timer": {
     script: "src/main/automate-bots/shared/guardian-of-the-rift-timer-detector.spec.ts",
-    args: ["test-images/runescrafting/guardian-of-the-rift/timer/*.png"],
+    args: [
+      "test-images/runescrafting/guardian-of-the-rift/timer/*.png",
+      "test-images/runescrafting/guardian-of-the-rift/phase-dectector/1289x1549-2k-125-mining-phase-*.png",
+      "test-images/runescrafting/guardian-of-the-rift/phase-dectector/1289x1549-2k-125-timer-under-31.png",
+      "test-images/runescrafting/guardian-of-the-rift/phase-dectector/1289x1549-2k-125-workbench-*.png",
+    ],
   },
   "test:screenshot:guardian-of-the-rift-uncharged-cell": {
     script: "src/main/automate-bots/shared/guardian-of-the-rift-uncharged-cell-detector.spec.ts",
     args: ["test-images/icon/guardin-of-the-rift/uncharged-cell/*.png"],
+  },
+  "test:screenshot:guardian-of-the-rift-altar": {
+    script: "src/main/automate-bots/shared/guardian-of-the-rift-altar-detector.spec.ts",
+    args: ["test-images/runescrafting/guardian-of-the-rift/altar/*.png"],
   },
   "test:screenshot:mithril-ore": {
     script: "src/main/automate-bots/shared/mithril-ore-detector.spec.ts",

@@ -11,6 +11,7 @@ import { onMotherlodeMineBotV2Start } from "./automate-bots/motherlode-mine-bot-
 import { onMotherlodeMineBotV3Start } from "./automate-bots/motherlode-mine-bot-v3";
 import { onRunecraftingGuardianOfTheRiftBotStart } from "./automate-bots/runecrafting-guardian-of-the-rift-bot";
 import {
+  AUTOMATE_BOTS,
   AGILITY_BOT_ID,
   ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID,
   COMBAT_AUTO_BOT_ID,
@@ -24,9 +25,15 @@ import {
   isAutomateBotId,
 } from "./automate-bots/definitions";
 import { flushOcrDebugDirectory } from "./automate-bots/shared/ocr-engine";
+import {
+  formatStartupPlayerTileCalibrationLog,
+  readStartupPlayerTileCalibration,
+} from "./automate-bots/shared/startup-calibration";
 import { startAutomateBotLogSession, stopAutomateBotLogSession } from "./automateBotLogs";
 import { CHANNELS } from "./ipcChannels";
 import { getSavedSelectedAutomateBotId, setSavedSelectedAutomateBotId } from "./csvOperator";
+import { getRuneLite } from "./runeLiteWindow";
+import * as logger from "./logger";
 
 const botStartHandlers = new Map<string, () => void>([
   [AGILITY_BOT_ID, onAgilityBotStart],
@@ -41,6 +48,45 @@ const botStartHandlers = new Map<string, () => void>([
 ]);
 
 const botStartFromStepHandlers = new Map<string, (stepId: string) => void>();
+
+function getAutomateBotName(botId: string): string {
+  return AUTOMATE_BOTS.find((bot) => bot.id === botId)?.name ?? botId;
+}
+
+function logStartupPlayerTileCalibration(botId: string): void {
+  const botName = getAutomateBotName(botId);
+
+  try {
+    const window = getRuneLite();
+    if (!window) {
+      logger.warn(`Automate Bot (${botName}): startup calibration unavailable - RuneLite window not found.`);
+      return;
+    }
+
+    if (!window.isVisible()) {
+      window.show();
+    }
+
+    window.bringToTop();
+
+    const calibration = readStartupPlayerTileCalibration(window);
+    if (!calibration) {
+      logger.warn(`Automate Bot (${botName}): startup calibration unavailable - invalid RuneLite window bounds.`);
+      return;
+    }
+
+    const message = formatStartupPlayerTileCalibrationLog(botName, calibration);
+    if (calibration.playerTile && calibration.playerBox) {
+      logger.log(message);
+      return;
+    }
+
+    logger.warn(message);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn(`Automate Bot (${botName}): startup calibration failed - ${message}`);
+  }
+}
 
 export function sendAutomateBotState() {
   AppState.mainWindow?.webContents.send(CHANNELS.AUTOMATE_BOT_STATE, {
@@ -107,6 +153,7 @@ export function startSelectedAutomateBot(source: "f4" | "ui") {
   flushOcrDebugDirectory();
 
   startAutomateBotLogSession(selectedBotId, source);
+  logStartupPlayerTileCalibration(selectedBotId);
   AppState.automateBotRunning = true;
   sendAutomateBotState();
   selectedBotStartHandler();
@@ -135,6 +182,7 @@ export function startAutomateBotFromStep(stepId: string) {
   flushOcrDebugDirectory();
 
   startAutomateBotLogSession(matchedBotId, "ui");
+  logStartupPlayerTileCalibration(matchedBotId);
   AppState.selectedAutomateBotId = matchedBotId;
   setSavedSelectedAutomateBotId(matchedBotId);
   AppState.automateBotRunning = true;

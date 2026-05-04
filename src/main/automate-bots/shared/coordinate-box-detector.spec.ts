@@ -18,8 +18,16 @@ type ExpectedCoordinates = {
   z: number;
 };
 
+type CoordinateIds = {
+  chunkId: number;
+  regionId: number;
+};
+
+type ExpectedCoordinateLocation = ExpectedCoordinates &
+  Partial<CoordinateIds>;
+
 type CliOptions = {
-  expectedCoordinates: ExpectedCoordinates | null;
+  expectedCoordinates: ExpectedCoordinateLocation | null;
   screenshotArgs: string[];
   windowsScalePercent: number | null;
 };
@@ -86,7 +94,19 @@ async function loadScreenshot(filePath: string): Promise<RobotBitmap | null> {
   });
 }
 
-function parseExpectedCoordinatesFromFilename(screenshotPath: string): ExpectedCoordinates | null {
+function deriveCoordinateIds(coordinates: ExpectedCoordinates): CoordinateIds {
+  const worldChunkX = coordinates.x >> 3;
+  const worldChunkY = coordinates.y >> 3;
+  const regionX = coordinates.x >> 6;
+  const regionY = coordinates.y >> 6;
+
+  return {
+    chunkId: (worldChunkX << 11) | worldChunkY,
+    regionId: (regionX << 8) | regionY,
+  };
+}
+
+function parseExpectedCoordinatesFromFilename(screenshotPath: string): ExpectedCoordinateLocation | null {
   const fileName = path.basename(screenshotPath, path.extname(screenshotPath));
   const match = fileName.match(/(?:^|-)r-(\d+)-(\d+)-(\d)(?:-|$)/i);
   if (!match) {
@@ -100,7 +120,20 @@ function parseExpectedCoordinatesFromFilename(screenshotPath: string): ExpectedC
     return null;
   }
 
-  return { x, y, z };
+  const coordinateLocation: ExpectedCoordinateLocation = { x, y, z };
+  const idMatch = fileName.match(/(?:^|-)chunk-(\d+)-region-(\d+)(?:-|$)/i);
+  if (idMatch) {
+    const chunkId = Number(idMatch[1]);
+    const regionId = Number(idMatch[2]);
+    if (!Number.isFinite(chunkId) || !Number.isFinite(regionId)) {
+      return null;
+    }
+
+    coordinateLocation.chunkId = chunkId;
+    coordinateLocation.regionId = regionId;
+  }
+
+  return coordinateLocation;
 }
 
 function parseDetectedCoordinates(matchedLine: string): ExpectedCoordinates | null {
@@ -190,7 +223,7 @@ function parseWindowsScalePercentFromFilename(screenshotPath: string): number {
 
 function parseCliOptions(args: string[]): CliOptions {
   const screenshotArgs: string[] = [];
-  let expectedCoordinates: ExpectedCoordinates | null = null;
+  let expectedCoordinates: ExpectedCoordinateLocation | null = null;
   let windowsScalePercent: number | null = null;
 
   for (const arg of args) {
@@ -282,6 +315,47 @@ async function testDetection(screenshotPath: string, options: CliOptions): Promi
           `Coordinate mismatch: expected ${expectedCoordinates.x},${expectedCoordinates.y},${expectedCoordinates.z}, got ${detectedCoordinates.x},${detectedCoordinates.y},${detectedCoordinates.z}`,
         );
         return false;
+      }
+
+      if (expectedCoordinates.chunkId !== undefined || expectedCoordinates.regionId !== undefined) {
+        const detectedIds = deriveCoordinateIds(detectedCoordinates);
+        const expectedIdsFromCoordinates = deriveCoordinateIds(expectedCoordinates);
+
+        if (
+          expectedCoordinates.chunkId !== undefined &&
+          expectedCoordinates.chunkId !== expectedIdsFromCoordinates.chunkId
+        ) {
+          console.error(
+            `Filename chunk id mismatch: coordinates ${expectedCoordinates.x},${expectedCoordinates.y},${expectedCoordinates.z} derive chunk ${expectedIdsFromCoordinates.chunkId}, filename has ${expectedCoordinates.chunkId}`,
+          );
+          return false;
+        }
+
+        if (
+          expectedCoordinates.regionId !== undefined &&
+          expectedCoordinates.regionId !== expectedIdsFromCoordinates.regionId
+        ) {
+          console.error(
+            `Filename region id mismatch: coordinates ${expectedCoordinates.x},${expectedCoordinates.y},${expectedCoordinates.z} derive region ${expectedIdsFromCoordinates.regionId}, filename has ${expectedCoordinates.regionId}`,
+          );
+          return false;
+        }
+
+        if (expectedCoordinates.chunkId !== undefined) {
+          console.log(`Expected chunk id: ${expectedCoordinates.chunkId}`);
+          if (detectedIds.chunkId !== expectedCoordinates.chunkId) {
+            console.error(`Chunk id mismatch: expected ${expectedCoordinates.chunkId}, got ${detectedIds.chunkId}`);
+            return false;
+          }
+        }
+
+        if (expectedCoordinates.regionId !== undefined) {
+          console.log(`Expected region id: ${expectedCoordinates.regionId}`);
+          if (detectedIds.regionId !== expectedCoordinates.regionId) {
+            console.error(`Region id mismatch: expected ${expectedCoordinates.regionId}, got ${detectedIds.regionId}`);
+            return false;
+          }
+        }
       }
     }
     return true;

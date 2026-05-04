@@ -1,9 +1,7 @@
-import fs from "fs";
-import path from "path";
 import { screen as electronScreen } from "electron";
-import { PNG } from "pngjs";
 import { mouseClick, moveMouse } from "robotjs";
 import { setAutomateBotCurrentStep, stopAutomateBot } from "../automateBotManager";
+import { getSavedGuardianOfTheRiftConfig } from "../csvOperator";
 import { AppState } from "../global-state";
 import { CHANNELS } from "../ipcChannels";
 import * as logger from "../logger";
@@ -11,23 +9,77 @@ import { getRuneLite } from "../runeLiteWindow";
 import { captureScreenBitmap, type ScreenCaptureBounds } from "../windowsScreenCapture";
 import { RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID } from "./definitions";
 import { runBotEngine, sleepWithAbort } from "./engine/bot-engine";
+import { type GuardianOfTheRiftConfig } from "./guardian-of-the-rift-config";
+import { readCoordinateOverlayLocation, saveCoordinateAutoScreenshot } from "./shared/coordinate-auto-screenshot";
 import {
-  detectGuardianOfTheRiftUnchargedCellCount,
-  type GuardianOfTheRiftUnchargedCellTemplate,
-} from "./shared/guardian-of-the-rift-uncharged-cell-detector";
+  detectGuardianOfTheRiftAltarMarkersInScreenshot,
+  formatGuardianOfTheRiftAltarCandidates,
+  pickNearestGuardianOfTheRiftAltarMarker,
+} from "./shared/guardian-of-the-rift-altar-detector";
+import { detectGuardianOfTheRiftTimer } from "./shared/guardian-of-the-rift-timer-detector";
+import { detectInventoryCount, saveBitmapWithInventoryCountDebug } from "./shared/inventory-count-detector";
+import { detectAllMagentaObjects, type MagentaObjectDetection } from "./shared/magenta-object-detector";
 import type { RobotBitmap } from "./shared/ocr-engine";
+import { detectBestPlayerBoxInScreenshot, type PlayerBox } from "./shared/player-box-detector";
 
-type BotPhase = "pick-uncharged-cell" | "complete";
-type EngineFunctionKey = "pickUnchargedCell";
+type BotPhase =
+  | "pick-uncharged-cell"
+  | "wait-after-pickup"
+  | "agility-find-magenta"
+  | "find-orange"
+  | "wait-for-mining-timer"
+  | "mining"
+  | "workbench-find-yellow"
+  | "crafting"
+  | "travel-to-guardian"
+  | "wait-after-guardian-click"
+  | "wait-after-guardian-yellow-click"
+  | "wait-after-guardian-return-click"
+  | "complete";
+type EngineFunctionKey =
+  | "pickUnchargedCell"
+  | "waitAfterPickup"
+  | "agilityFindMagenta"
+  | "findOrange"
+  | "waitForMiningTimer"
+  | "mine"
+  | "workbenchFindYellow"
+  | "craft"
+  | "travelToGuardian"
+  | "waitAfterGuardianClick"
+  | "waitAfterGuardianYellowClick"
+  | "waitAfterGuardianReturnClick";
 
 type BotState = {
   loopIndex: number;
   currentFunction: EngineFunctionKey;
   phase: BotPhase;
   actionLockUntilMs: number;
-  unchargedCellCount: number | null;
   lastPickupClickScreen: { x: number; y: number } | null;
+  pickupArrivalDeadlineMs: number;
+  pickupDistancePx: number | null;
   missingTargetTicks: number;
+  missingMagentaTicks: number;
+  missingOrangeTicks: number;
+  missingMiningTimerTicks: number;
+  missingYellowTicks: number;
+  eastMoveClickCount: number;
+  westMoveClickCount: number;
+  miningOrangeReclicked: boolean;
+  lastTimerSecondsRemaining: number | null;
+  lastTimerObservedAtMs: number | null;
+  inventoryFreeSlots: number | null;
+  missingInventoryCountTicks: number;
+  craftingInventoryChangeDeadlineMs: number;
+  guardianArrivalDeadlineMs: number;
+  guardianClickDistancePx: number | null;
+  guardianCoordinateConfirmed: boolean;
+  guardianYellowArrivalDeadlineMs: number;
+  guardianYellowClickDistancePx: number | null;
+  guardianReturnArrivalDeadlineMs: number;
+  guardianReturnClickDistancePx: number | null;
+  missingGuardianYellowTicks: number;
+  missingGuardianReturnRedTicks: number;
 };
 
 type TickCapture = {
@@ -61,38 +113,95 @@ type SearchBounds = {
   maxY: number;
 };
 
-type Roi = {
-  x: number;
-  y: number;
+type OrangeObjectDetection = {
+  centerX: number;
+  centerY: number;
+  pixelCount: number;
   width: number;
   height: number;
-};
-
-type YellowComponent = {
   minX: number;
   minY: number;
   maxX: number;
   maxY: number;
-  pixelCount: number;
+};
+
+type WorkbenchMarkerDetection = OrangeObjectDetection;
+type GreenObjectDetection = OrangeObjectDetection;
+
+type TimerRead = {
+  secondsRemaining: number | null;
+  source: "ocr" | "missing";
+  rawText: string | null;
+  ocrSecondsRemaining: number | null;
 };
 
 const BOT_NAME = "Runecrafting - Guardian of the Rift";
 const STEP_PICK_UNCHARGED_CELL_ID = `${RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}-step-pick-uncharged-cell`;
+const STEP_WAIT_AFTER_PICKUP_ID = `${RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}-step-wait-after-pickup`;
+const STEP_AGILITY_MAGENTA_ID = `${RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}-step-agility-magenta`;
+const STEP_ORANGE_ID = `${RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}-step-orange`;
+const STEP_WAIT_MINING_TIMER_ID = `${RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}-step-wait-mining-timer`;
+const STEP_MINING_ID = `${RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}-step-mining`;
+const STEP_WORKBENCH_ID = `${RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}-step-workbench`;
+const STEP_CRAFTING_ID = `${RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}-step-crafting`;
+const STEP_TRAVEL_GUARDIAN_ID = `${RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}-step-travel-guardian`;
 const GAME_TICK_MS = 600;
 const STARTUP_SETTLE_MS = 180;
-const POST_CLICK_LOCK_TICKS = 3;
-const TARGET_UNCHARGED_CELL_COUNT = 10;
 const CLICK_SAFE_EDGE_MARGIN_PX = 3;
 const PURE_RED_MIN_PIXEL_COUNT = 24;
 const PURE_RED_MAX_COMPONENT_WIDTH_RATIO = 0.18;
 const PURE_RED_MAX_COMPONENT_HEIGHT_RATIO = 0.18;
-const TEN_CELL_TEMPLATE_YELLOW_OFFSET = { x: 7, y: 4 };
-const MAX_TEN_CELL_CANDIDATE_ROIS = 16;
+const PLAYER_TRAVEL_SPEED_PX_PER_TICK = 95;
+const PICKUP_MIN_WAIT_TICKS = 2;
+const PICKUP_EXTRA_WAIT_TICKS = 1;
+const AGILITY_MAGENTA_MIN_PIXELS = 50;
+const AGILITY_EAST_CLICK_RATIO_X = 0.68;
+const AGILITY_EAST_CLICK_RATIO_Y = 0.5;
+const AGILITY_EAST_CLICK_LOCK_TICKS = 3;
+const WORKBENCH_WEST_CLICK_RATIO_X = 0.34;
+const WORKBENCH_WEST_CLICK_LOCK_TICKS = 3;
+const ORANGE_MIN_PIXELS = 40;
+const WORKBENCH_MAGENTA_MIN_PIXELS = 40;
+const GREEN_MIN_PIXELS = 240;
+const MINING_RECLICK_LOCK_TICKS = 2;
+const WORKBENCH_CRAFT_CLICK_LOCK_TICKS = 3;
+const GUARDIAN_CLICK_LOCK_TICKS = 2;
+const GUARDIAN_YELLOW_CLICK_LOCK_TICKS = 2;
+const GUARDIAN_RETURN_CLICK_LOCK_TICKS = 2;
+const GUARDIAN_ALTAR_SEARCH_RETRY_TICKS = 8;
+const WORKBENCH_INVENTORY_CHANGE_CHECK_TICKS = 2;
+const GUARDIAN_CRAFTING_CHUNK_ID = 926881;
+const GUARDIAN_CRAFTING_REGION_ID = 14484;
+const MINING_TIMER_WORKBENCH_THRESHOLD_SECONDS = 31;
+const MINING_TIMER_MAX_PLAUSIBLE_SECONDS = 120;
+const TIMER_PRESENCE_ROI = { x: 88, y: 116, width: 96, height: 34 };
+const TIMER_PRESENCE_MIN_BRIGHT_PIXELS = 18;
+const ENABLE_COORDINATE_AUTO_SCREENSHOTS = false;
+const COORDINATE_AUTO_SCREENSHOT_INTERVAL_TICKS = 10;
+const WORKFLOW_STEPS = {
+  TAKE_UNCHARGED_CELL: "Step 01/15 Take uncharged cell",
+  FIND_MINING_NODE: "Step 02/15 Find mining node",
+  MOVE_TO_MINING_NODE: "Step 03/15 Move to mining node",
+  START_MINING: "Step 04/15 Start mining when timer starts",
+  FIND_WORKBENCH: "Step 05/15 Find workbench",
+  MOVE_TO_WORKBENCH: "Step 06/15 Move to workbench",
+  CRAFT_UNTIL_FULL: "Step 07/15 Craft until inventory is full",
+  FIND_GUARDIAN: "Step 08/15 Find guardian",
+  MOVE_TO_GUARDIAN: "Step 09/15 Move to guardian",
+  TELEPORT_TO_ALTAR: "Step 10/15 Teleport to altar region",
+  FIND_ALTAR: "Step 11/15 Find altar",
+  MOVE_TO_ALTAR: "Step 12/15 Move to altar",
+  FIND_PORTAL: "Step 13/15 Find portal",
+  MOVE_TO_PORTAL: "Step 14/15 Move to portal",
+  TELEPORT_BACK: "Step 15/15 Teleport back to crafting region",
+} as const;
 
 let isLoopRunning = false;
 let startedAtMs: number | null = null;
 let currentLogLoopIndex = 0;
 let currentLogPhase: BotPhase | "startup" = "startup";
+let currentWindowsScalePercent = 100;
+let currentMonitorTier = "2k";
 
 function formatElapsedSinceStart(): string {
   if (startedAtMs === null) {
@@ -117,7 +226,22 @@ function setCurrentLogPhase(phase: BotPhase | "startup" | null | undefined): voi
     return;
   }
 
-  currentLogPhase = phase === "pick-uncharged-cell" || phase === "complete" ? phase : "startup";
+  currentLogPhase =
+    phase === "pick-uncharged-cell" ||
+    phase === "wait-after-pickup" ||
+    phase === "agility-find-magenta" ||
+    phase === "find-orange" ||
+    phase === "wait-for-mining-timer" ||
+    phase === "mining" ||
+    phase === "workbench-find-yellow" ||
+    phase === "crafting" ||
+    phase === "travel-to-guardian" ||
+    phase === "wait-after-guardian-click" ||
+    phase === "wait-after-guardian-yellow-click" ||
+    phase === "wait-after-guardian-return-click" ||
+    phase === "complete"
+      ? phase
+      : "startup";
 }
 
 function log(message: string): void {
@@ -126,6 +250,10 @@ function log(message: string): void {
 
 function warn(message: string): void {
   logger.warn(`[${formatElapsedSinceStart()}] #${currentLogLoopIndex} [${currentLogPhase}] ${message}`);
+}
+
+function stepMessage(step: (typeof WORKFLOW_STEPS)[keyof typeof WORKFLOW_STEPS], message: string): string {
+  return `${step}: ${message}`;
 }
 
 function notifyUserAndStop(errorMessage: string): void {
@@ -148,6 +276,21 @@ function getWindowsDisplayScaleFactor(bounds: ScreenCaptureBounds): number {
   return Number.isFinite(display.scaleFactor) && display.scaleFactor > 0 ? display.scaleFactor : 1;
 }
 
+function getMonitorTier(bounds: ScreenCaptureBounds, scaleFactor: number): "2k" | "4k" {
+  const display = electronScreen.getDisplayMatching({
+    x: bounds.x,
+    y: bounds.y,
+    width: Math.max(1, bounds.width),
+    height: Math.max(1, bounds.height),
+  });
+
+  const scale = Number.isFinite(scaleFactor) && scaleFactor > 0 ? scaleFactor : 1;
+  const nativeWidth = Math.round(display.bounds.width * scale);
+  const nativeHeight = Math.round(display.bounds.height * scale);
+
+  return nativeWidth >= 3200 || nativeHeight >= 1800 ? "4k" : "2k";
+}
+
 function toPhysicalBounds(bounds: ScreenCaptureBounds, scaleFactor: number): ScreenCaptureBounds {
   const scale = Number.isFinite(scaleFactor) && scaleFactor > 0 ? scaleFactor : 1;
   return {
@@ -168,52 +311,31 @@ function createInitialState(): BotState {
     currentFunction: "pickUnchargedCell",
     phase: "pick-uncharged-cell",
     actionLockUntilMs: 0,
-    unchargedCellCount: null,
     lastPickupClickScreen: null,
+    pickupArrivalDeadlineMs: 0,
+    pickupDistancePx: null,
     missingTargetTicks: 0,
-  };
-}
-
-function resolveUnchargedCellIconDirectory(): string {
-  const relativePath = path.join("test-images", "icon", "guardin-of-the-rift", "uncharged-cell");
-  const candidates = [
-    path.resolve(process.cwd(), relativePath),
-    path.resolve(__dirname, "..", "..", "..", relativePath),
-    path.resolve(__dirname, "..", "..", "..", "..", relativePath),
-  ];
-
-  const existingDirectory = candidates.find((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isDirectory());
-  return existingDirectory ?? candidates[0];
-}
-
-function loadPngBitmap(filePath: string): RobotBitmap {
-  if (!fs.existsSync(filePath)) {
-    throw new Error(`File not found: ${filePath}`);
-  }
-
-  const png = (PNG as unknown as { sync: { read: (buffer: Buffer) => PNG } }).sync.read(fs.readFileSync(filePath));
-  const image = Buffer.alloc(png.width * png.height * 4);
-
-  for (let index = 0; index < png.data.length; index += 4) {
-    image[index] = png.data[index + 2];
-    image[index + 1] = png.data[index + 1];
-    image[index + 2] = png.data[index];
-    image[index + 3] = png.data[index + 3];
-  }
-
-  return {
-    width: png.width,
-    height: png.height,
-    byteWidth: png.width * 4,
-    bytesPerPixel: 4,
-    image,
-  };
-}
-
-function loadTenUnchargedCellTemplate(): GuardianOfTheRiftUnchargedCellTemplate {
-  return {
-    count: TARGET_UNCHARGED_CELL_COUNT,
-    bitmap: loadPngBitmap(path.join(resolveUnchargedCellIconDirectory(), `${TARGET_UNCHARGED_CELL_COUNT}.png`)),
+    missingMagentaTicks: 0,
+    missingOrangeTicks: 0,
+    missingMiningTimerTicks: 0,
+    missingYellowTicks: 0,
+    eastMoveClickCount: 0,
+    westMoveClickCount: 0,
+    miningOrangeReclicked: false,
+    lastTimerSecondsRemaining: null,
+    lastTimerObservedAtMs: null,
+    inventoryFreeSlots: null,
+    missingInventoryCountTicks: 0,
+    craftingInventoryChangeDeadlineMs: 0,
+    guardianArrivalDeadlineMs: 0,
+    guardianClickDistancePx: null,
+    guardianCoordinateConfirmed: false,
+    guardianYellowArrivalDeadlineMs: 0,
+    guardianYellowClickDistancePx: null,
+    guardianReturnArrivalDeadlineMs: 0,
+    guardianReturnClickDistancePx: null,
+    missingGuardianYellowTicks: 0,
+    missingGuardianReturnRedTicks: 0,
   };
 }
 
@@ -221,8 +343,20 @@ function isPureRuneLiteRedPixel(r: number, g: number, b: number): boolean {
   return r >= 245 && g <= 20 && b <= 20;
 }
 
-function isItemStackYellowPixel(r: number, g: number, b: number): boolean {
-  return r >= 145 && g >= 105 && g <= 235 && b <= 95 && r - b >= 85 && g - b >= 65;
+function isStrictOrangePixel(r: number, g: number, b: number): boolean {
+  return Math.abs(r - 255) <= 10 && Math.abs(g - 115) <= 18 && b <= 24;
+}
+
+function isWorkbenchMagentaPixel(r: number, g: number, b: number): boolean {
+  return r >= 145 && r <= 205 && g <= 45 && b >= 225 && b - r >= 35;
+}
+
+function isGuardianGreenPixel(r: number, g: number, b: number): boolean {
+  return g >= 190 && r <= 80 && b <= 80 && g - Math.max(r, b) >= 140;
+}
+
+function isBrightTimerTextPixel(r: number, g: number, b: number): boolean {
+  return r >= 190 && g >= 190 && b >= 190 && Math.max(r, g, b) - Math.min(r, g, b) <= 80;
 }
 
 function resolveRedPickupSearchBounds(bitmap: RobotBitmap): SearchBounds {
@@ -365,6 +499,302 @@ function detectBestRedPickupTarget(bitmap: RobotBitmap): RedPickupTarget | null 
   return targets[0] ?? null;
 }
 
+function detectAllRedTargets(bitmap: RobotBitmap): RedPickupTarget[] {
+  const bounds = resolveRedPickupSearchBounds(bitmap);
+  const mask = buildPureRedMask(bitmap, bounds);
+  return collectRedCandidates(mask, bitmap)
+    .map((candidate) => toRedPickupTarget(candidate, bitmap))
+    .filter((target): target is RedPickupTarget => target !== null);
+}
+
+function detectAllOrangeObjects(bitmap: RobotBitmap, minPixels: number = ORANGE_MIN_PIXELS): OrangeObjectDetection[] {
+  const width = bitmap.width;
+  const height = bitmap.height;
+  const visited = new Uint8Array(width * height);
+  const detections: OrangeObjectDetection[] = [];
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const startIndex = y * width + x;
+      if (visited[startIndex]) {
+        continue;
+      }
+
+      visited[startIndex] = 1;
+      const offset = y * bitmap.byteWidth + x * bitmap.bytesPerPixel;
+      const b = bitmap.image[offset];
+      const g = bitmap.image[offset + 1];
+      const r = bitmap.image[offset + 2];
+      if (!isStrictOrangePixel(r, g, b)) {
+        continue;
+      }
+
+      const stack = [{ x, y }];
+      let pixelCount = 0;
+      let minX = x;
+      let minY = y;
+      let maxX = x;
+      let maxY = y;
+      let sumX = 0;
+      let sumY = 0;
+
+      while (stack.length > 0) {
+        const current = stack.pop();
+        if (!current) {
+          break;
+        }
+
+        pixelCount += 1;
+        sumX += current.x;
+        sumY += current.y;
+        minX = Math.min(minX, current.x);
+        minY = Math.min(minY, current.y);
+        maxX = Math.max(maxX, current.x);
+        maxY = Math.max(maxY, current.y);
+
+        for (let dy = -1; dy <= 1; dy += 1) {
+          for (let dx = -1; dx <= 1; dx += 1) {
+            if (dx === 0 && dy === 0) {
+              continue;
+            }
+
+            const nextX = current.x + dx;
+            const nextY = current.y + dy;
+            if (nextX < 0 || nextY < 0 || nextX >= width || nextY >= height) {
+              continue;
+            }
+
+            const nextIndex = nextY * width + nextX;
+            if (visited[nextIndex]) {
+              continue;
+            }
+
+            visited[nextIndex] = 1;
+            const nextOffset = nextY * bitmap.byteWidth + nextX * bitmap.bytesPerPixel;
+            const nextB = bitmap.image[nextOffset];
+            const nextG = bitmap.image[nextOffset + 1];
+            const nextR = bitmap.image[nextOffset + 2];
+            if (isStrictOrangePixel(nextR, nextG, nextB)) {
+              stack.push({ x: nextX, y: nextY });
+            }
+          }
+        }
+      }
+
+      if (pixelCount < minPixels) {
+        continue;
+      }
+
+      detections.push({
+        centerX: Math.round(sumX / pixelCount),
+        centerY: Math.round(sumY / pixelCount),
+        pixelCount,
+        width: maxX - minX + 1,
+        height: maxY - minY + 1,
+        minX,
+        minY,
+        maxX,
+        maxY,
+      });
+    }
+  }
+
+  return detections.sort((a, b) => b.pixelCount - a.pixelCount);
+}
+
+function detectAllWorkbenchMagentaObjects(
+  bitmap: RobotBitmap,
+  minPixels: number = WORKBENCH_MAGENTA_MIN_PIXELS,
+): WorkbenchMarkerDetection[] {
+  const width = bitmap.width;
+  const height = bitmap.height;
+  const visited = new Uint8Array(width * height);
+  const detections: WorkbenchMarkerDetection[] = [];
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const startIndex = y * width + x;
+      if (visited[startIndex]) {
+        continue;
+      }
+
+      visited[startIndex] = 1;
+      const offset = y * bitmap.byteWidth + x * bitmap.bytesPerPixel;
+      const b = bitmap.image[offset];
+      const g = bitmap.image[offset + 1];
+      const r = bitmap.image[offset + 2];
+      if (!isWorkbenchMagentaPixel(r, g, b)) {
+        continue;
+      }
+
+      const stack = [{ x, y }];
+      let pixelCount = 0;
+      let minX = x;
+      let minY = y;
+      let maxX = x;
+      let maxY = y;
+      let sumX = 0;
+      let sumY = 0;
+
+      while (stack.length > 0) {
+        const current = stack.pop();
+        if (!current) {
+          break;
+        }
+
+        pixelCount += 1;
+        sumX += current.x;
+        sumY += current.y;
+        minX = Math.min(minX, current.x);
+        minY = Math.min(minY, current.y);
+        maxX = Math.max(maxX, current.x);
+        maxY = Math.max(maxY, current.y);
+
+        for (let dy = -1; dy <= 1; dy += 1) {
+          for (let dx = -1; dx <= 1; dx += 1) {
+            if (dx === 0 && dy === 0) {
+              continue;
+            }
+
+            const nextX = current.x + dx;
+            const nextY = current.y + dy;
+            if (nextX < 0 || nextY < 0 || nextX >= width || nextY >= height) {
+              continue;
+            }
+
+            const nextIndex = nextY * width + nextX;
+            if (visited[nextIndex]) {
+              continue;
+            }
+
+            visited[nextIndex] = 1;
+            const nextOffset = nextY * bitmap.byteWidth + nextX * bitmap.bytesPerPixel;
+            const nextB = bitmap.image[nextOffset];
+            const nextG = bitmap.image[nextOffset + 1];
+            const nextR = bitmap.image[nextOffset + 2];
+            if (isWorkbenchMagentaPixel(nextR, nextG, nextB)) {
+              stack.push({ x: nextX, y: nextY });
+            }
+          }
+        }
+      }
+
+      if (pixelCount < minPixels) {
+        continue;
+      }
+
+      detections.push({
+        centerX: Math.round(sumX / pixelCount),
+        centerY: Math.round(sumY / pixelCount),
+        pixelCount,
+        width: maxX - minX + 1,
+        height: maxY - minY + 1,
+        minX,
+        minY,
+        maxX,
+        maxY,
+      });
+    }
+  }
+
+  return detections.sort((a, b) => b.pixelCount - a.pixelCount);
+}
+
+function detectAllGreenObjects(bitmap: RobotBitmap, minPixels: number = GREEN_MIN_PIXELS): GreenObjectDetection[] {
+  const width = bitmap.width;
+  const height = bitmap.height;
+  const visited = new Uint8Array(width * height);
+  const detections: GreenObjectDetection[] = [];
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const startIndex = y * width + x;
+      if (visited[startIndex]) {
+        continue;
+      }
+
+      visited[startIndex] = 1;
+      const offset = y * bitmap.byteWidth + x * bitmap.bytesPerPixel;
+      const b = bitmap.image[offset];
+      const g = bitmap.image[offset + 1];
+      const r = bitmap.image[offset + 2];
+      if (!isGuardianGreenPixel(r, g, b)) {
+        continue;
+      }
+
+      const stack = [{ x, y }];
+      let pixelCount = 0;
+      let minX = x;
+      let minY = y;
+      let maxX = x;
+      let maxY = y;
+      let sumX = 0;
+      let sumY = 0;
+
+      while (stack.length > 0) {
+        const current = stack.pop();
+        if (!current) {
+          break;
+        }
+
+        pixelCount += 1;
+        sumX += current.x;
+        sumY += current.y;
+        minX = Math.min(minX, current.x);
+        minY = Math.min(minY, current.y);
+        maxX = Math.max(maxX, current.x);
+        maxY = Math.max(maxY, current.y);
+
+        for (let dy = -1; dy <= 1; dy += 1) {
+          for (let dx = -1; dx <= 1; dx += 1) {
+            if (dx === 0 && dy === 0) {
+              continue;
+            }
+
+            const nextX = current.x + dx;
+            const nextY = current.y + dy;
+            if (nextX < 0 || nextY < 0 || nextX >= width || nextY >= height) {
+              continue;
+            }
+
+            const nextIndex = nextY * width + nextX;
+            if (visited[nextIndex]) {
+              continue;
+            }
+
+            visited[nextIndex] = 1;
+            const nextOffset = nextY * bitmap.byteWidth + nextX * bitmap.bytesPerPixel;
+            const nextB = bitmap.image[nextOffset];
+            const nextG = bitmap.image[nextOffset + 1];
+            const nextR = bitmap.image[nextOffset + 2];
+            if (isGuardianGreenPixel(nextR, nextG, nextB)) {
+              stack.push({ x: nextX, y: nextY });
+            }
+          }
+        }
+      }
+
+      if (pixelCount < minPixels) {
+        continue;
+      }
+
+      detections.push({
+        centerX: Math.round((minX + maxX) / 2),
+        centerY: Math.round((minY + maxY) / 2),
+        pixelCount,
+        width: maxX - minX + 1,
+        height: maxY - minY + 1,
+        minX,
+        minY,
+        maxX,
+        maxY,
+      });
+    }
+  }
+
+  return detections.sort((a, b) => b.pixelCount - a.pixelCount);
+}
+
 function clickScreenPoint(screenX: number, screenY: number, captureBounds: ScreenCaptureBounds): { x: number; y: number } {
   const requestedX = Math.round(screenX);
   const requestedY = Math.round(screenY);
@@ -384,143 +814,118 @@ function clickScreenPoint(screenX: number, screenY: number, captureBounds: Scree
   return { x: safeX, y: safeY };
 }
 
-function deadlineFromNowTicks(ticks: number, nowMs: number): number {
-  return nowMs + Math.max(0, ticks) * GAME_TICK_MS;
-}
+function hasGuardianTimerTextPresence(bitmap: RobotBitmap): boolean {
+  const minX = clamp(TIMER_PRESENCE_ROI.x, 0, bitmap.width - 1);
+  const minY = clamp(TIMER_PRESENCE_ROI.y, 0, bitmap.height - 1);
+  const maxX = clamp(TIMER_PRESENCE_ROI.x + TIMER_PRESENCE_ROI.width - 1, minX, bitmap.width - 1);
+  const maxY = clamp(TIMER_PRESENCE_ROI.y + TIMER_PRESENCE_ROI.height - 1, minY, bitmap.height - 1);
+  let brightPixels = 0;
 
-function resolveInventoryItemSearchRoi(bitmap: RobotBitmap): Roi {
-  return {
-    x: Math.round(bitmap.width * 0.72),
-    y: Math.round(bitmap.height * 0.48),
-    width: Math.round(bitmap.width * 0.28),
-    height: Math.round(bitmap.height * 0.45),
-  };
-}
-
-function clampRoi(bitmap: RobotBitmap, roi: Roi): Roi {
-  const x = clamp(Math.floor(roi.x), 0, bitmap.width - 1);
-  const y = clamp(Math.floor(roi.y), 0, bitmap.height - 1);
-  const maxX = clamp(Math.floor(roi.x + roi.width - 1), x, bitmap.width - 1);
-  const maxY = clamp(Math.floor(roi.y + roi.height - 1), y, bitmap.height - 1);
-
-  return {
-    x,
-    y,
-    width: maxX - x + 1,
-    height: maxY - y + 1,
-  };
-}
-
-function buildYellowMask(bitmap: RobotBitmap, roi: Roi): Uint8Array {
-  const mask = new Uint8Array(bitmap.width * bitmap.height);
-  const bounds = clampRoi(bitmap, roi);
-
-  for (let y = bounds.y; y < bounds.y + bounds.height; y += 1) {
-    for (let x = bounds.x; x < bounds.x + bounds.width; x += 1) {
+  for (let y = minY; y <= maxY; y += 1) {
+    for (let x = minX; x <= maxX; x += 1) {
       const offset = y * bitmap.byteWidth + x * bitmap.bytesPerPixel;
       const b = bitmap.image[offset];
       const g = bitmap.image[offset + 1];
       const r = bitmap.image[offset + 2];
-
-      if (isItemStackYellowPixel(r, g, b)) {
-        mask[y * bitmap.width + x] = 1;
+      if (isBrightTimerTextPixel(r, g, b)) {
+        brightPixels += 1;
+        if (brightPixels >= TIMER_PRESENCE_MIN_BRIGHT_PIXELS) {
+          return true;
+        }
       }
     }
   }
 
-  return mask;
+  return false;
 }
 
-function collectYellowComponents(mask: Uint8Array, bitmap: RobotBitmap, roi: Roi): YellowComponent[] {
-  const remaining = mask.slice();
-  const bounds = clampRoi(bitmap, roi);
-  const components: YellowComponent[] = [];
+function getPlayerAnchor(bitmap: RobotBitmap): PlayerBox | { centerX: number; centerY: number } {
+  return detectBestPlayerBoxInScreenshot(bitmap) ?? {
+    centerX: Math.round(bitmap.width * 0.5),
+    centerY: Math.round(bitmap.height * 0.52),
+  };
+}
 
-  for (let startY = bounds.y; startY < bounds.y + bounds.height; startY += 1) {
-    for (let startX = bounds.x; startX < bounds.x + bounds.width; startX += 1) {
-      const startIndex = startY * bitmap.width + startX;
-      if (!remaining[startIndex]) {
-        continue;
-      }
+function distanceBetween(a: { centerX: number; centerY: number }, b: { centerX: number; centerY: number }): number {
+  const dx = a.centerX - b.centerX;
+  const dy = a.centerY - b.centerY;
+  return Math.sqrt(dx * dx + dy * dy);
+}
 
-      const stack = [startIndex];
-      remaining[startIndex] = 0;
-
-      let minX = bitmap.width;
-      let minY = bitmap.height;
-      let maxX = -1;
-      let maxY = -1;
-      let pixelCount = 0;
-
-      while (stack.length > 0) {
-        const index = stack.pop();
-        if (index === undefined) {
-          break;
-        }
-
-        const x = index % bitmap.width;
-        const y = Math.floor(index / bitmap.width);
-
-        minX = Math.min(minX, x);
-        minY = Math.min(minY, y);
-        maxX = Math.max(maxX, x);
-        maxY = Math.max(maxY, y);
-        pixelCount += 1;
-
-        for (let dy = -1; dy <= 1; dy += 1) {
-          for (let dx = -1; dx <= 1; dx += 1) {
-            if (dx === 0 && dy === 0) {
-              continue;
-            }
-
-            const nextX = x + dx;
-            const nextY = y + dy;
-            if (
-              nextX < bounds.x ||
-              nextY < bounds.y ||
-              nextX >= bounds.x + bounds.width ||
-              nextY >= bounds.y + bounds.height
-            ) {
-              continue;
-            }
-
-            const nextIndex = nextY * bitmap.width + nextX;
-            if (!remaining[nextIndex]) {
-              continue;
-            }
-
-            remaining[nextIndex] = 0;
-            stack.push(nextIndex);
-          }
-        }
-      }
-
-      components.push({ minX, minY, maxX, maxY, pixelCount });
-    }
+function readGuardianCoordinateLocation(bitmap: RobotBitmap): {
+  matchedLine: string;
+  chunkId: number;
+  regionId: number;
+} | null {
+  const location = readCoordinateOverlayLocation(bitmap, currentWindowsScalePercent);
+  if (!location) {
+    return null;
   }
 
-  return components;
+  return {
+    matchedLine: location.matchedLine,
+    chunkId: location.chunkId,
+    regionId: location.regionId,
+  };
 }
 
-function buildTenCellCandidateRois(bitmap: RobotBitmap): Roi[] {
-  const inventoryRoi = resolveInventoryItemSearchRoi(bitmap);
-  const components = collectYellowComponents(buildYellowMask(bitmap, inventoryRoi), bitmap, inventoryRoi)
-    .filter((component) => {
-      const width = component.maxX - component.minX + 1;
-      const height = component.maxY - component.minY + 1;
-      return component.pixelCount >= 2 && width <= 28 && height <= 24;
-    })
-    .sort((a, b) => b.pixelCount - a.pixelCount)
-    .slice(0, MAX_TEN_CELL_CANDIDATE_ROIS);
+function hasLeftGuardianCraftingChunk(bitmap: RobotBitmap): {
+  left: boolean;
+  matchedLine: string | null;
+  chunkId: number | null;
+  regionId: number | null;
+} {
+  const location = readGuardianCoordinateLocation(bitmap);
+  if (!location) {
+    return {
+      left: false,
+      matchedLine: null,
+      chunkId: null,
+      regionId: null,
+    };
+  }
 
-  return components.map((component) =>
-    clampRoi(bitmap, {
-      x: component.minX - TEN_CELL_TEMPLATE_YELLOW_OFFSET.x - 8,
-      y: component.minY - TEN_CELL_TEMPLATE_YELLOW_OFFSET.y - 8,
-      width: 72,
-      height: 64,
-    }),
+  return {
+    left: location.chunkId !== GUARDIAN_CRAFTING_CHUNK_ID && location.regionId !== GUARDIAN_CRAFTING_REGION_ID,
+    matchedLine: location.matchedLine,
+    chunkId: location.chunkId,
+    regionId: location.regionId,
+  };
+}
+
+function getPickupWaitTicks(distancePx: number | null): number {
+  if (distancePx === null || !Number.isFinite(distancePx)) {
+    return PICKUP_MIN_WAIT_TICKS + PICKUP_EXTRA_WAIT_TICKS;
+  }
+
+  return Math.max(PICKUP_MIN_WAIT_TICKS, Math.ceil(distancePx / PLAYER_TRAVEL_SPEED_PX_PER_TICK)) + PICKUP_EXTRA_WAIT_TICKS;
+}
+
+function toWaitAfterPickupState(
+  state: BotState,
+  nowMs: number,
+  clicked: { x: number; y: number },
+  distancePx: number | null,
+  config: GuardianOfTheRiftConfig,
+): BotState {
+  const waitTicks = getPickupWaitTicks(distancePx);
+  setAutomateBotCurrentStep(STEP_WAIT_AFTER_PICKUP_ID);
+  log(
+    stepMessage(
+      WORKFLOW_STEPS.MOVE_TO_MINING_NODE,
+      `Waiting ${waitTicks} game tick(s) after uncharged-cell pickup before ${config.useAgilityCourse ? "agility route" : "mining-node search"} (distance=${distancePx === null ? "unknown" : Math.round(distancePx)}px).`,
+    ),
   );
+
+  return {
+    ...state,
+    currentFunction: "waitAfterPickup",
+    phase: "wait-after-pickup",
+    lastPickupClickScreen: clicked,
+    pickupArrivalDeadlineMs: nowMs + waitTicks * GAME_TICK_MS,
+    pickupDistancePx: distancePx,
+    missingTargetTicks: 0,
+  };
 }
 
 function runPickUnchargedCellTick(
@@ -528,32 +933,10 @@ function runPickUnchargedCellTick(
   nowMs: number,
   tickCapture: TickCapture,
   captureBounds: ScreenCaptureBounds,
-  unchargedCellTemplates: GuardianOfTheRiftUnchargedCellTemplate[],
+  config: GuardianOfTheRiftConfig,
 ): BotState {
-  const tenCellCandidateRois = buildTenCellCandidateRois(tickCapture.bitmap);
-  const unchargedCells = detectGuardianOfTheRiftUnchargedCellCount(
-    tickCapture.bitmap,
-    unchargedCellTemplates,
-    tenCellCandidateRois,
-  );
-  const unchargedCellCount = unchargedCells.count;
-
-  if (unchargedCells.hasTenUnchargedCells) {
-    log(`Validated ${TARGET_UNCHARGED_CELL_COUNT} uncharged cells in inventory. Stopping before step two.`);
-    stopAutomateBot("bot");
-    return {
-      ...state,
-      phase: "complete",
-      unchargedCellCount,
-      actionLockUntilMs: Number.POSITIVE_INFINITY,
-    };
-  }
-
   if (nowMs < state.actionLockUntilMs) {
-    return {
-      ...state,
-      unchargedCellCount,
-    };
+    return state;
   }
 
   const target = detectBestRedPickupTarget(tickCapture.bitmap);
@@ -561,58 +944,1308 @@ function runPickUnchargedCellTick(
     const missingTargetTicks = state.missingTargetTicks + 1;
     if (missingTargetTicks === 1 || missingTargetTicks % 5 === 0) {
       warn(
-        `Uncharged cells=${unchargedCellCount ?? "unknown"}; no pure red FFFF0000 pickup marker found in the scene.`,
+        stepMessage(WORKFLOW_STEPS.TAKE_UNCHARGED_CELL, "No red uncharged-cell pickup marker found in the scene."),
       );
     }
 
     return {
       ...state,
-      unchargedCellCount,
       missingTargetTicks,
-      actionLockUntilMs: deadlineFromNowTicks(1, nowMs),
+      actionLockUntilMs: nowMs + GAME_TICK_MS,
     };
   }
 
+  const playerAnchor = getPlayerAnchor(tickCapture.bitmap);
+  const distancePx = distanceBetween(playerAnchor, target);
   const clicked = clickScreenPoint(captureBounds.x + target.centerX, captureBounds.y + target.centerY, captureBounds);
   log(
-    `Uncharged cells=${unchargedCellCount ?? "unknown"}; clicked red pickup marker at (${clicked.x},${clicked.y}) local=(${target.centerX},${target.centerY}) pixels=${target.pixelCount}.`,
+    stepMessage(
+      WORKFLOW_STEPS.TAKE_UNCHARGED_CELL,
+      `Clicked red uncharged-cell pickup marker at (${clicked.x},${clicked.y}) local=(${target.centerX},${target.centerY}) pixels=${target.pixelCount} distance=${Math.round(distancePx)}px.`,
+    ),
+  );
+
+  return toWaitAfterPickupState(state, nowMs, clicked, distancePx, config);
+}
+
+function transitionToMiningState(state: BotState): BotState {
+  setAutomateBotCurrentStep(STEP_WAIT_MINING_TIMER_ID);
+  log(stepMessage(WORKFLOW_STEPS.START_MINING, "Waiting for the real Guardian timer to appear before mining."));
+  return {
+    ...state,
+    currentFunction: "waitForMiningTimer",
+    phase: "wait-for-mining-timer",
+    actionLockUntilMs: 0,
+    miningOrangeReclicked: false,
+    missingMiningTimerTicks: 0,
+  };
+}
+
+function startMiningMonitorState(state: BotState, secondsRemaining: number | null, observedAtMs: number): BotState {
+  setAutomateBotCurrentStep(STEP_MINING_ID);
+  log(
+    stepMessage(
+      WORKFLOW_STEPS.START_MINING,
+      `Mining started; monitoring real timer until under ${MINING_TIMER_WORKBENCH_THRESHOLD_SECONDS}s (timer=${secondsRemaining ?? "unreadable"}).`,
+    ),
+  );
+  return {
+    ...state,
+    currentFunction: "mine",
+    phase: "mining",
+    actionLockUntilMs: 0,
+    lastTimerSecondsRemaining: secondsRemaining,
+    lastTimerObservedAtMs: secondsRemaining === null ? null : observedAtMs,
+  };
+}
+
+function runWaitAfterPickupTick(state: BotState, nowMs: number, config: GuardianOfTheRiftConfig): BotState {
+  if (nowMs < state.pickupArrivalDeadlineMs) {
+    return state;
+  }
+
+  if (config.useAgilityCourse) {
+    setAutomateBotCurrentStep(STEP_AGILITY_MAGENTA_ID);
+    log(stepMessage(WORKFLOW_STEPS.FIND_MINING_NODE, "Agility course is enabled; moving east until the mining route opens."));
+    return {
+      ...state,
+      currentFunction: "agilityFindMagenta",
+      phase: "agility-find-magenta",
+      actionLockUntilMs: 0,
+    };
+  }
+
+  setAutomateBotCurrentStep(STEP_ORANGE_ID);
+  log(stepMessage(WORKFLOW_STEPS.FIND_MINING_NODE, "Searching for the orange mining node marker."));
+  return {
+    ...state,
+    currentFunction: "findOrange",
+    phase: "find-orange",
+    actionLockUntilMs: 0,
+  };
+}
+
+function pickNearestMagentaObject(
+  detections: MagentaObjectDetection[],
+  playerAnchor: { centerX: number; centerY: number },
+): MagentaObjectDetection | null {
+  let best: MagentaObjectDetection | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  for (const detection of detections) {
+    const distance = distanceBetween(playerAnchor, detection);
+    if (distance < bestDistance) {
+      best = detection;
+      bestDistance = distance;
+    }
+  }
+
+  return best;
+}
+
+function pickNearestOrangeObject(
+  detections: OrangeObjectDetection[],
+  playerAnchor: { centerX: number; centerY: number },
+): OrangeObjectDetection | null {
+  let best: OrangeObjectDetection | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  for (const detection of detections) {
+    const nearestX = clamp(playerAnchor.centerX, detection.minX, detection.maxX);
+    const nearestY = clamp(playerAnchor.centerY, detection.minY, detection.maxY);
+    const edgeDistance = Math.sqrt((playerAnchor.centerX - nearestX) ** 2 + (playerAnchor.centerY - nearestY) ** 2);
+    const centerDistance = distanceBetween(playerAnchor, detection);
+    const scoreDistance = edgeDistance + centerDistance * 0.001;
+
+    if (scoreDistance < bestDistance) {
+      best = detection;
+      bestDistance = scoreDistance;
+    }
+  }
+
+  return best;
+}
+
+function pickNearestWorkbenchMarker(
+  detections: WorkbenchMarkerDetection[],
+  playerAnchor: { centerX: number; centerY: number },
+): WorkbenchMarkerDetection | null {
+  return pickNearestOrangeObject(detections, playerAnchor);
+}
+
+function pickNearestRedTarget(
+  detections: RedPickupTarget[],
+  playerAnchor: { centerX: number; centerY: number },
+): RedPickupTarget | null {
+  let best: RedPickupTarget | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  for (const detection of detections) {
+    const minX = detection.x;
+    const minY = detection.y;
+    const maxX = detection.x + detection.width - 1;
+    const maxY = detection.y + detection.height - 1;
+    const nearestX = clamp(playerAnchor.centerX, minX, maxX);
+    const nearestY = clamp(playerAnchor.centerY, minY, maxY);
+    const edgeDistance = Math.sqrt((playerAnchor.centerX - nearestX) ** 2 + (playerAnchor.centerY - nearestY) ** 2);
+    const centerDistance = distanceBetween(playerAnchor, detection);
+    const scoreDistance = edgeDistance + centerDistance * 0.001 - detection.pixelCount * 0.0001;
+
+    if (scoreDistance < bestDistance) {
+      best = detection;
+      bestDistance = scoreDistance;
+    }
+  }
+
+  return best;
+}
+
+function pickLargestGreenObject(detections: GreenObjectDetection[]): GreenObjectDetection | null {
+  return detections[0] ?? null;
+}
+
+function pickGuardianGreenClickPoint(
+  bitmap: RobotBitmap,
+  detection: GreenObjectDetection,
+): { centerX: number; centerY: number } {
+  const width = detection.maxX - detection.minX + 1;
+  const height = detection.maxY - detection.minY + 1;
+  const greenMask = new Uint8Array(width * height);
+  const rowMin = new Array<number>(height).fill(Number.POSITIVE_INFINITY);
+  const rowMax = new Array<number>(height).fill(Number.NEGATIVE_INFINITY);
+  const colMin = new Array<number>(width).fill(Number.POSITIVE_INFINITY);
+  const colMax = new Array<number>(width).fill(Number.NEGATIVE_INFINITY);
+  let sumX = 0;
+  let sumY = 0;
+  let greenPixelCount = 0;
+
+  for (let y = detection.minY; y <= detection.maxY; y += 1) {
+    for (let x = detection.minX; x <= detection.maxX; x += 1) {
+      const offset = y * bitmap.byteWidth + x * bitmap.bytesPerPixel;
+      const b = bitmap.image[offset];
+      const g = bitmap.image[offset + 1];
+      const r = bitmap.image[offset + 2];
+      if (!isGuardianGreenPixel(r, g, b)) {
+        continue;
+      }
+
+      const localX = x - detection.minX;
+      const localY = y - detection.minY;
+      greenMask[localY * width + localX] = 1;
+      rowMin[localY] = Math.min(rowMin[localY], x);
+      rowMax[localY] = Math.max(rowMax[localY], x);
+      colMin[localX] = Math.min(colMin[localX], y);
+      colMax[localX] = Math.max(colMax[localX], y);
+      sumX += x;
+      sumY += y;
+      greenPixelCount += 1;
+    }
+  }
+
+  const centroidX = greenPixelCount > 0 ? sumX / greenPixelCount : detection.centerX;
+  const centroidY = greenPixelCount > 0 ? sumY / greenPixelCount : detection.centerY;
+  let bestX = Math.round(centroidX);
+  let bestY = Math.round(centroidY);
+  let bestScore = Number.POSITIVE_INFINITY;
+
+  for (let y = detection.minY; y <= detection.maxY; y += 1) {
+    const localY = y - detection.minY;
+    if (!Number.isFinite(rowMin[localY]) || rowMax[localY] - rowMin[localY] < 2) {
+      continue;
+    }
+
+    for (let x = rowMin[localY] + 1; x <= rowMax[localY] - 1; x += 1) {
+      const localX = x - detection.minX;
+      if (localX < 0 || localX >= width || greenMask[localY * width + localX]) {
+        continue;
+      }
+
+      if (!Number.isFinite(colMin[localX]) || y <= colMin[localX] || y >= colMax[localX]) {
+        continue;
+      }
+
+      const dx = x - centroidX;
+      const dy = y - centroidY;
+      const edgeMargin = Math.min(x - rowMin[localY], rowMax[localY] - x, y - colMin[localX], colMax[localX] - y);
+      const score = dx * dx + dy * dy - edgeMargin * 0.25;
+
+      if (score < bestScore) {
+        bestScore = score;
+        bestX = x;
+        bestY = y;
+      }
+    }
+  }
+
+  return {
+    centerX: bestX,
+    centerY: bestY,
+  };
+}
+
+function getEastMovePoint(bitmap: RobotBitmap, playerAnchor: { centerX: number; centerY: number }): { x: number; y: number } {
+  return {
+    x: Math.max(Math.round(bitmap.width * AGILITY_EAST_CLICK_RATIO_X), playerAnchor.centerX + Math.round(bitmap.width * 0.12)),
+    y: Math.round(playerAnchor.centerY || bitmap.height * AGILITY_EAST_CLICK_RATIO_Y),
+  };
+}
+
+function getWestMovePoint(bitmap: RobotBitmap, playerAnchor: { centerX: number; centerY: number }): { x: number; y: number } {
+  return {
+    x: Math.min(Math.round(bitmap.width * WORKBENCH_WEST_CLICK_RATIO_X), playerAnchor.centerX - Math.round(bitmap.width * 0.12)),
+    y: Math.round(playerAnchor.centerY || bitmap.height * 0.5),
+  };
+}
+
+function runAgilityFindMagentaTick(
+  state: BotState,
+  nowMs: number,
+  tickCapture: TickCapture,
+  captureBounds: ScreenCaptureBounds,
+): BotState {
+  if (nowMs < state.actionLockUntilMs) {
+    return state;
+  }
+
+  const playerAnchor = getPlayerAnchor(tickCapture.bitmap);
+  const magentaObjects = detectAllMagentaObjects(tickCapture.bitmap, AGILITY_MAGENTA_MIN_PIXELS);
+  const nearestMagenta = pickNearestMagentaObject(magentaObjects, playerAnchor);
+
+  if (nearestMagenta) {
+    const clicked = clickScreenPoint(
+      captureBounds.x + nearestMagenta.centerX,
+      captureBounds.y + nearestMagenta.centerY,
+      captureBounds,
+    );
+    log(
+      stepMessage(
+        WORKFLOW_STEPS.MOVE_TO_MINING_NODE,
+        `Clicked agility route marker at (${clicked.x},${clicked.y}) local=(${nearestMagenta.centerX},${nearestMagenta.centerY}) pixels=${nearestMagenta.pixelCount}.`,
+      ),
+    );
+    return transitionToMiningState({
+      ...state,
+      actionLockUntilMs: nowMs + (AGILITY_EAST_CLICK_LOCK_TICKS + 1) * GAME_TICK_MS,
+      missingMagentaTicks: 0,
+    });
+  }
+
+  const eastPoint = getEastMovePoint(tickCapture.bitmap, playerAnchor);
+  const clicked = clickScreenPoint(captureBounds.x + eastPoint.x, captureBounds.y + eastPoint.y, captureBounds);
+  const nextClickCount = state.eastMoveClickCount + 1;
+  if (nextClickCount === 1 || nextClickCount % 3 === 0) {
+    log(
+      stepMessage(
+        WORKFLOW_STEPS.FIND_MINING_NODE,
+        `No agility route marker found; moving east via (${clicked.x},${clicked.y}) attempt=${nextClickCount}.`,
+      ),
+    );
+  }
+
+  return {
+    ...state,
+    missingMagentaTicks: state.missingMagentaTicks + 1,
+    eastMoveClickCount: nextClickCount,
+    actionLockUntilMs: nowMs + AGILITY_EAST_CLICK_LOCK_TICKS * GAME_TICK_MS,
+  };
+}
+
+function runFindOrangeTick(
+  state: BotState,
+  nowMs: number,
+  tickCapture: TickCapture,
+  captureBounds: ScreenCaptureBounds,
+): BotState {
+  if (nowMs < state.actionLockUntilMs) {
+    return state;
+  }
+
+  const playerAnchor = getPlayerAnchor(tickCapture.bitmap);
+  const orangeObjects = detectAllOrangeObjects(tickCapture.bitmap, ORANGE_MIN_PIXELS);
+  const nearestOrange = pickNearestOrangeObject(orangeObjects, playerAnchor);
+
+  if (!nearestOrange) {
+    const missingOrangeTicks = state.missingOrangeTicks + 1;
+    if (missingOrangeTicks === 1 || missingOrangeTicks % 5 === 0) {
+      warn(stepMessage(WORKFLOW_STEPS.FIND_MINING_NODE, "No orange mining node marker found yet."));
+    }
+
+    return {
+      ...state,
+      missingOrangeTicks,
+      actionLockUntilMs: nowMs + GAME_TICK_MS,
+    };
+  }
+
+  const clicked = clickScreenPoint(
+    captureBounds.x + nearestOrange.centerX,
+    captureBounds.y + nearestOrange.centerY,
+    captureBounds,
+  );
+  log(
+    stepMessage(
+      WORKFLOW_STEPS.MOVE_TO_MINING_NODE,
+      `Clicked orange mining node marker at (${clicked.x},${clicked.y}) local=(${nearestOrange.centerX},${nearestOrange.centerY}) pixels=${nearestOrange.pixelCount}.`,
+    ),
+  );
+
+  return transitionToMiningState({
+    ...state,
+    missingOrangeTicks: 0,
+    actionLockUntilMs: nowMs + (AGILITY_EAST_CLICK_LOCK_TICKS + 1) * GAME_TICK_MS,
+  });
+}
+
+function runWaitForMiningTimerTick(
+  state: BotState,
+  nowMs: number,
+  tickCapture: TickCapture,
+  captureBounds: ScreenCaptureBounds,
+): BotState {
+  if (nowMs < state.actionLockUntilMs) {
+    return state;
+  }
+
+  const timer = detectGuardianOfTheRiftTimer(tickCapture.bitmap);
+  const timerTextVisible = hasGuardianTimerTextPresence(tickCapture.bitmap);
+  const parsedStartingSeconds =
+    timer.secondsRemaining !== null &&
+    timer.secondsRemaining >= 0 &&
+    timer.secondsRemaining <= MINING_TIMER_MAX_PLAUSIBLE_SECONDS
+      ? timer.secondsRemaining
+      : null;
+  const timerAppeared = timerTextVisible || parsedStartingSeconds !== null;
+
+  if (!timerAppeared) {
+    const missingMiningTimerTicks = state.missingMiningTimerTicks + 1;
+    if (missingMiningTimerTicks === 1 || missingMiningTimerTicks % 5 === 0) {
+      warn(stepMessage(WORKFLOW_STEPS.START_MINING, "Real Guardian timer is not visible yet; mining cannot start."));
+    }
+
+    return {
+      ...state,
+      missingMiningTimerTicks,
+      actionLockUntilMs: nowMs + GAME_TICK_MS,
+    };
+  }
+
+  log(
+    stepMessage(
+      WORKFLOW_STEPS.START_MINING,
+      `Timer gate read: visible=${timerTextVisible ? "yes" : "no"} ocr=${timer.secondsRemaining ?? "null"} raw=${timer.rawText ?? "null"}.`,
+    ),
+  );
+
+  const playerAnchor = getPlayerAnchor(tickCapture.bitmap);
+  const nearestOrange = pickNearestOrangeObject(detectAllOrangeObjects(tickCapture.bitmap, ORANGE_MIN_PIXELS), playerAnchor);
+  if (!nearestOrange) {
+    warn(
+      stepMessage(
+        WORKFLOW_STEPS.START_MINING,
+        `Timer appeared (${parsedStartingSeconds ?? "unreadable"}s), but no orange mining node marker was found for the required re-click.`,
+      ),
+    );
+    return {
+      ...state,
+      lastTimerSecondsRemaining: parsedStartingSeconds,
+      lastTimerObservedAtMs: parsedStartingSeconds === null ? null : nowMs,
+      actionLockUntilMs: nowMs + GAME_TICK_MS,
+    };
+  }
+
+  const clicked = clickScreenPoint(
+    captureBounds.x + nearestOrange.centerX,
+    captureBounds.y + nearestOrange.centerY,
+    captureBounds,
+  );
+  log(
+    stepMessage(
+      WORKFLOW_STEPS.START_MINING,
+      `Timer appeared (${parsedStartingSeconds ?? "unreadable"}s); re-clicked orange mining node at (${clicked.x},${clicked.y}) before mining.`,
+    ),
+  );
+
+  return startMiningMonitorState(
+    {
+      ...state,
+      miningOrangeReclicked: true,
+      missingMiningTimerTicks: 0,
+      lastTimerSecondsRemaining: parsedStartingSeconds,
+      lastTimerObservedAtMs: parsedStartingSeconds === null ? null : nowMs,
+      actionLockUntilMs: nowMs + MINING_RECLICK_LOCK_TICKS * GAME_TICK_MS,
+    },
+    parsedStartingSeconds,
+    nowMs,
+  );
+}
+
+function transitionToWorkbenchState(state: BotState): BotState {
+  setAutomateBotCurrentStep(STEP_WORKBENCH_ID);
+  log(stepMessage(WORKFLOW_STEPS.FIND_WORKBENCH, "Timer is under threshold; searching for the magenta workbench marker."));
+  return {
+    ...state,
+    currentFunction: "workbenchFindYellow",
+    phase: "workbench-find-yellow",
+    actionLockUntilMs: 0,
+    craftingInventoryChangeDeadlineMs: 0,
+  };
+}
+
+function transitionToCraftingState(
+  state: BotState,
+  nowMs: number,
+  distancePx: number | null,
+  startingInventoryFreeSlots: number | null,
+): BotState {
+  setAutomateBotCurrentStep(STEP_CRAFTING_ID);
+  const waitTicks = getPickupWaitTicks(distancePx);
+  log(
+    stepMessage(
+      WORKFLOW_STEPS.CRAFT_UNTIL_FULL,
+      `Workbench clicked; checking inventory movement after ${WORKBENCH_INVENTORY_CHANGE_CHECK_TICKS} tick(s) (start free-space=${startingInventoryFreeSlots ?? "unknown"}, travel wait=${waitTicks} tick(s), distance=${distancePx === null ? "unknown" : Math.round(distancePx)}px).`,
+    ),
+  );
+  return {
+    ...state,
+    currentFunction: "craft",
+    phase: "crafting",
+    actionLockUntilMs: nowMs + WORKBENCH_INVENTORY_CHANGE_CHECK_TICKS * GAME_TICK_MS,
+    inventoryFreeSlots: startingInventoryFreeSlots,
+    missingInventoryCountTicks: 0,
+    craftingInventoryChangeDeadlineMs: nowMs + WORKBENCH_INVENTORY_CHANGE_CHECK_TICKS * GAME_TICK_MS,
+    missingYellowTicks: 0,
+  };
+}
+
+function readMiningTimer(bitmap: RobotBitmap): TimerRead {
+  const detection = detectGuardianOfTheRiftTimer(bitmap);
+  const detectedSeconds = detection.secondsRemaining;
+
+  if (
+    detectedSeconds !== null &&
+    detectedSeconds >= 0 &&
+    detectedSeconds <= MINING_TIMER_MAX_PLAUSIBLE_SECONDS
+  ) {
+    return {
+      secondsRemaining: detectedSeconds,
+      source: "ocr",
+      rawText: detection.rawText,
+      ocrSecondsRemaining: detectedSeconds,
+    };
+  }
+
+  return {
+    secondsRemaining: null,
+    source: "missing",
+    rawText: detection.rawText,
+    ocrSecondsRemaining: detectedSeconds,
+  };
+}
+
+function formatTimerRead(timerRead: TimerRead): string {
+  return `timer=${timerRead.secondsRemaining ?? "null"} source=${timerRead.source} ocr=${timerRead.ocrSecondsRemaining ?? "null"} raw=${timerRead.rawText ?? "null"}`;
+}
+
+function runMiningTick(state: BotState, nowMs: number, tickCapture: TickCapture): BotState {
+  if (nowMs < state.actionLockUntilMs) {
+    return state;
+  }
+
+  const timerRead = readMiningTimer(tickCapture.bitmap);
+  const secondsRemaining = timerRead.secondsRemaining;
+  log(stepMessage(WORKFLOW_STEPS.START_MINING, `Mining timer read: ${formatTimerRead(timerRead)}.`));
+
+  if (secondsRemaining === null) {
+    const missingMiningTimerTicks = state.missingMiningTimerTicks + 1;
+    if (missingMiningTimerTicks === 1 || missingMiningTimerTicks % 5 === 0) {
+      warn(stepMessage(WORKFLOW_STEPS.START_MINING, "Real timer OCR is missing; waiting for a parsed timer value."));
+    }
+
+    return {
+      ...state,
+      missingMiningTimerTicks,
+      actionLockUntilMs: nowMs + GAME_TICK_MS,
+    };
+  }
+
+  if (secondsRemaining < MINING_TIMER_WORKBENCH_THRESHOLD_SECONDS) {
+    log(stepMessage(WORKFLOW_STEPS.FIND_WORKBENCH, `Guardian timer is ${secondsRemaining}s; mining complete.`));
+    return transitionToWorkbenchState({
+      ...state,
+      lastTimerSecondsRemaining: secondsRemaining,
+      lastTimerObservedAtMs: nowMs,
+      missingMiningTimerTicks: 0,
+    });
+  }
+
+  if (state.lastTimerSecondsRemaining !== secondsRemaining && secondsRemaining % 10 === 0) {
+    log(
+      stepMessage(
+        WORKFLOW_STEPS.START_MINING,
+        `Mining until timer < ${MINING_TIMER_WORKBENCH_THRESHOLD_SECONDS}s; current timer=${secondsRemaining}s.`,
+      ),
+    );
+  }
+
+  return {
+    ...state,
+    lastTimerSecondsRemaining: secondsRemaining,
+    lastTimerObservedAtMs: nowMs,
+    missingMiningTimerTicks: 0,
+    actionLockUntilMs: nowMs + GAME_TICK_MS,
+  };
+}
+
+function runWorkbenchFindYellowTick(
+  state: BotState,
+  nowMs: number,
+  tickCapture: TickCapture,
+  captureBounds: ScreenCaptureBounds,
+  config: GuardianOfTheRiftConfig,
+): BotState {
+  if (nowMs < state.actionLockUntilMs) {
+    return state;
+  }
+
+  const playerAnchor = getPlayerAnchor(tickCapture.bitmap);
+  const nearestWorkbenchMarker = pickNearestWorkbenchMarker(
+    detectAllWorkbenchMagentaObjects(tickCapture.bitmap, WORKBENCH_MAGENTA_MIN_PIXELS),
+    playerAnchor,
+  );
+  if (!nearestWorkbenchMarker) {
+    const missingYellowTicks = state.missingYellowTicks + 1;
+
+    if (!config.useAgilityCourse) {
+      const westPoint = getWestMovePoint(tickCapture.bitmap, playerAnchor);
+      const clicked = clickScreenPoint(captureBounds.x + westPoint.x, captureBounds.y + westPoint.y, captureBounds);
+      const nextWestMoveClickCount = state.westMoveClickCount + 1;
+      if (nextWestMoveClickCount === 1 || nextWestMoveClickCount % 3 === 0) {
+        log(
+          stepMessage(
+            WORKFLOW_STEPS.FIND_WORKBENCH,
+            `No magenta workbench marker found; moving west via (${clicked.x},${clicked.y}) attempt=${nextWestMoveClickCount}.`,
+          ),
+        );
+      }
+
+      return {
+        ...state,
+        missingYellowTicks,
+        westMoveClickCount: nextWestMoveClickCount,
+        actionLockUntilMs: nowMs + WORKBENCH_WEST_CLICK_LOCK_TICKS * GAME_TICK_MS,
+      };
+    }
+
+    if (missingYellowTicks === 1 || missingYellowTicks % 5 === 0) {
+      warn(stepMessage(WORKFLOW_STEPS.FIND_WORKBENCH, "No magenta workbench marker found yet."));
+    }
+    return {
+      ...state,
+      missingYellowTicks,
+      actionLockUntilMs: nowMs + GAME_TICK_MS,
+    };
+  }
+
+  const inventoryBeforeClick = detectInventoryCount(tickCapture.bitmap);
+  const clicked = clickScreenPoint(
+    captureBounds.x + nearestWorkbenchMarker.centerX,
+    captureBounds.y + nearestWorkbenchMarker.centerY,
+    captureBounds,
+  );
+  log(
+    stepMessage(
+      WORKFLOW_STEPS.MOVE_TO_WORKBENCH,
+      `Clicked magenta workbench marker at (${clicked.x},${clicked.y}) local=(${nearestWorkbenchMarker.centerX},${nearestWorkbenchMarker.centerY}) pixels=${nearestWorkbenchMarker.pixelCount}; inventory free-space before click=${inventoryBeforeClick.count ?? "unknown"}.`,
+    ),
+  );
+
+  const distancePx = distanceBetween(playerAnchor, nearestWorkbenchMarker);
+  return transitionToCraftingState(state, nowMs, distancePx, inventoryBeforeClick.count);
+}
+
+function transitionToGuardianTravelState(state: BotState): BotState {
+  setAutomateBotCurrentStep(STEP_TRAVEL_GUARDIAN_ID);
+  log(stepMessage(WORKFLOW_STEPS.FIND_GUARDIAN, "Inventory free-space is 0; searching for the green guardian outline."));
+  return {
+    ...state,
+    currentFunction: "travelToGuardian",
+    phase: "travel-to-guardian",
+    actionLockUntilMs: 0,
+    craftingInventoryChangeDeadlineMs: 0,
+    guardianArrivalDeadlineMs: 0,
+    guardianClickDistancePx: null,
+    guardianCoordinateConfirmed: false,
+    guardianYellowArrivalDeadlineMs: 0,
+    guardianYellowClickDistancePx: null,
+    guardianReturnArrivalDeadlineMs: 0,
+    guardianReturnClickDistancePx: null,
+    missingGuardianYellowTicks: 0,
+    missingGuardianReturnRedTicks: 0,
+  };
+}
+
+function transitionToGuardianRunecraftingState(state: BotState): BotState {
+  setAutomateBotCurrentStep(STEP_TRAVEL_GUARDIAN_ID);
+  log(stepMessage(WORKFLOW_STEPS.FIND_ALTAR, "Coordinate is outside crafting region; entering altar and portal return phase."));
+  return {
+    ...state,
+    currentFunction: "waitAfterGuardianYellowClick",
+    phase: "wait-after-guardian-yellow-click",
+    actionLockUntilMs: 0,
+    guardianArrivalDeadlineMs: 0,
+    guardianClickDistancePx: null,
+    guardianCoordinateConfirmed: true,
+    guardianYellowArrivalDeadlineMs: 0,
+    guardianYellowClickDistancePx: null,
+    guardianReturnArrivalDeadlineMs: 0,
+    guardianReturnClickDistancePx: null,
+    missingGuardianYellowTicks: 0,
+    missingGuardianReturnRedTicks: 0,
+  };
+}
+
+function createStartupInitialState(bitmap: RobotBitmap): BotState {
+  const state = createInitialState();
+  const location = readGuardianCoordinateLocation(bitmap);
+  const inventory = detectInventoryCount(bitmap);
+  log(
+    `Startup phase check: inventoryFreeSlots=${inventory.count ?? "null"} inventoryRaw=${inventory.rawText ?? "null"} region=${location?.regionId ?? "null"} chunk=${location?.chunkId ?? "null"} matched='${location?.matchedLine ?? "null"}'.`,
+  );
+
+  if (location && location.regionId !== GUARDIAN_CRAFTING_REGION_ID) {
+    return transitionToGuardianRunecraftingState({
+      ...state,
+      inventoryFreeSlots: inventory.count,
+      missingInventoryCountTicks: inventory.count === null ? 1 : 0,
+    });
+  }
+
+  if (inventory.count === 0) {
+    return transitionToGuardianTravelState({
+      ...state,
+      inventoryFreeSlots: inventory.count,
+      missingInventoryCountTicks: 0,
+    });
+  }
+
+  setAutomateBotCurrentStep(STEP_PICK_UNCHARGED_CELL_ID);
+  log(stepMessage(WORKFLOW_STEPS.TAKE_UNCHARGED_CELL, "Startup phase check selected uncharged-cell pickup."));
+  return {
+    ...state,
+    inventoryFreeSlots: inventory.count,
+    missingInventoryCountTicks: inventory.count === null ? 1 : 0,
+  };
+}
+
+function runCraftingTick(state: BotState, nowMs: number, tickCapture: TickCapture): BotState {
+  if (nowMs < state.actionLockUntilMs) {
+    return state;
+  }
+
+  const inventory = detectInventoryCount(tickCapture.bitmap);
+  log(
+    stepMessage(
+      WORKFLOW_STEPS.CRAFT_UNTIL_FULL,
+      `Inventory free-space read while crafting: count=${inventory.count ?? "null"} raw=${inventory.rawText ?? "null"}.`,
+    ),
+  );
+
+  if (inventory.count === null) {
+    const missingInventoryCountTicks = state.missingInventoryCountTicks + 1;
+    if (missingInventoryCountTicks === 1 || missingInventoryCountTicks % 10 === 0) {
+      const debugPath = `test-image-debug/guardian-crafting-inventory-count-${state.loopIndex}.png`;
+      saveBitmapWithInventoryCountDebug(tickCapture.bitmap, inventory, debugPath);
+      warn(stepMessage(WORKFLOW_STEPS.CRAFT_UNTIL_FULL, `Inventory free-space unreadable; saved debug image to ${debugPath}.`));
+    }
+
+    return {
+      ...state,
+      missingInventoryCountTicks,
+      actionLockUntilMs: nowMs + GAME_TICK_MS,
+    };
+  }
+
+  if (inventory.count === 0) {
+    return transitionToGuardianTravelState({
+      ...state,
+      inventoryFreeSlots: inventory.count,
+      missingInventoryCountTicks: 0,
+      craftingInventoryChangeDeadlineMs: 0,
+    });
+  }
+
+  if (state.inventoryFreeSlots === null) {
+    return {
+      ...state,
+      inventoryFreeSlots: inventory.count,
+      missingInventoryCountTicks: 0,
+      craftingInventoryChangeDeadlineMs: nowMs + WORKBENCH_INVENTORY_CHANGE_CHECK_TICKS * GAME_TICK_MS,
+      actionLockUntilMs: nowMs + GAME_TICK_MS,
+    };
+  }
+
+  if (inventory.count !== state.inventoryFreeSlots) {
+    log(stepMessage(WORKFLOW_STEPS.CRAFT_UNTIL_FULL, `Inventory free-space changed: ${state.inventoryFreeSlots} -> ${inventory.count}.`));
+    return {
+      ...state,
+      inventoryFreeSlots: inventory.count,
+      missingInventoryCountTicks: 0,
+      craftingInventoryChangeDeadlineMs: nowMs + WORKBENCH_INVENTORY_CHANGE_CHECK_TICKS * GAME_TICK_MS,
+      actionLockUntilMs: nowMs + GAME_TICK_MS,
+    };
+  }
+
+  if (state.craftingInventoryChangeDeadlineMs > 0 && nowMs >= state.craftingInventoryChangeDeadlineMs) {
+    setAutomateBotCurrentStep(STEP_WORKBENCH_ID);
+    warn(
+      stepMessage(
+        WORKFLOW_STEPS.CRAFT_UNTIL_FULL,
+        `Inventory free-space stayed at ${inventory.count} for ${WORKBENCH_INVENTORY_CHANGE_CHECK_TICKS} tick(s); re-clicking workbench marker.`,
+      ),
+    );
+    return {
+      ...state,
+      currentFunction: "workbenchFindYellow",
+      phase: "workbench-find-yellow",
+      inventoryFreeSlots: inventory.count,
+      missingInventoryCountTicks: 0,
+      craftingInventoryChangeDeadlineMs: 0,
+      missingYellowTicks: 0,
+      actionLockUntilMs: 0,
+    };
+  }
+
+  return {
+    ...state,
+    inventoryFreeSlots: inventory.count,
+    missingInventoryCountTicks: 0,
+    actionLockUntilMs: nowMs + GAME_TICK_MS,
+  };
+}
+
+function runTravelToGuardianTick(
+  state: BotState,
+  nowMs: number,
+  tickCapture: TickCapture,
+  captureBounds: ScreenCaptureBounds,
+): BotState {
+  if (nowMs < state.actionLockUntilMs) {
+    return state;
+  }
+
+  const greenTarget = pickLargestGreenObject(detectAllGreenObjects(tickCapture.bitmap, GREEN_MIN_PIXELS));
+  if (!greenTarget) {
+    warn(stepMessage(WORKFLOW_STEPS.FIND_GUARDIAN, "No green guardian outline found yet."));
+    return {
+      ...state,
+      actionLockUntilMs: nowMs + GAME_TICK_MS,
+    };
+  }
+
+  const playerAnchor = getPlayerAnchor(tickCapture.bitmap);
+  const greenClickPoint = pickGuardianGreenClickPoint(tickCapture.bitmap, greenTarget);
+  const distancePx = distanceBetween(playerAnchor, greenClickPoint);
+  const clicked = clickScreenPoint(
+    captureBounds.x + greenClickPoint.centerX,
+    captureBounds.y + greenClickPoint.centerY,
+    captureBounds,
+  );
+  const waitTicks = getPickupWaitTicks(distancePx);
+  log(
+    stepMessage(
+      WORKFLOW_STEPS.MOVE_TO_GUARDIAN,
+      `Clicked inside green guardian outline at (${clicked.x},${clicked.y}) local=(${greenClickPoint.centerX},${greenClickPoint.centerY}) bounds=(${greenTarget.minX},${greenTarget.minY})-${greenTarget.maxX},${greenTarget.maxY} pixels=${greenTarget.pixelCount}; waiting for teleport out of region ${GUARDIAN_CRAFTING_REGION_ID} (travel wait=${waitTicks} tick(s), distance=${Math.round(distancePx)}px).`,
+    ),
   );
 
   return {
     ...state,
-    unchargedCellCount,
-    lastPickupClickScreen: clicked,
-    missingTargetTicks: 0,
-    actionLockUntilMs: deadlineFromNowTicks(POST_CLICK_LOCK_TICKS, nowMs),
+    currentFunction: "waitAfterGuardianClick",
+    phase: "wait-after-guardian-click",
+    guardianArrivalDeadlineMs: nowMs + waitTicks * GAME_TICK_MS,
+    guardianClickDistancePx: distancePx,
+    guardianCoordinateConfirmed: false,
+    actionLockUntilMs: nowMs + GUARDIAN_CLICK_LOCK_TICKS * GAME_TICK_MS,
   };
 }
 
-async function runLoop(
+function runWaitAfterGuardianClickTick(
+  state: BotState,
+  nowMs: number,
+  tickCapture: TickCapture,
   captureBounds: ScreenCaptureBounds,
-  unchargedCellTemplates: GuardianOfTheRiftUnchargedCellTemplate[],
-): Promise<void> {
+): BotState {
+  const guardianLocation = hasLeftGuardianCraftingChunk(tickCapture.bitmap);
+
+  if (!guardianLocation.left) {
+    if (nowMs < state.guardianArrivalDeadlineMs) {
+      return state;
+    }
+
+    if (nowMs < state.actionLockUntilMs) {
+      return state;
+    }
+
+    const greenTarget = pickLargestGreenObject(detectAllGreenObjects(tickCapture.bitmap, GREEN_MIN_PIXELS));
+    if (greenTarget) {
+      const playerAnchor = getPlayerAnchor(tickCapture.bitmap);
+      const greenClickPoint = pickGuardianGreenClickPoint(tickCapture.bitmap, greenTarget);
+      const distancePx = distanceBetween(playerAnchor, greenClickPoint);
+      const clicked = clickScreenPoint(
+        captureBounds.x + greenClickPoint.centerX,
+        captureBounds.y + greenClickPoint.centerY,
+        captureBounds,
+      );
+      const waitTicks = getPickupWaitTicks(distancePx);
+      log(
+        stepMessage(
+          WORKFLOW_STEPS.MOVE_TO_GUARDIAN,
+          `Still in crafting region: chunk=${guardianLocation.chunkId ?? "unknown"} region=${guardianLocation.regionId ?? "unknown"} matched='${guardianLocation.matchedLine ?? "null"}'; re-clicked inside green guardian outline at (${clicked.x},${clicked.y}) local=(${greenClickPoint.centerX},${greenClickPoint.centerY}) bounds=(${greenTarget.minX},${greenTarget.minY})-${greenTarget.maxX},${greenTarget.maxY} pixels=${greenTarget.pixelCount}; waiting ${waitTicks} tick(s).`,
+        ),
+      );
+
+      return {
+        ...state,
+        guardianArrivalDeadlineMs: nowMs + waitTicks * GAME_TICK_MS,
+        guardianClickDistancePx: distancePx,
+        guardianCoordinateConfirmed: false,
+        actionLockUntilMs: nowMs + GUARDIAN_CLICK_LOCK_TICKS * GAME_TICK_MS,
+      };
+    }
+
+    const missingGuardianYellowTicks = state.missingGuardianYellowTicks + 1;
+    if (missingGuardianYellowTicks === 1 || missingGuardianYellowTicks % 5 === 0) {
+      warn(
+        stepMessage(
+          WORKFLOW_STEPS.TELEPORT_TO_ALTAR,
+          `Teleport out of crafting region not confirmed yet; current chunk=${guardianLocation.chunkId ?? "unknown"} region=${guardianLocation.regionId ?? "unknown"} matched='${guardianLocation.matchedLine ?? "null"}'.`,
+        ),
+      );
+    }
+
+    return {
+      ...state,
+      missingGuardianYellowTicks,
+      actionLockUntilMs: nowMs + GAME_TICK_MS,
+    };
+  }
+
+  if (nowMs < state.actionLockUntilMs) {
+    return state;
+  }
+
+  const confirmedState = state.guardianCoordinateConfirmed
+    ? state
+    : {
+        ...state,
+        guardianCoordinateConfirmed: true,
+        missingGuardianYellowTicks: 0,
+      };
+
+  if (!state.guardianCoordinateConfirmed) {
+    log(
+      stepMessage(
+        WORKFLOW_STEPS.TELEPORT_TO_ALTAR,
+        `Teleport confirmed: region changed from ${GUARDIAN_CRAFTING_REGION_ID} to ${guardianLocation.regionId}, chunk=${guardianLocation.chunkId}, matched='${guardianLocation.matchedLine}'.`,
+      ),
+    );
+  }
+
+  if (nowMs < confirmedState.guardianArrivalDeadlineMs) {
+    return confirmedState;
+  }
+
+  const playerAnchor = getPlayerAnchor(tickCapture.bitmap);
+  log(stepMessage(WORKFLOW_STEPS.FIND_ALTAR, "Searching for yellow altar object."));
+  const altarCandidates = detectGuardianOfTheRiftAltarMarkersInScreenshot(tickCapture.bitmap);
+  const nearestYellow = pickNearestGuardianOfTheRiftAltarMarker(altarCandidates, playerAnchor);
+  if (!nearestYellow) {
+    const missingGuardianYellowTicks = confirmedState.missingGuardianYellowTicks + 1;
+    if (missingGuardianYellowTicks <= GUARDIAN_ALTAR_SEARCH_RETRY_TICKS) {
+      if (missingGuardianYellowTicks === 1 || missingGuardianYellowTicks % 3 === 0) {
+        warn(
+          stepMessage(
+            WORKFLOW_STEPS.FIND_ALTAR,
+            `Yellow altar marker not visible yet after teleport; scene may still be loading. Retry ${missingGuardianYellowTicks}/${GUARDIAN_ALTAR_SEARCH_RETRY_TICKS}. Candidates=${formatGuardianOfTheRiftAltarCandidates(altarCandidates)}.`,
+          ),
+        );
+      }
+
+      return {
+        ...confirmedState,
+        missingGuardianYellowTicks,
+        actionLockUntilMs: nowMs + GAME_TICK_MS,
+      };
+    }
+
+    const message = stepMessage(
+      WORKFLOW_STEPS.FIND_ALTAR,
+      `Teleport confirmed, but no yellow altar marker was found after ${missingGuardianYellowTicks} check(s). Candidates=${formatGuardianOfTheRiftAltarCandidates(altarCandidates)}. Stopping bot.`,
+    );
+    warn(message);
+    notifyUserAndStop(message);
+    return {
+      ...confirmedState,
+      missingGuardianYellowTicks,
+      actionLockUntilMs: nowMs + GAME_TICK_MS,
+    };
+  }
+
+  if (confirmedState.missingGuardianYellowTicks > 0) {
+    log(
+      stepMessage(
+        WORKFLOW_STEPS.FIND_ALTAR,
+        `Yellow altar marker found after ${confirmedState.missingGuardianYellowTicks} retry tick(s). Candidates=${formatGuardianOfTheRiftAltarCandidates(altarCandidates)}.`,
+      ),
+    );
+  }
+
+  const distancePx = distanceBetween(playerAnchor, nearestYellow);
+  const clicked = clickScreenPoint(
+    captureBounds.x + nearestYellow.centerX,
+    captureBounds.y + nearestYellow.centerY,
+    captureBounds,
+  );
+  const waitTicks = getPickupWaitTicks(distancePx);
+  log(
+    stepMessage(
+      WORKFLOW_STEPS.MOVE_TO_ALTAR,
+      `Clicked yellow altar marker at (${clicked.x},${clicked.y}) local=(${nearestYellow.centerX},${nearestYellow.centerY}) bounds=(${nearestYellow.minX},${nearestYellow.minY})-${nearestYellow.maxX},${nearestYellow.maxY} size=${nearestYellow.width}x${nearestYellow.height} pixels=${nearestYellow.pixelCount}; waiting ${waitTicks} tick(s) for travel distance=${Math.round(distancePx)}px before checking inventory.`,
+    ),
+  );
+
+  return {
+    ...confirmedState,
+    currentFunction: "waitAfterGuardianYellowClick",
+    phase: "wait-after-guardian-yellow-click",
+    guardianYellowArrivalDeadlineMs: nowMs + waitTicks * GAME_TICK_MS,
+    guardianYellowClickDistancePx: distancePx,
+    missingGuardianYellowTicks: 0,
+    missingGuardianReturnRedTicks: 0,
+    actionLockUntilMs: nowMs + GUARDIAN_YELLOW_CLICK_LOCK_TICKS * GAME_TICK_MS,
+  };
+}
+
+function runWaitAfterGuardianYellowClickTick(
+  state: BotState,
+  nowMs: number,
+  tickCapture: TickCapture,
+  captureBounds: ScreenCaptureBounds,
+): BotState {
+  if (nowMs < state.guardianYellowArrivalDeadlineMs) {
+    return state;
+  }
+
+  if (nowMs < state.actionLockUntilMs) {
+    return state;
+  }
+
+  const playerAnchor = getPlayerAnchor(tickCapture.bitmap);
+  const inventory = detectInventoryCount(tickCapture.bitmap);
+  if (inventory.count === null) {
+    const missingInventoryCountTicks = state.missingInventoryCountTicks + 1;
+    if (missingInventoryCountTicks === 1 || missingInventoryCountTicks % 10 === 0) {
+      const debugPath = `test-image-debug/guardian-runecrafting-inventory-count-${state.loopIndex}.png`;
+      saveBitmapWithInventoryCountDebug(tickCapture.bitmap, inventory, debugPath);
+      warn(stepMessage(WORKFLOW_STEPS.MOVE_TO_ALTAR, `Inventory free-space unreadable after altar click; saved debug image to ${debugPath}.`));
+    }
+
+    return {
+      ...state,
+      missingInventoryCountTicks,
+      actionLockUntilMs: nowMs + GAME_TICK_MS,
+    };
+  }
+
+  if (inventory.count === 0) {
+    const altarCandidates = detectGuardianOfTheRiftAltarMarkersInScreenshot(tickCapture.bitmap);
+    const nearestYellow = pickNearestGuardianOfTheRiftAltarMarker(altarCandidates, playerAnchor);
+    if (!nearestYellow) {
+      const missingGuardianYellowTicks = state.missingGuardianYellowTicks + 1;
+      if (missingGuardianYellowTicks <= GUARDIAN_ALTAR_SEARCH_RETRY_TICKS) {
+        if (missingGuardianYellowTicks === 1 || missingGuardianYellowTicks % 3 === 0) {
+          warn(
+            stepMessage(
+              WORKFLOW_STEPS.FIND_ALTAR,
+              `Inventory free-space is still 0 and yellow altar marker is not visible yet; scene may still be loading. Retry ${missingGuardianYellowTicks}/${GUARDIAN_ALTAR_SEARCH_RETRY_TICKS}. Candidates=${formatGuardianOfTheRiftAltarCandidates(altarCandidates)}.`,
+            ),
+          );
+        }
+
+        return {
+          ...state,
+          inventoryFreeSlots: inventory.count,
+          missingGuardianYellowTicks,
+          actionLockUntilMs: nowMs + GAME_TICK_MS,
+        };
+      }
+
+      const message = stepMessage(
+        WORKFLOW_STEPS.FIND_ALTAR,
+        `Inventory free-space is still 0, but no yellow altar marker was found after ${missingGuardianYellowTicks} check(s). Candidates=${formatGuardianOfTheRiftAltarCandidates(altarCandidates)}. Stopping bot.`,
+      );
+      warn(message);
+      notifyUserAndStop(message);
+      return {
+        ...state,
+        inventoryFreeSlots: inventory.count,
+        missingGuardianYellowTicks,
+        actionLockUntilMs: nowMs + GAME_TICK_MS,
+      };
+    }
+
+    if (state.missingGuardianYellowTicks > 0) {
+      log(
+        stepMessage(
+          WORKFLOW_STEPS.FIND_ALTAR,
+          `Yellow altar marker found after ${state.missingGuardianYellowTicks} retry tick(s). Candidates=${formatGuardianOfTheRiftAltarCandidates(altarCandidates)}.`,
+        ),
+      );
+    }
+
+    const distancePx = distanceBetween(playerAnchor, nearestYellow);
+    const clicked = clickScreenPoint(
+      captureBounds.x + nearestYellow.centerX,
+      captureBounds.y + nearestYellow.centerY,
+      captureBounds,
+    );
+    const waitTicks = getPickupWaitTicks(distancePx);
+    log(
+      stepMessage(
+        WORKFLOW_STEPS.MOVE_TO_ALTAR,
+        `Inventory free-space is still 0; clicked yellow altar marker at (${clicked.x},${clicked.y}) local=(${nearestYellow.centerX},${nearestYellow.centerY}) bounds=(${nearestYellow.minX},${nearestYellow.minY})-${nearestYellow.maxX},${nearestYellow.maxY} size=${nearestYellow.width}x${nearestYellow.height} pixels=${nearestYellow.pixelCount}; waiting ${waitTicks} tick(s) for distance=${Math.round(distancePx)}px before checking inventory again.`,
+      ),
+    );
+
+    return {
+      ...state,
+      inventoryFreeSlots: inventory.count,
+      missingInventoryCountTicks: 0,
+      missingGuardianYellowTicks: 0,
+      guardianYellowArrivalDeadlineMs: nowMs + waitTicks * GAME_TICK_MS,
+      guardianYellowClickDistancePx: distancePx,
+      actionLockUntilMs: nowMs + GUARDIAN_YELLOW_CLICK_LOCK_TICKS * GAME_TICK_MS,
+    };
+  }
+
+  log(stepMessage(WORKFLOW_STEPS.FIND_PORTAL, `Inventory free-space changed to ${inventory.count}; searching for red portal marker.`));
+  const returnRed = pickNearestRedTarget(detectAllRedTargets(tickCapture.bitmap), playerAnchor);
+  if (!returnRed) {
+    const message = stepMessage(
+      WORKFLOW_STEPS.FIND_PORTAL,
+      `Inventory free-space changed to ${inventory.count}, but no red portal marker was found. Stopping bot.`,
+    );
+    warn(message);
+    notifyUserAndStop(message);
+    return {
+      ...state,
+      inventoryFreeSlots: inventory.count,
+      missingInventoryCountTicks: 0,
+      missingGuardianReturnRedTicks: state.missingGuardianReturnRedTicks + 1,
+      actionLockUntilMs: nowMs + GAME_TICK_MS,
+    };
+  }
+
+  const distancePx = distanceBetween(playerAnchor, returnRed);
+  const clicked = clickScreenPoint(captureBounds.x + returnRed.centerX, captureBounds.y + returnRed.centerY, captureBounds);
+  const waitTicks = getPickupWaitTicks(distancePx);
+  log(
+    stepMessage(
+      WORKFLOW_STEPS.MOVE_TO_PORTAL,
+      `Clicked red portal marker at (${clicked.x},${clicked.y}) local=(${returnRed.centerX},${returnRed.centerY}) pixels=${returnRed.pixelCount}; waiting ${waitTicks} tick(s) to return to region ${GUARDIAN_CRAFTING_REGION_ID} (distance=${Math.round(distancePx)}px).`,
+    ),
+  );
+
+  return {
+    ...state,
+    currentFunction: "waitAfterGuardianReturnClick",
+    phase: "wait-after-guardian-return-click",
+    inventoryFreeSlots: inventory.count,
+    missingInventoryCountTicks: 0,
+    guardianReturnArrivalDeadlineMs: nowMs + waitTicks * GAME_TICK_MS,
+    guardianReturnClickDistancePx: distancePx,
+    missingGuardianReturnRedTicks: 0,
+    actionLockUntilMs: nowMs + GUARDIAN_RETURN_CLICK_LOCK_TICKS * GAME_TICK_MS,
+  };
+}
+
+function runWaitAfterGuardianReturnClickTick(
+  state: BotState,
+  nowMs: number,
+  tickCapture: TickCapture,
+): BotState {
+  if (nowMs < state.guardianReturnArrivalDeadlineMs) {
+    return state;
+  }
+
+  if (nowMs < state.actionLockUntilMs) {
+    return state;
+  }
+
+  const location = readGuardianCoordinateLocation(tickCapture.bitmap);
+  if (!location || location.regionId !== GUARDIAN_CRAFTING_REGION_ID) {
+    const missingGuardianReturnRedTicks = state.missingGuardianReturnRedTicks + 1;
+    if (missingGuardianReturnRedTicks === 1 || missingGuardianReturnRedTicks % 5 === 0) {
+      warn(
+        stepMessage(
+          WORKFLOW_STEPS.TELEPORT_BACK,
+          `Return teleport not confirmed yet; current region=${location?.regionId ?? "unknown"} chunk=${location?.chunkId ?? "unknown"} matched='${location?.matchedLine ?? "null"}'. Waiting for region ${GUARDIAN_CRAFTING_REGION_ID}.`,
+        ),
+      );
+    }
+
+    return {
+      ...state,
+      missingGuardianReturnRedTicks,
+      actionLockUntilMs: nowMs + GAME_TICK_MS,
+    };
+  }
+
+  setAutomateBotCurrentStep(STEP_PICK_UNCHARGED_CELL_ID);
+  log(
+    stepMessage(
+      WORKFLOW_STEPS.TELEPORT_BACK,
+      `Return teleport confirmed: region=${location.regionId} chunk=${location.chunkId} matched='${location.matchedLine}'. Restarting at Step 01.`,
+    ),
+  );
+  return {
+    ...state,
+    currentFunction: "pickUnchargedCell",
+    phase: "pick-uncharged-cell",
+    actionLockUntilMs: 0,
+    lastPickupClickScreen: null,
+    pickupArrivalDeadlineMs: 0,
+    pickupDistancePx: null,
+    missingTargetTicks: 0,
+    missingMagentaTicks: 0,
+    missingOrangeTicks: 0,
+    missingMiningTimerTicks: 0,
+    missingYellowTicks: 0,
+    missingInventoryCountTicks: 0,
+    craftingInventoryChangeDeadlineMs: 0,
+    guardianArrivalDeadlineMs: 0,
+    guardianClickDistancePx: null,
+    guardianCoordinateConfirmed: false,
+    guardianYellowArrivalDeadlineMs: 0,
+    guardianYellowClickDistancePx: null,
+    guardianReturnArrivalDeadlineMs: 0,
+    guardianReturnClickDistancePx: null,
+    missingGuardianYellowTicks: 0,
+    missingGuardianReturnRedTicks: 0,
+  };
+}
+
+async function runLoop(captureBounds: ScreenCaptureBounds, config: GuardianOfTheRiftConfig): Promise<void> {
   if (isLoopRunning) {
     log("Loop already running.");
     return;
   }
 
   isLoopRunning = true;
-  setAutomateBotCurrentStep(STEP_PICK_UNCHARGED_CELL_ID);
 
   try {
+    const initialState = createStartupInitialState(captureScreenBitmap(captureBounds));
+
     await runBotEngine<BotState, EngineFunctionKey, TickCapture>({
       tickMs: GAME_TICK_MS,
       isRunning: () => AppState.automateBotRunning,
-      createInitialState,
+      createInitialState: () => initialState,
       captureTick: () => ({
         bitmap: captureScreenBitmap(captureBounds),
       }),
+      observeTick: ({ state, tickCapture }) => {
+        if (!ENABLE_COORDINATE_AUTO_SCREENSHOTS || state.loopIndex % COORDINATE_AUTO_SCREENSHOT_INTERVAL_TICKS !== 0) {
+          return;
+        }
+
+        const result = saveCoordinateAutoScreenshot({
+          bitmap: tickCapture.bitmap,
+          monitorTier: currentMonitorTier,
+          windowsScalePercent: currentWindowsScalePercent,
+        });
+        if (!result.saved) {
+          return;
+        }
+
+        setCurrentLogLoopIndex(state.loopIndex);
+        setCurrentLogPhase(state.phase);
+        log(`Coordinate auto screenshot saved: matched='${result.matchedLine}' path=${result.filePath}.`);
+      },
       functions: {
         pickUnchargedCell: ({ state, nowMs, tickCapture }) => {
           setCurrentLogLoopIndex(state.loopIndex);
           setCurrentLogPhase(state.phase);
           return state.phase === "pick-uncharged-cell"
-            ? runPickUnchargedCellTick(state, nowMs, tickCapture, captureBounds, unchargedCellTemplates)
+            ? runPickUnchargedCellTick(state, nowMs, tickCapture, captureBounds, config)
+            : state;
+        },
+        waitAfterPickup: ({ state, nowMs }) => {
+          setCurrentLogLoopIndex(state.loopIndex);
+          setCurrentLogPhase(state.phase);
+          return state.phase === "wait-after-pickup" ? runWaitAfterPickupTick(state, nowMs, config) : state;
+        },
+        agilityFindMagenta: ({ state, nowMs, tickCapture }) => {
+          setCurrentLogLoopIndex(state.loopIndex);
+          setCurrentLogPhase(state.phase);
+          return state.phase === "agility-find-magenta"
+            ? runAgilityFindMagentaTick(state, nowMs, tickCapture, captureBounds)
+            : state;
+        },
+        findOrange: ({ state, nowMs, tickCapture }) => {
+          setCurrentLogLoopIndex(state.loopIndex);
+          setCurrentLogPhase(state.phase);
+          return state.phase === "find-orange" ? runFindOrangeTick(state, nowMs, tickCapture, captureBounds) : state;
+        },
+        waitForMiningTimer: ({ state, nowMs, tickCapture }) => {
+          setCurrentLogLoopIndex(state.loopIndex);
+          setCurrentLogPhase(state.phase);
+          return state.phase === "wait-for-mining-timer"
+            ? runWaitForMiningTimerTick(state, nowMs, tickCapture, captureBounds)
+            : state;
+        },
+        mine: ({ state, nowMs, tickCapture }) => {
+          setCurrentLogLoopIndex(state.loopIndex);
+          setCurrentLogPhase(state.phase);
+          return state.phase === "mining" ? runMiningTick(state, nowMs, tickCapture) : state;
+        },
+        workbenchFindYellow: ({ state, nowMs, tickCapture }) => {
+          setCurrentLogLoopIndex(state.loopIndex);
+          setCurrentLogPhase(state.phase);
+          return state.phase === "workbench-find-yellow"
+            ? runWorkbenchFindYellowTick(state, nowMs, tickCapture, captureBounds, config)
+            : state;
+        },
+        craft: ({ state, nowMs, tickCapture }) => {
+          setCurrentLogLoopIndex(state.loopIndex);
+          setCurrentLogPhase(state.phase);
+          return state.phase === "crafting" ? runCraftingTick(state, nowMs, tickCapture) : state;
+        },
+        travelToGuardian: ({ state, nowMs, tickCapture }) => {
+          setCurrentLogLoopIndex(state.loopIndex);
+          setCurrentLogPhase(state.phase);
+          return state.phase === "travel-to-guardian"
+            ? runTravelToGuardianTick(state, nowMs, tickCapture, captureBounds)
+            : state;
+        },
+        waitAfterGuardianClick: ({ state, nowMs, tickCapture }) => {
+          setCurrentLogLoopIndex(state.loopIndex);
+          setCurrentLogPhase(state.phase);
+          return state.phase === "wait-after-guardian-click"
+            ? runWaitAfterGuardianClickTick(state, nowMs, tickCapture, captureBounds)
+            : state;
+        },
+        waitAfterGuardianYellowClick: ({ state, nowMs, tickCapture }) => {
+          setCurrentLogLoopIndex(state.loopIndex);
+          setCurrentLogPhase(state.phase);
+          return state.phase === "wait-after-guardian-yellow-click"
+            ? runWaitAfterGuardianYellowClickTick(state, nowMs, tickCapture, captureBounds)
+            : state;
+        },
+        waitAfterGuardianReturnClick: ({ state, nowMs, tickCapture }) => {
+          setCurrentLogLoopIndex(state.loopIndex);
+          setCurrentLogPhase(state.phase);
+          return state.phase === "wait-after-guardian-return-click"
+            ? runWaitAfterGuardianReturnClickTick(state, nowMs, tickCapture)
             : state;
         },
       },
@@ -639,8 +2272,9 @@ export function onRunecraftingGuardianOfTheRiftBotStart(): void {
   }
 
   log(`Automate Bot STARTED (${BOT_NAME}).`);
+  const config = getSavedGuardianOfTheRiftConfig();
   log(
-    `Config: engineTick=${GAME_TICK_MS}ms, first-step=pick red FFFF0000 uncharged-cell marker, stop-at=${TARGET_UNCHARGED_CELL_COUNT} uncharged cells.`,
+    `Config: engineTick=${GAME_TICK_MS}ms, startup-phase-check=on, agility-course=${config.useAgilityCourse ? "on" : "off"}.`,
   );
 
   const window = getRuneLite();
@@ -680,18 +2314,21 @@ export function onRunecraftingGuardianOfTheRiftBotStart(): void {
   }
 
   const scaleFactor = getWindowsDisplayScaleFactor(logicalBounds);
+  currentWindowsScalePercent = Math.round(scaleFactor * 100);
+  currentMonitorTier = getMonitorTier(logicalBounds, scaleFactor);
   const captureBounds = toPhysicalBounds(logicalBounds, scaleFactor);
+  log(
+    `Capture: ${captureBounds.width}x${captureBounds.height}, display=${currentMonitorTier}-${currentWindowsScalePercent}, coordinate-auto-screenshot=${ENABLE_COORDINATE_AUTO_SCREENSHOTS ? "on" : "off"}.`,
+  );
 
   void (async () => {
     try {
       await sleepWithAbort(STARTUP_SETTLE_MS, () => AppState.automateBotRunning);
-      const unchargedCellTemplates = [loadTenUnchargedCellTemplate()];
-
       if (!AppState.automateBotRunning) {
         return;
       }
 
-      await runLoop(captureBounds, unchargedCellTemplates);
+      await runLoop(captureBounds, config);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       warn(`Startup failed: ${message}`);
