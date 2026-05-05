@@ -6,12 +6,18 @@ import { PNG } from "pngjs";
 import {
   detectGuardianOfTheRiftAltarMarkersInScreenshot,
   formatGuardianOfTheRiftAltarCandidates,
+  pickNearestGuardianOfTheRiftAltarMarker,
   saveBitmapWithGuardianOfTheRiftAltarDebug,
 } from "./guardian-of-the-rift-altar-detector";
 import type { RobotBitmap } from "./ocr-engine";
 
 const DEFAULT_SCREENSHOT_GLOB = "test-images/runescrafting/guardian-of-the-rift/altar/*.png";
 const DEBUG_OUTPUT_DIR = "test-image-debug";
+const RED_ONLY_ALTAR_SCREENSHOTS = new Set([
+  "1259x1549-2k-125-fire-3",
+  "1298x1549-2k-125-fire",
+  "1298x1549-2k-125-fire-2",
+]);
 
 type AltarExpectation = {
   shouldDetect: boolean;
@@ -19,6 +25,7 @@ type AltarExpectation = {
 
 type SyntheticAltarComponent = {
   name: string;
+  color?: "yellow" | "red";
   width: number;
   height: number;
   shouldDetect: boolean;
@@ -77,7 +84,7 @@ function expandScreenshotArgs(args: string[]): string[] {
 function getExpectedDetectionFromFilename(screenshotPath: string): AltarExpectation {
   const basename = path.basename(screenshotPath, path.extname(screenshotPath)).toLowerCase();
   const shouldNotDetect = /(^|[-_])(no[-_]?altar|none|missing)([-_]|$)/i.test(basename);
-  return { shouldDetect: !shouldNotDetect };
+  return { shouldDetect: !shouldNotDetect && !RED_ONLY_ALTAR_SCREENSHOTS.has(basename) };
 }
 
 async function loadScreenshot(filePath: string): Promise<RobotBitmap | null> {
@@ -127,12 +134,27 @@ function createSyntheticBitmap(width: number, height: number): RobotBitmap {
 }
 
 function paintYellowRectangle(bitmap: RobotBitmap, x: number, y: number, width: number, height: number): void {
+  paintRectangle(bitmap, x, y, width, height, { r: 255, g: 220, b: 0 });
+}
+
+function paintRedRectangle(bitmap: RobotBitmap, x: number, y: number, width: number, height: number): void {
+  paintRectangle(bitmap, x, y, width, height, { r: 255, g: 0, b: 0 });
+}
+
+function paintRectangle(
+  bitmap: RobotBitmap,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  color: { r: number; g: number; b: number },
+): void {
   for (let py = y; py < y + height; py += 1) {
     for (let px = x; px < x + width; px += 1) {
       const offset = py * bitmap.byteWidth + px * bitmap.bytesPerPixel;
-      bitmap.image[offset] = 0;
-      bitmap.image[offset + 1] = 220;
-      bitmap.image[offset + 2] = 255;
+      bitmap.image[offset] = color.b;
+      bitmap.image[offset + 1] = color.g;
+      bitmap.image[offset + 2] = color.r;
       bitmap.image[offset + 3] = 255;
     }
   }
@@ -174,6 +196,8 @@ function testSyntheticShapeFilters(): { passed: number; failed: number } {
   const cases: SyntheticAltarComponent[] = [
     { name: "valid altar-sized square", width: 135, height: 132, shouldDetect: true },
     { name: "earth altar angled marker", width: 126, height: 102, shouldDetect: true },
+    { name: "red marker before inventory is emptied", color: "red", width: 46, height: 46, shouldDetect: false },
+    { name: "tiny red text", color: "red", width: 18, height: 18, shouldDetect: false },
     { name: "thin edge sliver", width: 14, height: 54, shouldDetect: false },
     { name: "tall yellow strip", width: 44, height: 134, shouldDetect: false },
     { name: "oversized yellow blob", width: 199, height: 197, shouldDetect: false },
@@ -184,7 +208,11 @@ function testSyntheticShapeFilters(): { passed: number; failed: number } {
 
   for (const testCase of cases) {
     const bitmap = createSyntheticBitmap(1298, 1549);
-    paintYellowRectangle(bitmap, 420, 520, testCase.width, testCase.height);
+    if (testCase.color === "red") {
+      paintRedRectangle(bitmap, 420, 520, testCase.width, testCase.height);
+    } else {
+      paintYellowRectangle(bitmap, 420, 520, testCase.width, testCase.height);
+    }
     const detections = detectGuardianOfTheRiftAltarMarkersInScreenshot(bitmap);
     const success = testCase.shouldDetect ? detections.length === 1 : detections.length === 0;
     if (success) {
@@ -205,6 +233,56 @@ function testSyntheticShapeFilters(): { passed: number; failed: number } {
   return { passed, failed };
 }
 
+function testSelectionPreference(): { passed: number; failed: number } {
+  const cases = [
+    {
+      name: "prefers visible yellow altar over nearer red click marker",
+      paint: (bitmap: RobotBitmap) => {
+        paintYellowRectangle(bitmap, 90, 500, 135, 132);
+        paintRedRectangle(bitmap, 645, 758, 48, 46);
+      },
+      playerAnchor: { centerX: 670, centerY: 780 },
+      expectedColor: "yellow",
+    },
+    {
+      name: "does not fall back to red before inventory is emptied",
+      paint: (bitmap: RobotBitmap) => {
+        paintRedRectangle(bitmap, 645, 758, 48, 46);
+      },
+      playerAnchor: { centerX: 670, centerY: 780 },
+      expectedColor: null,
+    },
+  ] as const;
+
+  let passed = 0;
+  let failed = 0;
+
+  for (const testCase of cases) {
+    const bitmap = createSyntheticBitmap(1298, 1549);
+    testCase.paint(bitmap);
+    const detections = detectGuardianOfTheRiftAltarMarkersInScreenshot(bitmap);
+    const selected = pickNearestGuardianOfTheRiftAltarMarker(detections, testCase.playerAnchor);
+    const success =
+      testCase.expectedColor === null ? selected === null : selected?.markerColor === testCase.expectedColor;
+
+    if (success) {
+      console.log(
+        `PASS  selection ${testCase.name}  expected=${testCase.expectedColor ?? "none"}  selected=${selected?.markerColor ?? "none"}  candidates=${formatGuardianOfTheRiftAltarCandidates(detections)}`,
+      );
+      passed += 1;
+      continue;
+    }
+
+    console.error(
+      `FAIL  selection ${testCase.name}  expected=${testCase.expectedColor ?? "none"}  selected=${selected?.markerColor ?? "none"}  candidates=${formatGuardianOfTheRiftAltarCandidates(detections)}`,
+    );
+    failed += 1;
+  }
+
+  console.log(`Selection preference: ${passed} passed, ${failed} failed`);
+  return { passed, failed };
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const screenshotPaths = expandScreenshotArgs(args.length > 0 ? args : [DEFAULT_SCREENSHOT_GLOB]);
@@ -213,8 +291,9 @@ async function main(): Promise<void> {
   console.log(`Testing ${screenshotPaths.length} screenshot(s)...`);
 
   const syntheticResults = testSyntheticShapeFilters();
-  let passed = syntheticResults.passed;
-  let failed = syntheticResults.failed;
+  const selectionResults = testSelectionPreference();
+  let passed = syntheticResults.passed + selectionResults.passed;
+  let failed = syntheticResults.failed + selectionResults.failed;
 
   for (const screenshotPath of screenshotPaths) {
     const success = await testDetection(screenshotPath);

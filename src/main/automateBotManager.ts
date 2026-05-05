@@ -55,6 +55,7 @@ function getAutomateBotName(botId: string): string {
 
 function logStartupPlayerTileCalibration(botId: string): void {
   const botName = getAutomateBotName(botId);
+  AppState.automateBotStartupRawTilePx = null;
 
   try {
     const window = getRuneLite();
@@ -74,6 +75,11 @@ function logStartupPlayerTileCalibration(botId: string): void {
       logger.warn(`Automate Bot (${botName}): startup calibration unavailable - invalid RuneLite window bounds.`);
       return;
     }
+
+    AppState.automateBotStartupRawTilePx =
+      calibration.rawTilePx !== null && Number.isFinite(calibration.rawTilePx) && calibration.rawTilePx > 0
+        ? calibration.rawTilePx
+        : null;
 
     const message = formatStartupPlayerTileCalibrationLog(botName, calibration);
     if (calibration.playerTile && calibration.playerBox) {

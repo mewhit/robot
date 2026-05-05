@@ -43,4 +43,20 @@ describe("estimateTilePxFromPlayerBox", () => {
       ),
     ).toBe(60);
   });
+
+  it("keeps the visible tile bounds when filled area is a collapsed partial marker", () => {
+    expect(
+      estimateTilePxFromPlayerBox(
+        {
+          centerX: 621,
+          centerY: 790,
+          width: 47,
+          height: 43,
+          pixelCount: 625,
+          fillRatio: 0.36,
+        },
+        TILE_OPTIONS,
+      ),
+    ).toBe(45);
+  });
 });

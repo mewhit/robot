@@ -82,6 +82,7 @@ const DEFAULT_PREFERRED_Y_BAND_RATIO = 0.45;
 const DEFAULT_POST_CLICK_OFFSET_PX = 200;
 const DEFAULT_POST_CLICK_CORNER_MARGIN_PX = 6;
 const FILLED_PLAYER_TILE_MIN_FILL_RATIO = 0.35;
+const FILLED_PLAYER_TILE_MIN_AREA_TO_BOUNDS_RATIO = 0.75;
 
 export function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -236,6 +237,8 @@ export function estimateTilePxFromPlayerBox(
     return options.fallbackTilePx;
   }
 
+  const estimatedTilePxFromBounds = Math.round((playerBox.width + playerBox.height) / 2);
+
   if (
     typeof playerBox.pixelCount === "number" &&
     typeof playerBox.fillRatio === "number" &&
@@ -245,11 +248,13 @@ export function estimateTilePxFromPlayerBox(
     playerBox.fillRatio >= FILLED_PLAYER_TILE_MIN_FILL_RATIO
   ) {
     const estimatedTilePxFromArea = Math.round(Math.sqrt(playerBox.pixelCount));
-    return clamp(estimatedTilePxFromArea, options.minTilePx, options.maxTilePx);
+    const minAreaTilePx = Math.round(estimatedTilePxFromBounds * FILLED_PLAYER_TILE_MIN_AREA_TO_BOUNDS_RATIO);
+    const estimatedTilePx =
+      estimatedTilePxFromArea >= minAreaTilePx ? estimatedTilePxFromArea : estimatedTilePxFromBounds;
+    return clamp(estimatedTilePx, options.minTilePx, options.maxTilePx);
   }
 
-  const estimatedTilePx = Math.round((playerBox.width + playerBox.height) / 2);
-  return clamp(estimatedTilePx, options.minTilePx, options.maxTilePx);
+  return clamp(estimatedTilePxFromBounds, options.minTilePx, options.maxTilePx);
 }
 
 export function estimateTravelTicks(options: EstimateTravelTicksOptions): TravelEstimate {

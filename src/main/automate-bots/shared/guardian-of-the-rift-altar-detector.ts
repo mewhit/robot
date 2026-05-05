@@ -7,6 +7,7 @@ export type GuardianOfTheRiftAltarDetection = {
   centerX: number;
   centerY: number;
   pixelCount: number;
+  markerColor: "yellow";
   width: number;
   height: number;
   minX: number;
@@ -22,9 +23,9 @@ type SearchBounds = {
   maxY: number;
 };
 
-const ALTAR_YELLOW_MIN_PIXELS = 5_000;
-const ALTAR_SEARCH_BOUNDS = { minXRatio: 0.04, minYRatio: 0.12, maxXRatio: 0.74, maxYRatio: 0.86 };
-const ALTAR_MIN_SIZE_TO_SCREEN_HEIGHT_RATIO = 0.065;
+const ALTAR_YELLOW_MIN_PIXELS = 3_000;
+const ALTAR_SEARCH_BOUNDS = { minXRatio: 0.04, minYRatio: 0.08, maxXRatio: 0.94, maxYRatio: 0.86 };
+const ALTAR_MIN_SIZE_TO_SCREEN_HEIGHT_RATIO = 0.05;
 const ALTAR_MAX_SIZE_TO_SCREEN_HEIGHT_RATIO = 0.11;
 const ALTAR_MAX_ASPECT_RATIO = 1.35;
 const ALTAR_MIN_FILL_RATIO = 0.65;
@@ -159,6 +160,7 @@ export function detectGuardianOfTheRiftAltarMarkersInScreenshot(
         centerX: Math.round(sumX / pixelCount),
         centerY: Math.round(sumY / pixelCount),
         pixelCount,
+        markerColor: "yellow",
         width: componentWidth,
         height: componentHeight,
         minX,
@@ -205,7 +207,7 @@ export function formatGuardianOfTheRiftAltarCandidates(
 
   return detections
     .slice(0, limit)
-    .map((detection) => `(${detection.centerX},${detection.centerY}) ${detection.width}x${detection.height} px=${detection.pixelCount}`)
+    .map((detection) => `(${detection.centerX},${detection.centerY}) ${detection.markerColor} ${detection.width}x${detection.height} px=${detection.pixelCount}`)
     .join("; ");
 }
 

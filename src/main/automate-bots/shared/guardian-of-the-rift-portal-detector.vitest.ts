@@ -1,3 +1,5 @@
+import fs from "fs";
+import { PNG } from "pngjs";
 import { describe, expect, test } from "vitest";
 import {
   detectGuardianOfTheRiftPortalMarkersInScreenshot,
@@ -6,6 +8,37 @@ import {
   pickNearestGuardianOfTheRiftPortalMarker,
 } from "./guardian-of-the-rift-portal-detector";
 import type { RobotBitmap } from "./ocr-engine";
+
+const PORTAL_OPEN_SCREENSHOT_PATH =
+  "test-images/runescrafting/guardian-of-the-rift/portal-open/1298x1549-2k-125-portal-there.png";
+
+function loadPngBitmap(filePath: string): Promise<RobotBitmap> {
+  return new Promise((resolve, reject) => {
+    const png = new PNG();
+
+    fs.createReadStream(filePath)
+      .pipe(png)
+      .on("parsed", function (this: PNG) {
+        const image = Buffer.alloc(png.width * png.height * 4);
+
+        for (let index = 0; index < png.data.length; index += 4) {
+          image[index] = png.data[index + 2];
+          image[index + 1] = png.data[index + 1];
+          image[index + 2] = png.data[index];
+          image[index + 3] = png.data[index + 3];
+        }
+
+        resolve({
+          width: png.width,
+          height: png.height,
+          byteWidth: png.width * 4,
+          bytesPerPixel: 4,
+          image,
+        });
+      })
+      .on("error", reject);
+  });
+}
 
 function createBitmap(width: number, height: number, color: { r: number; g: number; b: number }): RobotBitmap {
   const image = Buffer.alloc(width * height * 4);
@@ -48,7 +81,7 @@ function blitBitmap(target: RobotBitmap, source: RobotBitmap, targetX: number, t
 }
 
 describe("Guardian of the Rift portal detector", () => {
-  test("detects the portal-open icon in the top-left fifth of the capture", async () => {
+  test("detects the portal-open icon in the top-left status area of the capture", async () => {
     const template = await loadGuardianOfTheRiftPortalOpenIconTemplate();
     const bitmap = createBitmap(1328, 1549, { r: 18, g: 22, b: 26 });
 
@@ -61,7 +94,23 @@ describe("Guardian of the Rift portal detector", () => {
     expect(detection.match?.y).toBe(64);
   });
 
-  test("ignores portal-open icon matches outside the top-left fifth", async () => {
+  test("detects the portal-open icon in a real 1298px-wide screenshot", async () => {
+    const template = await loadGuardianOfTheRiftPortalOpenIconTemplate();
+    const bitmap = await loadPngBitmap(PORTAL_OPEN_SCREENSHOT_PATH);
+
+    const detection = detectGuardianOfTheRiftPortalOpenIcon(bitmap, template);
+
+    expect(detection.isOpen).toBe(true);
+    expect(detection.match).toMatchObject({
+      x: 248,
+      y: 148,
+      centerX: 270,
+      centerY: 170,
+    });
+    expect(detection.match?.score).toBeGreaterThan(0.99);
+  });
+
+  test("ignores portal-open icon matches outside the top-left status area", async () => {
     const template = await loadGuardianOfTheRiftPortalOpenIconTemplate();
     const bitmap = createBitmap(1328, 1549, { r: 18, g: 22, b: 26 });
 

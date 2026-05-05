@@ -6,9 +6,11 @@ import { detectOverlayBoxInScreenshot } from "./coordinate-box-detector";
 import { estimateTilePxFromPlayerBox } from "./osrs-helper";
 import { detectBestPlayerBoxInScreenshot, PlayerBox } from "./player-box-detector";
 
-const STARTUP_TILE_PX_FALLBACK = 64;
+const STARTUP_TILE_PX_FALLBACK = 48;
 const STARTUP_TILE_PX_MIN = 24;
 const STARTUP_TILE_PX_MAX = 96;
+const STARTUP_RAW_TILE_PX_MIN_TRUSTED = 35;
+const STARTUP_RAW_TILE_PX_MAX_TRUSTED = 70;
 
 export type StartupPlayerTileCalibration = {
   captureBounds: ScreenCaptureBounds;
@@ -83,6 +85,15 @@ function estimateRawTilePx(playerBox: PlayerBox | null): number | null {
   return playerBox ? Math.round((playerBox.width + playerBox.height) / 2) : null;
 }
 
+function isTrustedRawTilePx(rawTilePx: number | null): boolean {
+  return (
+    rawTilePx !== null &&
+    Number.isFinite(rawTilePx) &&
+    rawTilePx >= STARTUP_RAW_TILE_PX_MIN_TRUSTED &&
+    rawTilePx <= STARTUP_RAW_TILE_PX_MAX_TRUSTED
+  );
+}
+
 export function readStartupPlayerTileCalibration(window: Window): StartupPlayerTileCalibration | null {
   const logicalBounds = getLogicalWindowBounds(window);
   if (!logicalBounds) {
@@ -96,8 +107,10 @@ export function readStartupPlayerTileCalibration(window: Window): StartupPlayerT
   const coordinateBox = detectOverlayBoxInScreenshot(bitmap, windowsScalePercent);
   const coordinateLine = coordinateBox?.matchedLine ?? null;
   const playerTile = coordinateLine ? parseWorldTileFromMatchedLine(coordinateLine) : null;
-  const playerBox = detectBestPlayerBoxInScreenshot(bitmap);
-  const rawTilePx = estimateRawTilePx(playerBox);
+  const detectedPlayerBox = detectBestPlayerBoxInScreenshot(bitmap);
+  const detectedRawTilePx = estimateRawTilePx(detectedPlayerBox);
+  const playerBox = isTrustedRawTilePx(detectedRawTilePx) ? detectedPlayerBox : null;
+  const rawTilePx = playerBox ? detectedRawTilePx : null;
   const tilePx = estimateTilePxFromPlayerBox(playerBox, {
     fallbackTilePx: STARTUP_TILE_PX_FALLBACK,
     minTilePx: STARTUP_TILE_PX_MIN,
