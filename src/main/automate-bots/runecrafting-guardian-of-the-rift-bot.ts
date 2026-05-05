@@ -14,6 +14,10 @@ import {
   detectGuardianOfTheRiftPortalOpenIconWithCache,
   getGuardianOfTheRiftPortalOpenIconCachePath,
 } from "./guardian-of-the-rift-portal-open-icon-cache";
+import {
+  recordGuardianOfTheRiftDistanceTileCorrection,
+  recordGuardianOfTheRiftDistanceTileStartupObservation,
+} from "./guardian-of-the-rift-distance-tile-history";
 import { createAsyncWorldMapper } from "./mapping/async-world-mapper";
 import { readWorldMapObservationFromBitmap } from "./mapping/world-map-observation-reader";
 import { readCoordinateOverlayLocation, saveCoordinateAutoScreenshot } from "./shared/coordinate-auto-screenshot";
@@ -31,6 +35,14 @@ import {
   pickNearestGuardianOfTheRiftPortalMarker,
   type GuardianOfTheRiftPortalOpenIconTemplate,
 } from "./shared/guardian-of-the-rift-portal-detector";
+import {
+  detectGuardianOfTheRiftPouches,
+  GUARDIAN_OF_THE_RIFT_DETECTABLE_POUCHES,
+  loadGuardianOfTheRiftPouchTemplatesFromDirectory,
+  type GuardianOfTheRiftDetectablePouch,
+  type GuardianOfTheRiftPouchMatch,
+  type GuardianOfTheRiftPouchTemplate,
+} from "./shared/guardian-of-the-rift-pouch-detector";
 import { detectGuardianOfTheRiftTimeSincePortal } from "./shared/guardian-of-the-rift-panel-detector";
 import { detectGuardianOfTheRiftTimer } from "./shared/guardian-of-the-rift-timer-detector";
 import { detectInventoryCount, saveBitmapWithInventoryCountDebug } from "./shared/inventory-count-detector";
@@ -49,9 +61,11 @@ type BotPhase =
   | "wait-after-agility-mining-yellow-click"
   | "workbench-find-yellow"
   | "crafting"
+  | "fill-pouches-after-workbench-full"
   | "travel-to-guardian"
   | "wait-after-guardian-click"
   | "wait-after-guardian-yellow-click"
+  | "empty-pouches-at-altar"
   | "find-return-portal"
   | "wait-after-guardian-return-click"
   | "find-great-guardian"
@@ -66,6 +80,7 @@ type BotPhase =
   | "recover-final-portal-arrival"
   | "find-portal-mining-magenta"
   | "portal-mining"
+  | "fill-pouches-after-portal-mining-full"
   | "find-portal-exit"
   | "wait-after-portal-exit-click"
   | "complete";
@@ -80,9 +95,11 @@ type EngineFunctionKey =
   | "waitAfterAgilityMiningYellowClick"
   | "workbenchFindYellow"
   | "craft"
+  | "fillPouchesAfterWorkbenchFull"
   | "travelToGuardian"
   | "waitAfterGuardianClick"
   | "waitAfterGuardianYellowClick"
+  | "emptyPouchesAtAltar"
   | "findReturnPortal"
   | "waitAfterGuardianReturnClick"
   | "findGreatGuardian"
@@ -97,6 +114,7 @@ type EngineFunctionKey =
   | "recoverFinalPortalArrival"
   | "findPortalMiningMagenta"
   | "portalMining"
+  | "fillPouchesAfterPortalMiningFull"
   | "findPortalExit"
   | "waitAfterPortalExitClick";
 
@@ -111,6 +129,43 @@ type GuardianCoordinateLocation = {
 
 type ReturnPortalRecoveryTarget = "finalPortal" | "portalExit";
 type PostPortalDepositResume = "greatGuardian" | "chargedCell";
+type PostAltarInventoryStep = "altar-baseline" | "great-guardian" | "charged-cell-deposit" | "rune-deposit";
+
+type PostAltarInventoryLedger = {
+  altarBaselineFreeSlots: number | null;
+  greatGuardianFreeSlots: number | null;
+  chargedCellDepositFreeSlots: number | null;
+  runeDepositFreeSlots: number | null;
+};
+
+type InventoryHistoryEntry = {
+  step: PostAltarInventoryStep;
+  loopIndex: number;
+  phase: BotPhase;
+  freeSlots: number;
+  previousFreeSlots: number | null;
+  expectedFreeSlots: number | null;
+  valid: boolean;
+  note: string;
+};
+
+type GuardianOfTheRiftPouchLocation = {
+  pouch: GuardianOfTheRiftDetectablePouch;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  centerX: number;
+  centerY: number;
+  screenCenterX: number;
+  screenCenterY: number;
+  score: number;
+};
+
+type GuardianOfTheRiftPouchInventoryMemory = {
+  checkedAtMs: number;
+  pouches: Record<GuardianOfTheRiftDetectablePouch, GuardianOfTheRiftPouchLocation | null>;
+};
 
 type BotState = {
   loopIndex: number;
@@ -140,6 +195,14 @@ type BotState = {
   miningTimerLocalStartedAtMs: number | null;
   miningStatusGreenStartedAtMs: number | null;
   inventoryFreeSlots: number | null;
+  pouchInventory: GuardianOfTheRiftPouchInventoryMemory;
+  pouchClickQueue: GuardianOfTheRiftPouchLocation[];
+  pouchClickIndex: number;
+  craftingPouchesFilledThisCycle: boolean;
+  portalMiningPouchesFilledThisCycle: boolean;
+  altarPouchesEmptiedThisCycle: boolean;
+  postAltarInventoryLedger: PostAltarInventoryLedger;
+  inventoryHistory: InventoryHistoryEntry[];
   missingInventoryCountTicks: number;
   craftingInventoryChangeDeadlineMs: number;
   guardianArrivalDeadlineMs: number;
@@ -147,6 +210,8 @@ type BotState = {
   guardianCoordinateConfirmed: boolean;
   guardianAltarStartLocation: GuardianCoordinateLocation | null;
   guardianYellowArrivalDeadlineMs: number;
+  guardianYellowTravelEstimate: TravelWaitEstimate | null;
+  guardianYellowCorrectionRecordedDeadlineMs: number | null;
   guardianReturnArrivalDeadlineMs: number;
   guardianReturnClickDistancePx: number | null;
   returnPortalRecoveryTarget: ReturnPortalRecoveryTarget | null;
@@ -249,6 +314,8 @@ const STEP_WAIT_MINING_TIMER_ID = `${RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}-s
 const STEP_MINING_ID = `${RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}-step-mining`;
 const STEP_WORKBENCH_ID = `${RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}-step-workbench`;
 const STEP_CRAFTING_ID = `${RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}-step-crafting`;
+const STEP_FILL_POUCHES_ID = `${RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}-step-fill-pouches`;
+const STEP_ALTAR_POUCHES_ID = `${RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}-step-altar-pouches`;
 const STEP_TRAVEL_GUARDIAN_ID = `${RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}-step-travel-guardian`;
 const STEP_GREAT_GUARDIAN_ID = `${RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}-step-great-guardian`;
 const STEP_CHARGED_CELL_DEPOSIT_ID = `${RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}-step-charged-cell-deposit`;
@@ -259,6 +326,7 @@ const BOT_TICK_MS = 200;
 const FAST_ACTION_RETRY_MS = 200;
 const PRE_DECISION_CAPTURE_SETTLE_MS = 80;
 const STARTUP_SETTLE_MS = 180;
+const POUCH_CLICKS_PER_BOT_TICK = 2;
 const CLICK_SAFE_EDGE_MARGIN_PX = 3;
 const PURE_RED_MIN_PIXEL_COUNT = 24;
 const PURE_RED_MAX_COMPONENT_WIDTH_RATIO = 0.18;
@@ -298,6 +366,8 @@ const FREE_MOVE_TILE_PX_MIN = 24;
 const FREE_MOVE_TILE_PX_MAX = 96;
 const STARTUP_RAW_TILE_PX_MIN_TRUSTED = 35;
 const STARTUP_RAW_TILE_PX_MAX_TRUSTED = 70;
+const DISTANCE_TILE_CORRECTION_MIN_TRAVEL_TICKS = 4;
+const DISTANCE_TILE_CORRECTION_THRESHOLD = 2;
 const RUNE_DEPOSIT_SOUTH_CLICK_MIN_RATIO_X = 0.42;
 const RUNE_DEPOSIT_SOUTH_CLICK_MAX_RATIO_X = 0.56;
 const RUNE_DEPOSIT_SOUTH_CLICK_RATIO_Y = 0.74;
@@ -349,9 +419,10 @@ const TIMER_PRESENCE_ROI = { x: 88, y: 116, width: 96, height: 34 };
 const TIMER_PRESENCE_MIN_BRIGHT_PIXELS = 18;
 const ENABLE_COORDINATE_AUTO_SCREENSHOTS = false;
 const COORDINATE_AUTO_SCREENSHOT_INTERVAL_TICKS = 10;
-const ENABLE_WORLD_MAPPER = true;
+const ENABLE_WORLD_MAPPER = false;
 const WORLD_MAPPER_OBSERVATION_INTERVAL_TICKS = 10;
 const WORLD_MAPPER_LOG_INTERVAL_TICKS = 50;
+const INVENTORY_HISTORY_MAX_ENTRIES = 12;
 const WORKFLOW_STEPS = {
   TAKE_UNCHARGED_CELL: "Step 01/30 Take uncharged cell",
   FIND_MINING_NODE: "Step 02/30 Find mining node",
@@ -365,11 +436,13 @@ const WORKFLOW_STEPS = {
   FIND_WORKBENCH: "Step 05/30 Find workbench",
   MOVE_TO_WORKBENCH: "Step 06/30 Move to workbench",
   CRAFT_UNTIL_FULL: "Step 07/30 Craft until inventory is full",
+  FILL_POUCHES_AFTER_WORKBENCH_FULL: "Step 07.B/30 Fill pouches after workbench full",
   FIND_GUARDIAN: "Step 08/30 Find guardian",
   MOVE_TO_GUARDIAN: "Step 09/30 Move to guardian",
   TELEPORT_TO_ALTAR: "Step 10/30 Teleport to altar region",
   FIND_ALTAR: "Step 11/30 Find altar",
   MOVE_TO_ALTAR: "Step 12/30 Move to altar",
+  EMPTY_POUCHES_AT_ALTAR: "Step 12.B/30 Empty pouches and click altar again",
   FIND_PORTAL: "Step 13/30 Find red portal",
   MOVE_TO_PORTAL: "Step 14/30 Move to red portal",
   TELEPORT_BACK: "Step 15/30 Teleport back to crafting region",
@@ -386,6 +459,7 @@ const WORKFLOW_STEPS = {
   CHECK_PORTAL_MINING_MAGENTA: "Step 25/30 Check if magenta is clickable",
   TRAVEL_TO_PORTAL_MINING: "Step 26/30 Travel to mining",
   PORTAL_MINE_UNTIL_FULL: "Step 27/30 Mining until inventory is full",
+  FILL_POUCHES_AFTER_PORTAL_MINING_FULL: "Step 27.B/30 Fill pouches after portal mining full",
   FIND_PORTAL_EXIT: "Step 28/30 Find and click salmon portal",
   TRAVEL_TO_PORTAL_EXIT: "Step 29/30 Travel to portal",
   REPEAT_GUARDIAN_CLICK: "Step 30/30 Repeat guardian click",
@@ -404,6 +478,121 @@ function detectPortalOpenIcon(bitmap: RobotBitmap, portalOpenIconTemplate: Guard
     monitorTier: currentMonitorTier,
     windowsScalePercent: currentWindowsScalePercent,
   });
+}
+
+function toPouchLocation(match: GuardianOfTheRiftPouchMatch, captureBounds: ScreenCaptureBounds): GuardianOfTheRiftPouchLocation {
+  return {
+    pouch: match.pouch,
+    x: match.x,
+    y: match.y,
+    width: match.width,
+    height: match.height,
+    centerX: match.centerX,
+    centerY: match.centerY,
+    screenCenterX: captureBounds.x + match.centerX,
+    screenCenterY: captureBounds.y + match.centerY,
+    score: match.score,
+  };
+}
+
+function formatPouchLocation(location: GuardianOfTheRiftPouchLocation): string {
+  return `local=(${location.x},${location.y})-${location.x + location.width - 1},${location.y + location.height - 1} center=(${location.centerX},${location.centerY}) screenCenter=(${location.screenCenterX},${location.screenCenterY}) score=${location.score.toFixed(3)}`;
+}
+
+function getRememberedPouchLocations(state: BotState): GuardianOfTheRiftPouchLocation[] {
+  return GUARDIAN_OF_THE_RIFT_DETECTABLE_POUCHES.flatMap((pouch) => {
+    const location = state.pouchInventory.pouches[pouch];
+    return location ? [location] : [];
+  });
+}
+
+function shouldEmptyPouchesAtAltar(state: BotState): boolean {
+  return (
+    !state.altarPouchesEmptiedThisCycle &&
+    (state.craftingPouchesFilledThisCycle || state.portalMiningPouchesFilledThisCycle) &&
+    getRememberedPouchLocations(state).length > 0
+  );
+}
+
+function formatPouchClickList(locations: GuardianOfTheRiftPouchLocation[]): string {
+  return locations.length === 0
+    ? "none"
+    : locations.map((location) => `${location.pouch}@(${location.screenCenterX},${location.screenCenterY})`).join(", ");
+}
+
+function clickNextRememberedPouchBatch(
+  state: BotState,
+  captureBounds: ScreenCaptureBounds,
+  nowMs: number,
+  step: (typeof WORKFLOW_STEPS)[keyof typeof WORKFLOW_STEPS],
+): BotState {
+  const clickIndex = clamp(state.pouchClickIndex, 0, state.pouchClickQueue.length);
+  const batch = state.pouchClickQueue.slice(clickIndex, clickIndex + POUCH_CLICKS_PER_BOT_TICK);
+  for (const location of batch) {
+    clickScreenPoint(location.screenCenterX, location.screenCenterY, captureBounds);
+  }
+
+  const nextClickIndex = clickIndex + batch.length;
+  const totalBatches = Math.max(1, Math.ceil(state.pouchClickQueue.length / POUCH_CLICKS_PER_BOT_TICK));
+  const batchNumber = Math.min(totalBatches, Math.floor(clickIndex / POUCH_CLICKS_PER_BOT_TICK) + 1);
+  log(
+    stepMessage(
+      step,
+      `Clicked pouch batch ${batchNumber}/${totalBatches}: ${formatPouchClickList(batch)} (${nextClickIndex}/${state.pouchClickQueue.length} pouch click(s) done).`,
+    ),
+  );
+
+  return {
+    ...state,
+    pouchClickIndex: nextClickIndex,
+    actionLockUntilMs: nowMs + BOT_TICK_MS,
+  };
+}
+
+function resetPouchClickQueue(): Pick<BotState, "pouchClickQueue" | "pouchClickIndex"> {
+  return {
+    pouchClickQueue: [],
+    pouchClickIndex: 0,
+  };
+}
+
+function detectStartupPouchInventory(
+  bitmap: RobotBitmap,
+  captureBounds: ScreenCaptureBounds,
+  pouchTemplates: GuardianOfTheRiftPouchTemplate[],
+  checkedAtMs: number,
+): GuardianOfTheRiftPouchInventoryMemory {
+  const detection = detectGuardianOfTheRiftPouches(bitmap, pouchTemplates);
+  const memory = createEmptyPouchInventoryMemory(checkedAtMs);
+
+  for (const pouch of GUARDIAN_OF_THE_RIFT_DETECTABLE_POUCHES) {
+    const match = detection.pouches[pouch];
+    if (match) {
+      const location = toPouchLocation(match, captureBounds);
+      memory.pouches[pouch] = location;
+      log(`Startup pouch check: found ${pouch} pouch in inventory at ${formatPouchLocation(location)}.`);
+      continue;
+    }
+
+    const bestScore = detection.matches.find((candidate) => candidate.pouch === pouch)?.score;
+    log(
+      `Startup pouch check: ${pouch} pouch not found in inventory${
+        bestScore === undefined ? "" : ` (bestScore=${bestScore.toFixed(3)})`
+      }.`,
+    );
+  }
+
+  const foundPouches = GUARDIAN_OF_THE_RIFT_DETECTABLE_POUCHES.flatMap((pouch) => {
+    const location = memory.pouches[pouch];
+    return location ? [location] : [];
+  });
+  log(
+    `Startup pouch check summary: found ${foundPouches.length}/${GUARDIAN_OF_THE_RIFT_DETECTABLE_POUCHES.length} pouch(es)${
+      foundPouches.length === 0 ? "" : ` (${foundPouches.map((location) => location.pouch).join(", ")})`
+    }.`,
+  );
+
+  return memory;
 }
 
 function formatElapsedSinceStart(): string {
@@ -440,9 +629,11 @@ function setCurrentLogPhase(phase: BotPhase | "startup" | null | undefined): voi
     phase === "wait-after-agility-mining-yellow-click" ||
     phase === "workbench-find-yellow" ||
     phase === "crafting" ||
+    phase === "fill-pouches-after-workbench-full" ||
     phase === "travel-to-guardian" ||
     phase === "wait-after-guardian-click" ||
     phase === "wait-after-guardian-yellow-click" ||
+    phase === "empty-pouches-at-altar" ||
     phase === "find-return-portal" ||
     phase === "wait-after-guardian-return-click" ||
     phase === "find-great-guardian" ||
@@ -457,6 +648,7 @@ function setCurrentLogPhase(phase: BotPhase | "startup" | null | undefined): voi
     phase === "recover-final-portal-arrival" ||
     phase === "find-portal-mining-magenta" ||
     phase === "portal-mining" ||
+    phase === "fill-pouches-after-portal-mining-full" ||
     phase === "find-portal-exit" ||
     phase === "wait-after-portal-exit-click" ||
     phase === "complete"
@@ -535,6 +727,102 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+function createEmptyPostAltarInventoryLedger(): PostAltarInventoryLedger {
+  return {
+    altarBaselineFreeSlots: null,
+    greatGuardianFreeSlots: null,
+    chargedCellDepositFreeSlots: null,
+    runeDepositFreeSlots: null,
+  };
+}
+
+function createEmptyPouchInventoryMemory(checkedAtMs = 0): GuardianOfTheRiftPouchInventoryMemory {
+  return {
+    checkedAtMs,
+    pouches: {
+      small: null,
+      medium: null,
+      giant: null,
+    },
+  };
+}
+
+function appendInventoryHistory(
+  state: BotState,
+  entry: Omit<InventoryHistoryEntry, "loopIndex" | "phase">,
+): InventoryHistoryEntry[] {
+  return [
+    ...state.inventoryHistory,
+    {
+      ...entry,
+      loopIndex: state.loopIndex,
+      phase: state.phase,
+    },
+  ].slice(-INVENTORY_HISTORY_MAX_ENTRIES);
+}
+
+function formatInventoryHistory(entries: InventoryHistoryEntry[]): string {
+  if (entries.length === 0) {
+    return "none";
+  }
+
+  return entries
+    .slice(-5)
+    .map((entry) => {
+      const expected = entry.expectedFreeSlots === null ? "any" : entry.expectedFreeSlots;
+      const previous = entry.previousFreeSlots === null ? "unknown" : entry.previousFreeSlots;
+      return `${entry.step}@#${entry.loopIndex}:${previous}->${entry.freeSlots} expected=${expected} ${entry.valid ? "ok" : "bad"} (${entry.note})`;
+    })
+    .join("; ");
+}
+
+function withInventoryCheckpoint(
+  state: BotState,
+  step: PostAltarInventoryStep,
+  freeSlots: number,
+  previousFreeSlots: number | null,
+  expectedFreeSlots: number | null,
+  valid: boolean,
+  note: string,
+  ledger: PostAltarInventoryLedger = state.postAltarInventoryLedger,
+): BotState {
+  return {
+    ...state,
+    postAltarInventoryLedger: ledger,
+    inventoryHistory: appendInventoryHistory(state, {
+      step,
+      freeSlots,
+      previousFreeSlots,
+      expectedFreeSlots,
+      valid,
+      note,
+    }),
+  };
+}
+
+function withPostAltarInventoryBaseline(state: BotState, freeSlots: number): BotState {
+  return withInventoryCheckpoint(
+    {
+      ...state,
+      postAltarInventoryLedger: {
+        ...createEmptyPostAltarInventoryLedger(),
+        altarBaselineFreeSlots: freeSlots,
+      },
+      inventoryHistory: [],
+    },
+    "altar-baseline",
+    freeSlots,
+    null,
+    null,
+    true,
+    "altar-click-result",
+    {
+      ...createEmptyPostAltarInventoryLedger(),
+      altarBaselineFreeSlots: freeSlots,
+    },
+  );
+}
+
 function createInitialState(): BotState {
   return {
     loopIndex: 0,
@@ -564,6 +852,14 @@ function createInitialState(): BotState {
     miningTimerLocalStartedAtMs: null,
     miningStatusGreenStartedAtMs: null,
     inventoryFreeSlots: null,
+    pouchInventory: createEmptyPouchInventoryMemory(),
+    pouchClickQueue: [],
+    pouchClickIndex: 0,
+    craftingPouchesFilledThisCycle: false,
+    portalMiningPouchesFilledThisCycle: false,
+    altarPouchesEmptiedThisCycle: false,
+    postAltarInventoryLedger: createEmptyPostAltarInventoryLedger(),
+    inventoryHistory: [],
     missingInventoryCountTicks: 0,
     craftingInventoryChangeDeadlineMs: 0,
     guardianArrivalDeadlineMs: 0,
@@ -571,6 +867,8 @@ function createInitialState(): BotState {
     guardianCoordinateConfirmed: false,
     guardianAltarStartLocation: null,
     guardianYellowArrivalDeadlineMs: 0,
+    guardianYellowTravelEstimate: null,
+    guardianYellowCorrectionRecordedDeadlineMs: null,
     guardianReturnArrivalDeadlineMs: 0,
     guardianReturnClickDistancePx: null,
     returnPortalRecoveryTarget: null,
@@ -1477,6 +1775,53 @@ function formatTravelEstimate(travel: TravelWaitEstimate): string {
   return `distance=${Math.round(travel.distancePx)}px tiles~${travel.distanceTiles.toFixed(1)} tilePx=${travel.tilePx}px travel=${travel.travelTicks} tick(s) wait=${travel.waitTicks} tick(s)`;
 }
 
+function recordAltarDistanceTileCorrectionIfNeeded(state: BotState, bitmap: RobotBitmap): BotState {
+  const travel = state.guardianYellowTravelEstimate;
+  if (travel === null || state.guardianYellowCorrectionRecordedDeadlineMs === state.guardianYellowArrivalDeadlineMs) {
+    return state;
+  }
+
+  const correction = recordGuardianOfTheRiftDistanceTileCorrection({
+    bitmap,
+    context: {
+      monitorTier: currentMonitorTier,
+      windowsScalePercent: currentWindowsScalePercent,
+    },
+    phase: state.phase,
+    reason: "altar-inventory-still-full-after-travel-deadline",
+    travel,
+    minTilePx: FREE_MOVE_TILE_PX_MIN,
+    maxTilePx: FREE_MOVE_TILE_PX_MAX,
+    travelSpeedTilesPerTick: PLAYER_TRAVEL_SPEED_TILES_PER_TICK,
+    minTravelTicks: DISTANCE_TILE_CORRECTION_MIN_TRAVEL_TICKS,
+    correctionThreshold: DISTANCE_TILE_CORRECTION_THRESHOLD,
+  });
+
+  if (correction.recorded) {
+    if (correction.adjusted) {
+      currentDistanceTilePx = correction.nextTilePx;
+      warn(
+        stepMessage(
+          WORKFLOW_STEPS.MOVE_TO_ALTAR,
+          `Distance tile history lowered tilePx ${correction.previousTilePx}px -> ${correction.nextTilePx}px after ${correction.correctionThreshold} long altar correction(s); candidate=${correction.candidateTilePx}px, observations=${correction.correctionObservationCount}, history=${correction.path}.`,
+        ),
+      );
+    } else {
+      log(
+        stepMessage(
+          WORKFLOW_STEPS.MOVE_TO_ALTAR,
+          `Distance tile correction recorded because altar inventory stayed full after travel deadline; currentTilePx=${correction.previousTilePx}px candidate=${correction.candidateTilePx}px debt=${correction.correctionDebt}/${correction.correctionThreshold}, observations=${correction.correctionObservationCount}.`,
+        ),
+      );
+    }
+  }
+
+  return {
+    ...state,
+    guardianYellowCorrectionRecordedDeadlineMs: state.guardianYellowArrivalDeadlineMs,
+  };
+}
+
 async function captureGuardianTick(
   state: BotState,
   nowMs: number,
@@ -2292,6 +2637,7 @@ function transitionToWorkbenchState(
     phase: "workbench-find-yellow",
     actionLockUntilMs: 0,
     craftingInventoryChangeDeadlineMs: 0,
+    craftingPouchesFilledThisCycle: false,
     finalPortalTeleportGraceDeadlineMs: 0,
     miningTimerReliableReadCount: 0,
     miningTimerLocalStartSecondsRemaining: null,
@@ -2820,6 +3166,9 @@ function transitionToGuardianTravelState(
     guardianCoordinateConfirmed: false,
     guardianAltarStartLocation: null,
     guardianYellowArrivalDeadlineMs: 0,
+    guardianYellowTravelEstimate: null,
+    guardianYellowCorrectionRecordedDeadlineMs: null,
+    altarPouchesEmptiedThisCycle: false,
     guardianReturnArrivalDeadlineMs: 0,
     guardianReturnClickDistancePx: null,
     returnPortalRecoveryTarget: null,
@@ -2854,6 +3203,9 @@ function transitionToGuardianRunecraftingState(state: BotState, location: Guardi
     guardianCoordinateConfirmed: true,
     guardianAltarStartLocation: location,
     guardianYellowArrivalDeadlineMs: 0,
+    guardianYellowTravelEstimate: null,
+    guardianYellowCorrectionRecordedDeadlineMs: null,
+    altarPouchesEmptiedThisCycle: false,
     guardianReturnArrivalDeadlineMs: 0,
     guardianReturnClickDistancePx: null,
     returnPortalRecoveryTarget: null,
@@ -2875,8 +3227,11 @@ function transitionToGuardianRunecraftingState(state: BotState, location: Guardi
   };
 }
 
-function createStartupInitialState(bitmap: RobotBitmap): BotState {
-  const state = createInitialState();
+function createStartupInitialState(bitmap: RobotBitmap, pouchInventory: GuardianOfTheRiftPouchInventoryMemory): BotState {
+  const state = {
+    ...createInitialState(),
+    pouchInventory,
+  };
   const location = readGuardianCoordinateLocation(bitmap);
   const inventory = detectInventoryCount(bitmap);
   log(
@@ -2911,7 +3266,12 @@ function createStartupInitialState(bitmap: RobotBitmap): BotState {
   };
 }
 
-function runCraftingTick(state: BotState, nowMs: number, tickCapture: TickCapture): BotState {
+function runCraftingTick(
+  state: BotState,
+  nowMs: number,
+  tickCapture: TickCapture,
+  captureBounds: ScreenCaptureBounds,
+): BotState {
   if (nowMs < state.actionLockUntilMs) {
     return state;
   }
@@ -2940,6 +3300,31 @@ function runCraftingTick(state: BotState, nowMs: number, tickCapture: TickCaptur
   }
 
   if (inventory.count === 0) {
+    const rememberedPouches = getRememberedPouchLocations(state);
+    if (!state.craftingPouchesFilledThisCycle && rememberedPouches.length > 0) {
+      setAutomateBotCurrentStep(STEP_FILL_POUCHES_ID);
+      log(
+        stepMessage(
+          WORKFLOW_STEPS.FILL_POUCHES_AFTER_WORKBENCH_FULL,
+          `Inventory is full after workbench and ${rememberedPouches.length} remembered pouch(es) are available; filling pouches over bot ticks before reclicking workbench.`,
+        ),
+      );
+
+      return {
+        ...state,
+        currentFunction: "fillPouchesAfterWorkbenchFull",
+        phase: "fill-pouches-after-workbench-full",
+        pouchClickQueue: rememberedPouches,
+        pouchClickIndex: 0,
+        inventoryFreeSlots: inventory.count,
+        missingInventoryCountTicks: 0,
+        craftingInventoryChangeDeadlineMs: 0,
+        craftingPouchesFilledThisCycle: true,
+        missingYellowTicks: 0,
+        actionLockUntilMs: 0,
+      };
+    }
+
     return transitionToGuardianTravelState({
       ...state,
       inventoryFreeSlots: inventory.count,
@@ -2994,6 +3379,64 @@ function runCraftingTick(state: BotState, nowMs: number, tickCapture: TickCaptur
     inventoryFreeSlots: inventory.count,
     missingInventoryCountTicks: 0,
     actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
+  };
+}
+
+function runFillPouchesAfterWorkbenchFullTick(
+  state: BotState,
+  nowMs: number,
+  captureBounds: ScreenCaptureBounds,
+): BotState {
+  if (nowMs < state.actionLockUntilMs) {
+    return state;
+  }
+
+  if (state.pouchClickIndex < state.pouchClickQueue.length) {
+    const nextState = clickNextRememberedPouchBatch(state, captureBounds, nowMs, WORKFLOW_STEPS.FILL_POUCHES_AFTER_WORKBENCH_FULL);
+    if (nextState.pouchClickIndex < nextState.pouchClickQueue.length) {
+      return nextState;
+    }
+
+    const filledPouchCount = nextState.pouchClickQueue.length;
+    setAutomateBotCurrentStep(STEP_WORKBENCH_ID);
+    log(
+      stepMessage(
+        WORKFLOW_STEPS.FILL_POUCHES_AFTER_WORKBENCH_FULL,
+        `Finished filling ${filledPouchCount} remembered pouch(es); returning to workbench marker search to reclick workbench on the next bot tick.`,
+      ),
+    );
+
+    return {
+      ...nextState,
+      ...resetPouchClickQueue(),
+      currentFunction: "workbenchFindYellow",
+      phase: "workbench-find-yellow",
+      inventoryFreeSlots: null,
+      missingInventoryCountTicks: 0,
+      craftingInventoryChangeDeadlineMs: 0,
+      missingYellowTicks: 0,
+      actionLockUntilMs: nowMs + BOT_TICK_MS,
+    };
+  }
+
+  setAutomateBotCurrentStep(STEP_WORKBENCH_ID);
+  log(
+    stepMessage(
+      WORKFLOW_STEPS.FILL_POUCHES_AFTER_WORKBENCH_FULL,
+      `Finished filling ${state.pouchClickQueue.length} remembered pouch(es); returning to workbench marker search to reclick workbench.`,
+    ),
+  );
+
+  return {
+    ...state,
+    ...resetPouchClickQueue(),
+    currentFunction: "workbenchFindYellow",
+    phase: "workbench-find-yellow",
+    inventoryFreeSlots: null,
+    missingInventoryCountTicks: 0,
+    craftingInventoryChangeDeadlineMs: 0,
+    missingYellowTicks: 0,
+    actionLockUntilMs: 0,
   };
 }
 
@@ -3247,6 +3690,8 @@ function clickGuardianAltarMarker(
     phase: "wait-after-guardian-yellow-click",
     guardianCoordinateConfirmed: true,
     guardianYellowArrivalDeadlineMs: clickedAtMs + travel.waitTicks * GAME_TICK_MS,
+    guardianYellowTravelEstimate: travel,
+    guardianYellowCorrectionRecordedDeadlineMs: null,
     guardianAltarStartLocation: altarStartLocation,
     missingGuardianYellowTicks: 0,
     missingGuardianReturnRedTicks: 0,
@@ -3286,10 +3731,11 @@ function runWaitAfterGuardianYellowClickTick(
   }
 
   if (inventory.count === 0) {
+    const correctedState = recordAltarDistanceTileCorrectionIfNeeded(state, tickCapture.bitmap);
     const altarCandidates = detectGuardianOfTheRiftAltarMarkersInScreenshot(tickCapture.bitmap);
     const nearestYellow = pickNearestGuardianOfTheRiftAltarMarker(altarCandidates, playerAnchor);
     if (!nearestYellow) {
-      const missingGuardianYellowTicks = state.missingGuardianYellowTicks + 1;
+      const missingGuardianYellowTicks = correctedState.missingGuardianYellowTicks + 1;
       if (missingGuardianYellowTicks <= GUARDIAN_ALTAR_SEARCH_RETRY_TICKS) {
         if (missingGuardianYellowTicks === 1 || missingGuardianYellowTicks % 3 === 0) {
           warn(
@@ -3301,7 +3747,7 @@ function runWaitAfterGuardianYellowClickTick(
         }
 
         return {
-          ...state,
+          ...correctedState,
           inventoryFreeSlots: inventory.count,
           missingGuardianYellowTicks,
           actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
@@ -3315,23 +3761,23 @@ function runWaitAfterGuardianYellowClickTick(
       warn(message);
       notifyUserAndStop(message);
       return {
-        ...state,
+        ...correctedState,
         inventoryFreeSlots: inventory.count,
         missingGuardianYellowTicks,
         actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
       };
     }
 
-    if (state.missingGuardianYellowTicks > 0) {
+    if (correctedState.missingGuardianYellowTicks > 0) {
       log(
         stepMessage(
           WORKFLOW_STEPS.MOVE_TO_ALTAR,
-          `Altar marker found after ${state.missingGuardianYellowTicks} retry tick(s). Candidates=${formatGuardianOfTheRiftAltarCandidates(altarCandidates)}.`,
+          `Altar marker found after ${correctedState.missingGuardianYellowTicks} retry tick(s). Candidates=${formatGuardianOfTheRiftAltarCandidates(altarCandidates)}.`,
         ),
       );
     }
 
-    const altarStartLocation = readGuardianCoordinateLocation(tickCapture.bitmap) ?? state.guardianAltarStartLocation;
+    const altarStartLocation = readGuardianCoordinateLocation(tickCapture.bitmap) ?? correctedState.guardianAltarStartLocation;
     const travel = estimateTravelWaitTicks(playerAnchor, nearestYellow);
     const clicked = clickScreenPoint(
       captureBounds.x + nearestYellow.centerX,
@@ -3347,33 +3793,165 @@ function runWaitAfterGuardianYellowClickTick(
     );
 
     return {
-      ...state,
+      ...correctedState,
       inventoryFreeSlots: inventory.count,
       missingInventoryCountTicks: 0,
       missingGuardianYellowTicks: 0,
       guardianYellowArrivalDeadlineMs: clickedAtMs + travel.waitTicks * GAME_TICK_MS,
+      guardianYellowTravelEstimate: travel,
+      guardianYellowCorrectionRecordedDeadlineMs: null,
       guardianAltarStartLocation: altarStartLocation,
       actionLockUntilMs: clickedAtMs + GUARDIAN_YELLOW_CLICK_LOCK_TICKS * GAME_TICK_MS,
     };
   }
 
+  if (shouldEmptyPouchesAtAltar(state)) {
+    const altarCandidates = detectGuardianOfTheRiftAltarMarkersInScreenshot(tickCapture.bitmap);
+    const nearestYellow = pickNearestGuardianOfTheRiftAltarMarker(altarCandidates, playerAnchor);
+    if (!nearestYellow) {
+      const missingGuardianYellowTicks = state.missingGuardianYellowTicks + 1;
+      if (missingGuardianYellowTicks <= GUARDIAN_ALTAR_SEARCH_RETRY_TICKS) {
+        warn(
+          stepMessage(
+            WORKFLOW_STEPS.EMPTY_POUCHES_AT_ALTAR,
+            `Inventory free-space changed to ${inventory.count} after first altar click and pouches were filled this cycle, but altar marker is not visible yet. Retry ${missingGuardianYellowTicks}/${GUARDIAN_ALTAR_SEARCH_RETRY_TICKS}. Candidates=${formatGuardianOfTheRiftAltarCandidates(altarCandidates)}.`,
+          ),
+        );
+
+        return {
+          ...state,
+          inventoryFreeSlots: inventory.count,
+          missingInventoryCountTicks: 0,
+          missingGuardianYellowTicks,
+          actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
+        };
+      }
+
+      const message = stepMessage(
+        WORKFLOW_STEPS.EMPTY_POUCHES_AT_ALTAR,
+        `Inventory free-space changed to ${inventory.count} after first altar click and pouches were filled this cycle, but no altar marker was found after ${missingGuardianYellowTicks} check(s). Candidates=${formatGuardianOfTheRiftAltarCandidates(altarCandidates)}. Stopping bot.`,
+      );
+      warn(message);
+      notifyUserAndStop(message);
+      return {
+        ...state,
+        inventoryFreeSlots: inventory.count,
+        missingInventoryCountTicks: 0,
+        missingGuardianYellowTicks,
+        actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
+      };
+    }
+
+    const rememberedPouches = getRememberedPouchLocations(state);
+    setAutomateBotCurrentStep(STEP_ALTAR_POUCHES_ID);
+    log(
+      stepMessage(
+        WORKFLOW_STEPS.EMPTY_POUCHES_AT_ALTAR,
+        `Inventory free-space changed to ${inventory.count} after first altar click and ${rememberedPouches.length} remembered pouch(es) were filled this cycle; emptying pouches over bot ticks before clicking altar a second time.`,
+      ),
+    );
+
+    return {
+      ...state,
+      currentFunction: "emptyPouchesAtAltar",
+      phase: "empty-pouches-at-altar",
+      pouchClickQueue: rememberedPouches,
+      pouchClickIndex: 0,
+      inventoryFreeSlots: inventory.count,
+      missingInventoryCountTicks: 0,
+      missingGuardianYellowTicks: 0,
+      actionLockUntilMs: 0,
+    };
+  }
+
+  const baselineState = withPostAltarInventoryBaseline(state, inventory.count);
+
   log(
     stepMessage(
       WORKFLOW_STEPS.FIND_PORTAL,
-      `Inventory free-space changed to ${inventory.count}; saved as altar baseline before switching to ${RETURN_PORTAL_MARKER_COLOR_HEX} red portal search.`,
+      `Inventory free-space changed to ${inventory.count}; saved as altar baseline before switching to ${RETURN_PORTAL_MARKER_COLOR_HEX} red portal search. Inventory history=${formatInventoryHistory(baselineState.inventoryHistory)}.`,
     ),
   );
 
   return {
-    ...state,
+    ...baselineState,
     currentFunction: "findReturnPortal",
     phase: "find-return-portal",
     inventoryFreeSlots: inventory.count,
     missingInventoryCountTicks: 0,
     missingGuardianReturnRedTicks: 0,
+    guardianYellowTravelEstimate: null,
+    guardianYellowCorrectionRecordedDeadlineMs: null,
     returnPortalRecoveryTarget: null,
     actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
   };
+}
+
+function runEmptyPouchesAtAltarTick(
+  state: BotState,
+  nowMs: number,
+  tickCapture: TickCapture,
+  captureBounds: ScreenCaptureBounds,
+): BotState {
+  if (nowMs < state.actionLockUntilMs) {
+    return state;
+  }
+
+  if (state.pouchClickIndex < state.pouchClickQueue.length) {
+    return clickNextRememberedPouchBatch(state, captureBounds, nowMs, WORKFLOW_STEPS.EMPTY_POUCHES_AT_ALTAR);
+  }
+
+  const playerAnchor = getPlayerAnchor(tickCapture.bitmap);
+  const altarCandidates = detectGuardianOfTheRiftAltarMarkersInScreenshot(tickCapture.bitmap);
+  const nearestYellow = pickNearestGuardianOfTheRiftAltarMarker(altarCandidates, playerAnchor);
+  if (!nearestYellow) {
+    const missingGuardianYellowTicks = state.missingGuardianYellowTicks + 1;
+    if (missingGuardianYellowTicks <= GUARDIAN_ALTAR_SEARCH_RETRY_TICKS) {
+      warn(
+        stepMessage(
+          WORKFLOW_STEPS.EMPTY_POUCHES_AT_ALTAR,
+          `Finished pouch clicks, but altar marker is not visible for the second altar click. Retry ${missingGuardianYellowTicks}/${GUARDIAN_ALTAR_SEARCH_RETRY_TICKS}. Candidates=${formatGuardianOfTheRiftAltarCandidates(altarCandidates)}.`,
+        ),
+      );
+
+      return {
+        ...state,
+        missingGuardianYellowTicks,
+        actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
+      };
+    }
+
+    const message = stepMessage(
+      WORKFLOW_STEPS.EMPTY_POUCHES_AT_ALTAR,
+      `Finished pouch clicks, but no altar marker was found after ${missingGuardianYellowTicks} check(s). Candidates=${formatGuardianOfTheRiftAltarCandidates(altarCandidates)}. Stopping bot.`,
+    );
+    warn(message);
+    notifyUserAndStop(message);
+    return {
+      ...state,
+      missingGuardianYellowTicks,
+      actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
+    };
+  }
+
+  log(
+    stepMessage(
+      WORKFLOW_STEPS.EMPTY_POUCHES_AT_ALTAR,
+      `Finished emptying ${state.pouchClickQueue.length} remembered pouch(es); clicking altar a second time before return-portal search.`,
+    ),
+  );
+
+  return clickGuardianAltarMarker(
+    {
+      ...state,
+      ...resetPouchClickQueue(),
+      missingGuardianYellowTicks: 0,
+      altarPouchesEmptiedThisCycle: true,
+    },
+    captureBounds,
+    playerAnchor,
+    nearestYellow,
+  );
 }
 
 function transitionToReturnPortalRecoveryState(
@@ -3816,7 +4394,7 @@ function runWaitAfterGreatGuardianClickTick(
       warn(
         stepMessage(
           WORKFLOW_STEPS.TRAVEL_TO_GREAT_GUARDIAN,
-          `Great guardian inventory did not reach expected free-space ${expectedInventoryFreeSlots} before travel deadline expired; got ${inventoryAfterClick.count} from altar baseline ${currentState.inventoryFreeSlots}. Re-clicking great guardian.`,
+          `Great guardian inventory did not reach expected free-space ${expectedInventoryFreeSlots} before travel deadline expired; got ${inventoryAfterClick.count} from altar baseline ${currentState.inventoryFreeSlots}. Re-clicking great guardian. Inventory history=${formatInventoryHistory(currentState.inventoryHistory)}.`,
         ),
       );
       return {
@@ -3835,7 +4413,7 @@ function runWaitAfterGreatGuardianClickTick(
       warn(
         stepMessage(
           WORKFLOW_STEPS.TRAVEL_TO_GREAT_GUARDIAN,
-          `Great guardian inventory check is not ready yet: expected free-space ${expectedInventoryFreeSlots} from altar baseline ${currentState.inventoryFreeSlots}, got ${inventoryAfterClick.count}. Checking again before travel deadline.`,
+          `Great guardian inventory check is not ready yet: expected free-space ${expectedInventoryFreeSlots} from altar baseline ${currentState.inventoryFreeSlots}, got ${inventoryAfterClick.count}. Checking again before travel deadline. Inventory history=${formatInventoryHistory(currentState.inventoryHistory)}.`,
         ),
       );
     }
@@ -3847,20 +4425,32 @@ function runWaitAfterGreatGuardianClickTick(
     };
   }
 
-  const verifiedState: BotState = {
-    ...currentState,
-    inventoryFreeSlots: inventoryAfterClick.count,
-    missingInventoryCountTicks: 0,
-    greatGuardianArrivalDeadlineMs: 0,
-    greatGuardianClickDistancePx: null,
-  };
+  const verifiedState = withInventoryCheckpoint(
+    {
+      ...currentState,
+      inventoryFreeSlots: inventoryAfterClick.count,
+      missingInventoryCountTicks: 0,
+      greatGuardianArrivalDeadlineMs: 0,
+      greatGuardianClickDistancePx: null,
+    },
+    "great-guardian",
+    inventoryAfterClick.count,
+    currentState.inventoryFreeSlots,
+    expectedInventoryFreeSlots,
+    true,
+    "expected +1 after Great Guardian",
+    {
+      ...currentState.postAltarInventoryLedger,
+      greatGuardianFreeSlots: inventoryAfterClick.count,
+    },
+  );
 
   if (verifiedState.postPortalDepositResume === "greatGuardian") {
     setAutomateBotCurrentStep(STEP_CHARGED_CELL_DEPOSIT_ID);
     log(
       stepMessage(
         WORKFLOW_STEPS.FIND_CHARGED_CELL_DEPOSIT,
-        `Post-portal Great Guardian deposit verified: free-space ${currentState.inventoryFreeSlots} -> ${inventoryAfterClick.count}. Depositing charged cell before green guardian teleport.`,
+        `Post-portal Great Guardian deposit verified: free-space ${currentState.inventoryFreeSlots} -> ${inventoryAfterClick.count}. Depositing charged cell before green guardian teleport. Inventory history=${formatInventoryHistory(verifiedState.inventoryHistory)}.`,
       ),
     );
     return {
@@ -3880,7 +4470,7 @@ function runWaitAfterGreatGuardianClickTick(
         postPortalDepositResume: "chargedCell",
       },
       nowMs,
-      `Great guardian inventory verified: free-space ${currentState.inventoryFreeSlots} -> ${inventoryAfterClick.count}. Open portal was already detected, going to salmon portal before charged cell deposit.`,
+      `Great guardian inventory verified: free-space ${currentState.inventoryFreeSlots} -> ${inventoryAfterClick.count}. Open portal was already detected, going to salmon portal before charged cell deposit. Inventory history=${formatInventoryHistory(verifiedState.inventoryHistory)}.`,
     );
   }
 
@@ -3888,7 +4478,7 @@ function runWaitAfterGreatGuardianClickTick(
   log(
     stepMessage(
       WORKFLOW_STEPS.FIND_CHARGED_CELL_DEPOSIT,
-      `Great guardian inventory verified: free-space ${currentState.inventoryFreeSlots} -> ${inventoryAfterClick.count}. Searching for charged cell deposit marker.`,
+      `Great guardian inventory verified: free-space ${currentState.inventoryFreeSlots} -> ${inventoryAfterClick.count}. Searching for charged cell deposit marker. Inventory history=${formatInventoryHistory(verifiedState.inventoryHistory)}.`,
     ),
   );
   return {
@@ -4060,7 +4650,7 @@ function runWaitAfterChargedCellDepositClickTick(
       warn(
         stepMessage(
           WORKFLOW_STEPS.TRAVEL_TO_CHARGED_CELL_DEPOSIT,
-          `Charged cell deposit inventory did not reach expected free-space ${expectedInventoryFreeSlots} before travel deadline expired; got ${inventoryAfterClick.count} from guardian baseline ${currentState.inventoryFreeSlots}. Re-clicking charged cell deposit.`,
+          `Charged cell deposit inventory did not reach expected free-space ${expectedInventoryFreeSlots} before travel deadline expired; got ${inventoryAfterClick.count} from guardian baseline ${currentState.inventoryFreeSlots}. Re-clicking charged cell deposit. Inventory history=${formatInventoryHistory(currentState.inventoryHistory)}.`,
         ),
       );
       return {
@@ -4079,7 +4669,7 @@ function runWaitAfterChargedCellDepositClickTick(
       warn(
         stepMessage(
           WORKFLOW_STEPS.TRAVEL_TO_CHARGED_CELL_DEPOSIT,
-          `Charged cell deposit inventory check is not ready yet: expected free-space ${expectedInventoryFreeSlots} from guardian baseline ${currentState.inventoryFreeSlots}, got ${inventoryAfterClick.count}. Checking again before travel deadline.`,
+          `Charged cell deposit inventory check is not ready yet: expected free-space ${expectedInventoryFreeSlots} from guardian baseline ${currentState.inventoryFreeSlots}, got ${inventoryAfterClick.count}. Checking again before travel deadline. Inventory history=${formatInventoryHistory(currentState.inventoryHistory)}.`,
         ),
       );
     }
@@ -4091,13 +4681,25 @@ function runWaitAfterChargedCellDepositClickTick(
     };
   }
 
-  const verifiedState: BotState = {
-    ...currentState,
-    inventoryFreeSlots: inventoryAfterClick.count,
-    missingInventoryCountTicks: 0,
-    chargedCellDepositArrivalDeadlineMs: 0,
-    chargedCellDepositClickDistancePx: null,
-  };
+  const verifiedState = withInventoryCheckpoint(
+    {
+      ...currentState,
+      inventoryFreeSlots: inventoryAfterClick.count,
+      missingInventoryCountTicks: 0,
+      chargedCellDepositArrivalDeadlineMs: 0,
+      chargedCellDepositClickDistancePx: null,
+    },
+    "charged-cell-deposit",
+    inventoryAfterClick.count,
+    currentState.inventoryFreeSlots,
+    expectedInventoryFreeSlots,
+    true,
+    "expected +1 after charged-cell deposit",
+    {
+      ...currentState.postAltarInventoryLedger,
+      chargedCellDepositFreeSlots: inventoryAfterClick.count,
+    },
+  );
 
   if (verifiedState.postPortalDepositResume === "chargedCell") {
     return transitionToGuardianTravelState(
@@ -4106,7 +4708,7 @@ function runWaitAfterChargedCellDepositClickTick(
         postPortalDepositResume: null,
         openPortalAfterCurrentPostReturnAction: false,
       },
-      `Post-portal charged cell deposit verified: free-space ${currentState.inventoryFreeSlots} -> ${inventoryAfterClick.count}. Searching for the green guardian outline.`,
+      `Post-portal charged cell deposit verified: free-space ${currentState.inventoryFreeSlots} -> ${inventoryAfterClick.count}. Searching for the green guardian outline. Inventory history=${formatInventoryHistory(verifiedState.inventoryHistory)}.`,
     );
   }
 
@@ -4114,7 +4716,7 @@ function runWaitAfterChargedCellDepositClickTick(
     return transitionToFinalPortalSearchState(
       verifiedState,
       nowMs,
-      `Charged cell deposit inventory verified: free-space ${currentState.inventoryFreeSlots} -> ${inventoryAfterClick.count}. Open portal was already detected, going to salmon portal before rune deposit.`,
+      `Charged cell deposit inventory verified: free-space ${currentState.inventoryFreeSlots} -> ${inventoryAfterClick.count}. Open portal was already detected, going to salmon portal before rune deposit. Inventory history=${formatInventoryHistory(verifiedState.inventoryHistory)}.`,
     );
   }
 
@@ -4122,7 +4724,7 @@ function runWaitAfterChargedCellDepositClickTick(
   log(
     stepMessage(
       WORKFLOW_STEPS.FIND_RUNE_DEPOSIT,
-      `Charged cell deposit inventory verified: free-space ${currentState.inventoryFreeSlots} -> ${inventoryAfterClick.count}. Searching for rune deposit marker.`,
+      `Charged cell deposit inventory verified: free-space ${currentState.inventoryFreeSlots} -> ${inventoryAfterClick.count}. Searching for rune deposit marker. Inventory history=${formatInventoryHistory(verifiedState.inventoryHistory)}.`,
     ),
   );
   return {
@@ -4143,31 +4745,43 @@ function transitionAfterRuneDepositVerified(
   afterFreeSlots: number,
   reasonPrefix: string = "Rune deposit verified",
 ): BotState {
-  const postRuneDepositState: BotState = {
-    ...state,
-    currentFunction: "waitAfterRuneDepositClick",
-    phase: "wait-after-rune-deposit-click",
-    actionLockUntilMs: 0,
-    missingInventoryCountTicks: 0,
-    runeDepositArrivalDeadlineMs: 0,
-    runeDepositClickDistancePx: null,
-    runeDepositInventoryFreeSlotsBeforeClick: beforeFreeSlots,
-    finalPortalArrivalDeadlineMs: 0,
-    finalPortalTeleportGraceDeadlineMs: 0,
-    finalPortalClickDistancePx: null,
-    portalMiningArrivalDeadlineMs: 0,
-    portalExitArrivalDeadlineMs: 0,
-    portalExitClickDistancePx: null,
-    inventoryFreeSlots: afterFreeSlots,
-    missingFinalPortalOpenIconTicks: 0,
-    missingFinalPortalTicks: 0,
-    missingPortalMiningMagentaTicks: 0,
-    missingPortalExitTicks: 0,
-  };
+  const postRuneDepositState = withInventoryCheckpoint(
+    {
+      ...state,
+      currentFunction: "waitAfterRuneDepositClick",
+      phase: "wait-after-rune-deposit-click",
+      actionLockUntilMs: 0,
+      missingInventoryCountTicks: 0,
+      runeDepositArrivalDeadlineMs: 0,
+      runeDepositClickDistancePx: null,
+      runeDepositInventoryFreeSlotsBeforeClick: beforeFreeSlots,
+      finalPortalArrivalDeadlineMs: 0,
+      finalPortalTeleportGraceDeadlineMs: 0,
+      finalPortalClickDistancePx: null,
+      portalMiningArrivalDeadlineMs: 0,
+      portalExitArrivalDeadlineMs: 0,
+      portalExitClickDistancePx: null,
+      inventoryFreeSlots: afterFreeSlots,
+      missingFinalPortalOpenIconTicks: 0,
+      missingFinalPortalTicks: 0,
+      missingPortalMiningMagentaTicks: 0,
+      missingPortalExitTicks: 0,
+    },
+    "rune-deposit",
+    afterFreeSlots,
+    beforeFreeSlots,
+    null,
+    afterFreeSlots > beforeFreeSlots,
+    reasonPrefix === "Rune deposit verified" ? "expected positive rune-deposit delta" : "late/manual positive rune-deposit delta",
+    {
+      ...state.postAltarInventoryLedger,
+      runeDepositFreeSlots: afterFreeSlots,
+    },
+  );
 
   const cameraReset = tapKey(POST_RUNE_DEPOSIT_CAMERA_NORTH_KEY);
   const depositSummary =
-    `${reasonPrefix}: inventory free-space increased ${beforeFreeSlots} -> ${afterFreeSlots}. ${cameraReset ? `Tapped '${POST_RUNE_DEPOSIT_CAMERA_NORTH_KEY}'` : `Could not tap '${POST_RUNE_DEPOSIT_CAMERA_NORTH_KEY}'`} to reset camera north.`;
+    `${reasonPrefix}: inventory free-space increased ${beforeFreeSlots} -> ${afterFreeSlots}. ${cameraReset ? `Tapped '${POST_RUNE_DEPOSIT_CAMERA_NORTH_KEY}'` : `Could not tap '${POST_RUNE_DEPOSIT_CAMERA_NORTH_KEY}'`} to reset camera north. Inventory history=${formatInventoryHistory(postRuneDepositState.inventoryHistory)}.`;
   const portalOpenIcon = detectPortalOpenIcon(tickCapture.bitmap, portalOpenIconTemplate);
 
   if (postRuneDepositState.openPortalAfterCurrentPostReturnAction || portalOpenIcon.isOpen) {
@@ -4426,7 +5040,7 @@ function runWaitAfterRuneDepositClickTick(
         warn(
           stepMessage(
             WORKFLOW_STEPS.TRAVEL_TO_RUNE_DEPOSIT,
-            `Rune deposit inventory check is not ready yet: expected free-space above ${currentState.runeDepositInventoryFreeSlotsBeforeClick}, got ${inventoryAfterClick.count}. Checking again before travel deadline.`,
+            `Rune deposit inventory check is not ready yet: expected free-space above ${currentState.runeDepositInventoryFreeSlotsBeforeClick}, got ${inventoryAfterClick.count}. Checking again before travel deadline. Inventory history=${formatInventoryHistory(currentState.inventoryHistory)}.`,
           ),
         );
       }
@@ -4443,7 +5057,7 @@ function runWaitAfterRuneDepositClickTick(
     warn(
       stepMessage(
         WORKFLOW_STEPS.TRAVEL_TO_RUNE_DEPOSIT,
-        `Rune deposit did not increase inventory free-space before travel deadline expired (${currentState.runeDepositInventoryFreeSlotsBeforeClick} -> ${inventoryAfterClick.count}). Returning to Step 20 to retry the rune deposit.`,
+        `Rune deposit did not increase inventory free-space before travel deadline expired (${currentState.runeDepositInventoryFreeSlotsBeforeClick} -> ${inventoryAfterClick.count}). Returning to Step 20 to retry the rune deposit. Inventory history=${formatInventoryHistory(currentState.inventoryHistory)}.`,
       ),
     );
     return {
@@ -4477,6 +5091,7 @@ function transitionToFinalPortalWaitState(state: BotState, reason: string): BotS
     phase: "wait-for-final-portal-open-icon",
     actionLockUntilMs: 0,
     openPortalAfterCurrentPostReturnAction: false,
+    portalMiningPouchesFilledThisCycle: false,
     finalPortalTeleportGraceDeadlineMs: 0,
     missingFinalPortalOpenIconTicks: 0,
     missingFinalPortalTicks: 0,
@@ -4491,6 +5106,7 @@ function transitionToFinalPortalSearchState(state: BotState, nowMs: number, reas
     currentFunction: "findFinalPortal",
     phase: "find-final-portal",
     openPortalAfterCurrentPostReturnAction: false,
+    portalMiningPouchesFilledThisCycle: false,
     missingFinalPortalOpenIconTicks: 0,
     finalPortalTeleportGraceDeadlineMs: 0,
     missingFinalPortalTicks: 0,
@@ -5008,6 +5624,7 @@ function runPortalMiningTick(
   state: BotState,
   nowMs: number,
   tickCapture: TickCapture,
+  captureBounds: ScreenCaptureBounds,
 ): BotState {
   if (nowMs < state.portalMiningArrivalDeadlineMs) {
     return state;
@@ -5039,6 +5656,31 @@ function runPortalMiningTick(
   }
 
   if (inventory.count === 0) {
+    const rememberedPouches = getRememberedPouchLocations(state);
+    if (!state.portalMiningPouchesFilledThisCycle && rememberedPouches.length > 0) {
+      setAutomateBotCurrentStep(STEP_FILL_POUCHES_ID);
+      log(
+        stepMessage(
+          WORKFLOW_STEPS.FILL_POUCHES_AFTER_PORTAL_MINING_FULL,
+          `Inventory is full after portal mining and ${rememberedPouches.length} remembered pouch(es) are available; filling pouches over bot ticks before reclicking the magenta mining marker.`,
+        ),
+      );
+
+      return {
+        ...state,
+        currentFunction: "fillPouchesAfterPortalMiningFull",
+        phase: "fill-pouches-after-portal-mining-full",
+        pouchClickQueue: rememberedPouches,
+        pouchClickIndex: 0,
+        inventoryFreeSlots: inventory.count,
+        missingInventoryCountTicks: 0,
+        missingPortalMiningMagentaTicks: 0,
+        craftingInventoryChangeDeadlineMs: 0,
+        portalMiningPouchesFilledThisCycle: true,
+        actionLockUntilMs: 0,
+      };
+    }
+
     log(stepMessage(WORKFLOW_STEPS.PORTAL_MINE_UNTIL_FULL, "Inventory is full after portal mining; finding exit portal."));
     return {
       ...state,
@@ -5092,6 +5734,62 @@ function runPortalMiningTick(
     inventoryFreeSlots: inventory.count,
     missingInventoryCountTicks: 0,
     actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
+  };
+}
+
+function runFillPouchesAfterPortalMiningFullTick(
+  state: BotState,
+  nowMs: number,
+  captureBounds: ScreenCaptureBounds,
+): BotState {
+  if (nowMs < state.actionLockUntilMs) {
+    return state;
+  }
+
+  if (state.pouchClickIndex < state.pouchClickQueue.length) {
+    const nextState = clickNextRememberedPouchBatch(state, captureBounds, nowMs, WORKFLOW_STEPS.FILL_POUCHES_AFTER_PORTAL_MINING_FULL);
+    if (nextState.pouchClickIndex < nextState.pouchClickQueue.length) {
+      return nextState;
+    }
+
+    const filledPouchCount = nextState.pouchClickQueue.length;
+    log(
+      stepMessage(
+        WORKFLOW_STEPS.FILL_POUCHES_AFTER_PORTAL_MINING_FULL,
+        `Finished filling ${filledPouchCount} remembered pouch(es); returning to magenta mining marker search to reclick mining on the next bot tick.`,
+      ),
+    );
+
+    return {
+      ...nextState,
+      ...resetPouchClickQueue(),
+      currentFunction: "findPortalMiningMagenta",
+      phase: "find-portal-mining-magenta",
+      inventoryFreeSlots: null,
+      missingInventoryCountTicks: 0,
+      missingPortalMiningMagentaTicks: 0,
+      craftingInventoryChangeDeadlineMs: 0,
+      actionLockUntilMs: nowMs + BOT_TICK_MS,
+    };
+  }
+
+  log(
+    stepMessage(
+      WORKFLOW_STEPS.FILL_POUCHES_AFTER_PORTAL_MINING_FULL,
+      `Finished filling ${state.pouchClickQueue.length} remembered pouch(es); returning to magenta mining marker search to reclick mining.`,
+    ),
+  );
+
+  return {
+    ...state,
+    ...resetPouchClickQueue(),
+    currentFunction: "findPortalMiningMagenta",
+    phase: "find-portal-mining-magenta",
+    inventoryFreeSlots: null,
+    missingInventoryCountTicks: 0,
+    missingPortalMiningMagentaTicks: 0,
+    craftingInventoryChangeDeadlineMs: 0,
+    actionLockUntilMs: 0,
   };
 }
 
@@ -5230,6 +5928,7 @@ async function runLoop(
   captureBounds: ScreenCaptureBounds,
   config: GuardianOfTheRiftConfig,
   portalOpenIconTemplate: GuardianOfTheRiftPortalOpenIconTemplate,
+  pouchTemplates: GuardianOfTheRiftPouchTemplate[],
 ): Promise<void> {
   if (isLoopRunning) {
     log("Loop already running.");
@@ -5250,12 +5949,23 @@ async function runLoop(
 
   try {
     const startupBitmap = captureScreenBitmap(captureBounds);
+    const pouchInventory = detectStartupPouchInventory(startupBitmap, captureBounds, pouchTemplates, Date.now());
     const distanceCalibration = calibrateDistanceTilePx(startupBitmap);
-    currentDistanceTilePx = distanceCalibration.tilePx;
+    const distanceHistory = recordGuardianOfTheRiftDistanceTileStartupObservation({
+      bitmap: startupBitmap,
+      context: {
+        monitorTier: currentMonitorTier,
+        windowsScalePercent: currentWindowsScalePercent,
+      },
+      startupCalibration: distanceCalibration,
+      minTilePx: FREE_MOVE_TILE_PX_MIN,
+      maxTilePx: FREE_MOVE_TILE_PX_MAX,
+    });
+    currentDistanceTilePx = distanceHistory.tilePx;
     log(
-      `Distance tile calibration: usedTilePx=${distanceCalibration.tilePx}px source=${distanceCalibration.source} botRawTilePx=${distanceCalibration.botRawTilePx ?? "unavailable"}px managerRawTilePx=${distanceCalibration.managerRawTilePx ?? "unavailable"}px trustedRawRange=${STARTUP_RAW_TILE_PX_MIN_TRUSTED}-${STARTUP_RAW_TILE_PX_MAX_TRUSTED}px fallbackTilePx=${FREE_MOVE_TILE_PX_FALLBACK}px.`,
+      `Distance tile calibration: usedTilePx=${distanceHistory.tilePx}px source=${distanceHistory.source} startupTilePx=${distanceHistory.startupTilePx}px startupSource=${distanceCalibration.source} observedModeTilePx=${distanceHistory.observedModeTilePx ?? "unavailable"}px learnedTilePx=${distanceHistory.learnedTilePx ?? "unavailable"}px startupObservations=${distanceHistory.startupObservationCount} correctionObservations=${distanceHistory.correctionObservationCount} correctionDebt=${distanceHistory.correctionDebt}/${DISTANCE_TILE_CORRECTION_THRESHOLD} botRawTilePx=${distanceCalibration.botRawTilePx ?? "unavailable"}px managerRawTilePx=${distanceCalibration.managerRawTilePx ?? "unavailable"}px trustedRawRange=${STARTUP_RAW_TILE_PX_MIN_TRUSTED}-${STARTUP_RAW_TILE_PX_MAX_TRUSTED}px fallbackTilePx=${FREE_MOVE_TILE_PX_FALLBACK}px history=${distanceHistory.path}.`,
     );
-    const initialState = createStartupInitialState(startupBitmap);
+    const initialState = createStartupInitialState(startupBitmap, pouchInventory);
 
     await runBotEngine<BotState, EngineFunctionKey, TickCapture>({
       tickMs: BOT_TICK_MS,
@@ -5368,7 +6078,14 @@ async function runLoop(
         craft: ({ state, nowMs, tickCapture }) => {
           setCurrentLogLoopIndex(state.loopIndex);
           setCurrentLogPhase(state.phase);
-          return state.phase === "crafting" ? runCraftingTick(state, nowMs, tickCapture) : state;
+          return state.phase === "crafting" ? runCraftingTick(state, nowMs, tickCapture, captureBounds) : state;
+        },
+        fillPouchesAfterWorkbenchFull: ({ state, nowMs }) => {
+          setCurrentLogLoopIndex(state.loopIndex);
+          setCurrentLogPhase(state.phase);
+          return state.phase === "fill-pouches-after-workbench-full"
+            ? runFillPouchesAfterWorkbenchFullTick(state, nowMs, captureBounds)
+            : state;
         },
         travelToGuardian: ({ state, nowMs, tickCapture }) => {
           setCurrentLogLoopIndex(state.loopIndex);
@@ -5389,6 +6106,13 @@ async function runLoop(
           setCurrentLogPhase(state.phase);
           return state.phase === "wait-after-guardian-yellow-click"
             ? runWaitAfterGuardianYellowClickTick(state, nowMs, tickCapture, captureBounds)
+            : state;
+        },
+        emptyPouchesAtAltar: ({ state, nowMs, tickCapture }) => {
+          setCurrentLogLoopIndex(state.loopIndex);
+          setCurrentLogPhase(state.phase);
+          return state.phase === "empty-pouches-at-altar"
+            ? runEmptyPouchesAtAltarTick(state, nowMs, tickCapture, captureBounds)
             : state;
         },
         findReturnPortal: ({ state, nowMs, tickCapture }) => {
@@ -5485,7 +6209,14 @@ async function runLoop(
         portalMining: ({ state, nowMs, tickCapture }) => {
           setCurrentLogLoopIndex(state.loopIndex);
           setCurrentLogPhase(state.phase);
-          return state.phase === "portal-mining" ? runPortalMiningTick(state, nowMs, tickCapture) : state;
+          return state.phase === "portal-mining" ? runPortalMiningTick(state, nowMs, tickCapture, captureBounds) : state;
+        },
+        fillPouchesAfterPortalMiningFull: ({ state, nowMs }) => {
+          setCurrentLogLoopIndex(state.loopIndex);
+          setCurrentLogPhase(state.phase);
+          return state.phase === "fill-pouches-after-portal-mining-full"
+            ? runFillPouchesAfterPortalMiningFullTick(state, nowMs, captureBounds)
+            : state;
         },
         findPortalExit: ({ state, nowMs, tickCapture }) => {
           setCurrentLogLoopIndex(state.loopIndex);
@@ -5589,11 +6320,17 @@ export function onRunecraftingGuardianOfTheRiftBotStart(): void {
         return;
       }
 
-      const portalOpenIconTemplate = await loadGuardianOfTheRiftPortalOpenIconTemplate();
+      const [portalOpenIconTemplate, pouchTemplates] = await Promise.all([
+        loadGuardianOfTheRiftPortalOpenIconTemplate(),
+        loadGuardianOfTheRiftPouchTemplatesFromDirectory(),
+      ]);
       log(
         `Portal-open icon reference loaded for Step 22 (${portalOpenIconTemplate.bitmap.width}x${portalOpenIconTemplate.bitmap.height}).`,
       );
-      await runLoop(captureBounds, config, portalOpenIconTemplate);
+      log(
+        `Pouch references loaded for startup inventory check (${pouchTemplates.map((template) => `${template.pouch}=${template.bitmap.width}x${template.bitmap.height}`).join(", ")}).`,
+      );
+      await runLoop(captureBounds, config, portalOpenIconTemplate, pouchTemplates);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       warn(`Startup failed: ${message}`);

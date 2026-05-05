@@ -33,6 +33,7 @@
     "test:screenshot:guardian-of-the-rift-mind-rune": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:guardian-of-the-rift-mind-rune\"",
     "test:screenshot:guardian-of-the-rift-timer": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:guardian-of-the-rift-timer\"",
     "test:screenshot:guardian-of-the-rift-uncharged-cell": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:guardian-of-the-rift-uncharged-cell\"",
+    "test:screenshot:guardian-of-the-rift-pouch": "vitest run src/main/automate-bots/shared/guardian-of-the-rift-pouch-detector.vitest.ts",
     "test:screenshot:guardian-of-the-rift-altar": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:guardian-of-the-rift-altar\"",
     "test:screenshot:mithril-ore": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:mithril-ore\"",
     "test:screenshot:coal-ore": "vitest run src/main/automate-bots/shared/screenshot-suites.vitest.ts -t \"test:screenshot:coal-ore\"",
