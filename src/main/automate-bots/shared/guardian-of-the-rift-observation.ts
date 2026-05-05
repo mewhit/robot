@@ -10,6 +10,10 @@ import {
   detectGuardianOfTheRiftUnchargedCellCount,
   type GuardianOfTheRiftUnchargedCellTemplate,
 } from "./guardian-of-the-rift-uncharged-cell-detector";
+import {
+  detectGuardianOfTheRiftTimeSincePortal,
+  type GuardianOfTheRiftTimeSincePortalColor,
+} from "./guardian-of-the-rift-panel-detector";
 
 export type GuardianOfTheRiftPhase = "paused" | "first-mining" | "active-runecrafting";
 
@@ -18,6 +22,7 @@ export type GuardianOfTheRiftObservation = {
   timerSecondsRemaining: number | null;
   elementalGuardian: GuardianOfTheRiftRune | null;
   catalyticGuardian: GuardianOfTheRiftRune | null;
+  timeSincePortalColor: GuardianOfTheRiftTimeSincePortalColor | null;
   unchargedCellCount: number | null;
   hasTenUnchargedCells: boolean;
   inventoryFreeSlots: number | null;
@@ -49,6 +54,7 @@ export function observeGuardianOfTheRiftState(
 ): GuardianOfTheRiftObservation {
   const activeRunes = detectGuardianOfTheRiftActiveRunes(bitmap, runeTemplates);
   const timer = detectGuardianOfTheRiftTimer(bitmap);
+  const timeSincePortal = detectGuardianOfTheRiftTimeSincePortal(bitmap);
   const unchargedCells = detectGuardianOfTheRiftUnchargedCellCount(bitmap, unchargedCellTemplates);
   const inventory = detectInventoryCount(bitmap);
 
@@ -65,6 +71,7 @@ export function observeGuardianOfTheRiftState(
     timerSecondsRemaining,
     elementalGuardian,
     catalyticGuardian,
+    timeSincePortalColor: timeSincePortal.color,
     unchargedCellCount: unchargedCells.count,
     hasTenUnchargedCells: unchargedCells.hasTenUnchargedCells,
     inventoryFreeSlots: inventory.count,

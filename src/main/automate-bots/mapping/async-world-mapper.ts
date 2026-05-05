@@ -58,7 +58,10 @@ type WorldMapEdge = {
 
 type WorldMapChunkFile = {
   version: 1;
+  chunkId: number;
   regionId: number;
+  regionX: number;
+  regionY: number;
   worldChunkX: number;
   worldChunkY: number;
   regionChunkX: number;
@@ -132,13 +135,19 @@ function buildCoordinateBoxScreenshotPath(
 }
 
 function buildChunkFilePath(rootPath: string, tile: WorldTile): string {
-  return path.join(rootPath, "chunks", String(tile.regionId), `chunk-${tile.worldChunkX}-${tile.worldChunkY}-${tile.z}.json`);
+  const regionDirectoryName = `region-id-${tile.regionId}-region-x-${tile.regionX}-region-y-${tile.regionY}`;
+  const chunkFileName =
+    `chunk-id-${tile.chunkId}-world-chunk-x-${tile.worldChunkX}-world-chunk-y-${tile.worldChunkY}-z-${tile.z}.json`;
+  return path.join(rootPath, "regions", regionDirectoryName, "chunks", chunkFileName);
 }
 
 function createEmptyChunk(tile: WorldTile): WorldMapChunkFile {
   return {
     version: 1,
+    chunkId: tile.chunkId,
     regionId: tile.regionId,
+    regionX: tile.regionX,
+    regionY: tile.regionY,
     worldChunkX: tile.worldChunkX,
     worldChunkY: tile.worldChunkY,
     regionChunkX: tile.regionChunkX,
@@ -240,7 +249,7 @@ export function createAsyncWorldMapper(options: AsyncWorldMapperOptions): AsyncW
     if (!directoriesReady) {
       directoriesReady = Promise.all([
         fs.mkdir(observationDirPath, { recursive: true }),
-        fs.mkdir(path.join(rootPath, "chunks"), { recursive: true }),
+        fs.mkdir(path.join(rootPath, "regions"), { recursive: true }),
       ]).then(() => undefined);
     }
 

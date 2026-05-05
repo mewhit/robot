@@ -13,12 +13,6 @@ import type { RobotBitmap } from "./ocr-engine";
 
 const DEFAULT_SCREENSHOT_GLOB = "test-images/runescrafting/guardian-of-the-rift/altar/*.png";
 const DEBUG_OUTPUT_DIR = "test-image-debug";
-const RED_ONLY_ALTAR_SCREENSHOTS = new Set([
-  "1259x1549-2k-125-fire-3",
-  "1298x1549-2k-125-fire",
-  "1298x1549-2k-125-fire-2",
-]);
-
 type AltarExpectation = {
   shouldDetect: boolean;
 };
@@ -26,6 +20,8 @@ type AltarExpectation = {
 type SyntheticAltarComponent = {
   name: string;
   color?: "yellow" | "red";
+  x?: number;
+  y?: number;
   width: number;
   height: number;
   shouldDetect: boolean;
@@ -84,7 +80,7 @@ function expandScreenshotArgs(args: string[]): string[] {
 function getExpectedDetectionFromFilename(screenshotPath: string): AltarExpectation {
   const basename = path.basename(screenshotPath, path.extname(screenshotPath)).toLowerCase();
   const shouldNotDetect = /(^|[-_])(no[-_]?altar|none|missing)([-_]|$)/i.test(basename);
-  return { shouldDetect: !shouldNotDetect && !RED_ONLY_ALTAR_SCREENSHOTS.has(basename) };
+  return { shouldDetect: !shouldNotDetect };
 }
 
 async function loadScreenshot(filePath: string): Promise<RobotBitmap | null> {
@@ -196,6 +192,7 @@ function testSyntheticShapeFilters(): { passed: number; failed: number } {
   const cases: SyntheticAltarComponent[] = [
     { name: "valid altar-sized square", width: 135, height: 132, shouldDetect: true },
     { name: "earth altar angled marker", width: 126, height: 102, shouldDetect: true },
+    { name: "fire altar near top edge", x: 562, y: 54, width: 127, height: 118, shouldDetect: true },
     { name: "red marker before inventory is emptied", color: "red", width: 46, height: 46, shouldDetect: false },
     { name: "tiny red text", color: "red", width: 18, height: 18, shouldDetect: false },
     { name: "thin edge sliver", width: 14, height: 54, shouldDetect: false },
@@ -208,10 +205,12 @@ function testSyntheticShapeFilters(): { passed: number; failed: number } {
 
   for (const testCase of cases) {
     const bitmap = createSyntheticBitmap(1298, 1549);
+    const x = testCase.x ?? 420;
+    const y = testCase.y ?? 520;
     if (testCase.color === "red") {
-      paintRedRectangle(bitmap, 420, 520, testCase.width, testCase.height);
+      paintRedRectangle(bitmap, x, y, testCase.width, testCase.height);
     } else {
-      paintYellowRectangle(bitmap, 420, 520, testCase.width, testCase.height);
+      paintYellowRectangle(bitmap, x, y, testCase.width, testCase.height);
     }
     const detections = detectGuardianOfTheRiftAltarMarkersInScreenshot(bitmap);
     const success = testCase.shouldDetect ? detections.length === 1 : detections.length === 0;

@@ -3,6 +3,7 @@ export type WorldTile = {
   x: number;
   y: number;
   z: number;
+  chunkId: number;
   regionId: number;
   regionX: number;
   regionY: number;
@@ -21,12 +22,14 @@ export function deriveWorldTile(x: number, y: number, z: number): WorldTile {
   const regionY = y >> 6;
   const worldChunkX = x >> 3;
   const worldChunkY = y >> 3;
+  const chunkId = (worldChunkX << 11) | worldChunkY;
 
   return {
     key: buildWorldTileKey({ x, y, z }),
     x,
     y,
     z,
+    chunkId,
     regionId: (regionX << 8) | regionY,
     regionX,
     regionY,

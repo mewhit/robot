@@ -79,6 +79,7 @@ const PORTAL_MARKER_SEARCH_BOUNDS = {
   maxXRatio: 0.82,
   maxYRatio: 0.86,
 };
+const preparedTemplateCache = new WeakMap<GuardianOfTheRiftPortalOpenIconTemplate, PreparedTemplate>();
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -149,6 +150,17 @@ function prepareTemplate(template: GuardianOfTheRiftPortalOpenIconTemplate): Pre
     samples,
     totalWeight,
   };
+}
+
+function getPreparedTemplate(template: GuardianOfTheRiftPortalOpenIconTemplate): PreparedTemplate {
+  const cached = preparedTemplateCache.get(template);
+  if (cached) {
+    return cached;
+  }
+
+  const prepared = prepareTemplate(template);
+  preparedTemplateCache.set(template, prepared);
+  return prepared;
 }
 
 function scoreTemplateAt(template: PreparedTemplate, bitmap: RobotBitmap, x: number, y: number): number {
@@ -251,7 +263,7 @@ export function detectGuardianOfTheRiftPortalOpenIcon(
   template: GuardianOfTheRiftPortalOpenIconTemplate,
   searchRoi: GuardianOfTheRiftPortalOpenIconSearchRoi = resolveDefaultPortalOpenIconSearchRoi(bitmap, template),
 ): GuardianOfTheRiftPortalOpenIconDetection {
-  const preparedTemplate = prepareTemplate(template);
+  const preparedTemplate = getPreparedTemplate(template);
   const roi = clampRoi(bitmap, searchRoi);
   const match = findBestMatchInRoi(preparedTemplate, bitmap, roi);
   const matches = match ? [match] : [];

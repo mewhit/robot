@@ -121,7 +121,7 @@ function parseExpectedCoordinatesFromFilename(screenshotPath: string): ExpectedC
   }
 
   const coordinateLocation: ExpectedCoordinateLocation = { x, y, z };
-  const idMatch = fileName.match(/(?:^|-)chunk-(\d+)-region-(\d+)(?:-|$)/i);
+  const idMatch = fileName.match(/(?:^|-)chunk(?:-id)?-(\d+)-region(?:-id)?-(\d+)(?:-|$)/i);
   if (idMatch) {
     const chunkId = Number(idMatch[1]);
     const regionId = Number(idMatch[2]);

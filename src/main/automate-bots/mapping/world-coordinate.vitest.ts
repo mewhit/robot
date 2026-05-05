@@ -11,6 +11,7 @@ describe("world-coordinate", () => {
     expect(tile.regionId).toBe((58 << 8) | 88);
     expect(tile.worldChunkX).toBe(469);
     expect(tile.worldChunkY).toBe(709);
+    expect(tile.chunkId).toBe((469 << 11) | 709);
     expect(tile.regionChunkX).toBe(5);
     expect(tile.regionChunkY).toBe(5);
   });

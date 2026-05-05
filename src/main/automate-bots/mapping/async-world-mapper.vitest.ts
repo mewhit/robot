@@ -94,13 +94,24 @@ describe("async-world-mapper", () => {
     const screenshotStat = await fs.stat(firstObservation.coordinateBoxScreenshotPath!);
     expect(screenshotStat.isFile()).toBe(true);
 
-    const firstChunkPath = path.join(root, "world-map", "chunks", String((3755 >> 6 << 8) | (5672 >> 6)), "chunk-469-709-0.json");
+    const firstChunkPath = path.join(
+      root,
+      "world-map",
+      "regions",
+      "region-id-14936-region-x-58-region-y-88",
+      "chunks",
+      "chunk-id-961221-world-chunk-x-469-world-chunk-y-709-z-0.json",
+    );
     const firstChunkRaw = await fs.readFile(firstChunkPath, "utf8");
     const firstChunk = JSON.parse(firstChunkRaw) as {
+      chunkId: number;
+      regionId: number;
       nodes: Record<string, { visitCount: number }>;
       edges: Record<string, { kind: string; count: number }>;
     };
 
+    expect(firstChunk.chunkId).toBe((469 << 11) | 709);
+    expect(firstChunk.regionId).toBe((58 << 8) | 88);
     expect(firstChunk.nodes["3755,5672,0"]?.visitCount).toBe(1);
     expect(firstChunk.nodes["3756,5672,0"]?.visitCount).toBe(1);
     expect(firstChunk.edges["3755,5672,0>3756,5672,0:walk"]?.kind).toBe("walk");
@@ -135,7 +146,14 @@ describe("async-world-mapper", () => {
 
     await mapper.stop();
 
-    const chunkPath = path.join(root, "world-map", "chunks", String((3200 >> 6 << 8) | (3200 >> 6)), "chunk-400-400-0.json");
+    const chunkPath = path.join(
+      root,
+      "world-map",
+      "regions",
+      "region-id-12850-region-x-50-region-y-50",
+      "chunks",
+      "chunk-id-819600-world-chunk-x-400-world-chunk-y-400-z-0.json",
+    );
     const chunk = JSON.parse(await fs.readFile(chunkPath, "utf8")) as {
       edges: Record<string, { kind: string }>;
     };

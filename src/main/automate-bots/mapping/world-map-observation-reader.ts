@@ -1,4 +1,4 @@
-import { detectOverlayBoxInScreenshot } from "../shared/coordinate-box-detector";
+import { detectCoordinateOverlayBox } from "../shared/coordinate-auto-screenshot";
 import { RobotBitmap } from "../shared/ocr-engine";
 import { WorldMapObservation } from "./async-world-mapper";
 import { parseWorldTileFromMatchedLine } from "./world-coordinate";
@@ -10,7 +10,7 @@ export function readWorldMapObservationFromBitmap(params: {
   observedAtMs: number;
   windowsScalePercent: number;
 }): Omit<WorldMapObservation, "sessionId" | "botId"> | null {
-  const overlayBox = detectOverlayBoxInScreenshot(params.bitmap, params.windowsScalePercent);
+  const overlayBox = detectCoordinateOverlayBox(params.bitmap, params.windowsScalePercent);
   if (!overlayBox) {
     return null;
   }

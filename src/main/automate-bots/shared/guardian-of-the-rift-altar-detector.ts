@@ -24,7 +24,7 @@ type SearchBounds = {
 };
 
 const ALTAR_YELLOW_MIN_PIXELS = 3_000;
-const ALTAR_SEARCH_BOUNDS = { minXRatio: 0.04, minYRatio: 0.08, maxXRatio: 0.94, maxYRatio: 0.86 };
+const ALTAR_SEARCH_BOUNDS = { minXRatio: 0.04, minYRatio: 0.03, maxXRatio: 0.94, maxYRatio: 0.86 };
 const ALTAR_MIN_SIZE_TO_SCREEN_HEIGHT_RATIO = 0.05;
 const ALTAR_MAX_SIZE_TO_SCREEN_HEIGHT_RATIO = 0.11;
 const ALTAR_MAX_ASPECT_RATIO = 1.35;

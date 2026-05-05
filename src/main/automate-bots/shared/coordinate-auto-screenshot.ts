@@ -28,6 +28,8 @@ export type CoordinateOverlayLocation = {
 const COORDINATE_BOX_DEBUG_RELATIVE_DIR = path.join("test-images", "coordinate-box");
 const COORDINATE_BOX_UNVERIFIED_SUFFIX = "unverified";
 const COORDINATE_BOX_UNKNOWN_TOKEN = "unknown";
+const COORDINATE_OVERLAY_FAST_SCAN_WIDTH_PX = 2200;
+const COORDINATE_OVERLAY_FAST_SCAN_HEIGHT_PX = 420;
 
 function sanitizeFilenameToken(value: string | number): string {
   return String(value).replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "unknown";
@@ -78,8 +80,34 @@ function resolveCoordinateFilenameTokens(matchedLine: string | null): Coordinate
   };
 }
 
+function createTopLeftCoordinateOverlayBitmapView(bitmap: RobotBitmap): RobotBitmap {
+  const width = Math.min(bitmap.width, COORDINATE_OVERLAY_FAST_SCAN_WIDTH_PX);
+  const height = Math.min(bitmap.height, COORDINATE_OVERLAY_FAST_SCAN_HEIGHT_PX);
+  if (width === bitmap.width && height === bitmap.height) {
+    return bitmap;
+  }
+
+  return {
+    width,
+    height,
+    byteWidth: bitmap.byteWidth,
+    bytesPerPixel: bitmap.bytesPerPixel,
+    image: bitmap.image,
+  };
+}
+
+export function detectCoordinateOverlayBox(bitmap: RobotBitmap, windowsScalePercent: number) {
+  const scanBitmap = createTopLeftCoordinateOverlayBitmapView(bitmap);
+  const fastDetection = detectOverlayBoxInScreenshot(scanBitmap, windowsScalePercent);
+  if (fastDetection || scanBitmap === bitmap) {
+    return fastDetection;
+  }
+
+  return detectOverlayBoxInScreenshot(bitmap, windowsScalePercent);
+}
+
 export function readCoordinateOverlayLocation(bitmap: RobotBitmap, windowsScalePercent: number): CoordinateOverlayLocation | null {
-  const overlayBox = detectOverlayBoxInScreenshot(bitmap, windowsScalePercent);
+  const overlayBox = detectCoordinateOverlayBox(bitmap, windowsScalePercent);
   const matchedLine = overlayBox?.matchedLine ?? null;
   if (!matchedLine) {
     return null;
@@ -149,7 +177,7 @@ export function saveCoordinateAutoScreenshot(params: {
   const zToken = location.z === null ? COORDINATE_BOX_UNKNOWN_TOKEN : String(location.z);
   const monitorTier = sanitizeFilenameToken(params.monitorTier);
   const scalePercent = sanitizeFilenameToken(params.windowsScalePercent);
-  const baseName = `${params.bitmap.width}x${params.bitmap.height}-${monitorTier}-${scalePercent}-r-${xToken}-${yToken}-${zToken}-chunk-${location.chunkId}-region-${location.regionId}-${COORDINATE_BOX_UNVERIFIED_SUFFIX}`;
+  const baseName = `${params.bitmap.width}x${params.bitmap.height}-${monitorTier}-${scalePercent}-r-${xToken}-${yToken}-${zToken}-chunk-id-${location.chunkId}-region-id-${location.regionId}-${COORDINATE_BOX_UNVERIFIED_SUFFIX}`;
   const filePath = resolveUniqueCoordinateScreenshotPath(baseName);
   saveBitmap(params.bitmap, filePath);
 
