@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { PNG } from "pngjs";
 import type { RobotBitmap } from "./ocr-engine";
+import { getGuardianOfTheRiftOverlayMode, type GuardianOfTheRiftOverlayMode } from "./guardian-of-the-rift-overlay-mode";
 
 export type GuardianOfTheRiftTimerDetection = {
   secondsRemaining: number | null;
@@ -28,6 +29,14 @@ type Roi = {
   height: number;
 };
 
+type TimerParseMode = "mmss" | "seconds";
+
+type TimerSearchRoi = Roi & {
+  parseMode: TimerParseMode;
+  minDigits: number;
+  maxDigits: number;
+};
+
 type TextBand = {
   startY: number;
   endY: number;
@@ -48,17 +57,35 @@ type DigitComponent = {
   pixelCount: number;
 };
 
-const TIMER_ROIS: Roi[] = [{
+const HELPER_TIMER_ROIS: TimerSearchRoi[] = [{
   x: 96,
   y: 116,
   width: 46,
   height: 25,
+  parseMode: "mmss",
+  minDigits: 3,
+  maxDigits: 4,
 }, {
   x: 96,
   y: 122,
   width: 46,
   height: 19,
+  parseMode: "mmss",
+  minDigits: 3,
+  maxDigits: 4,
 }];
+
+const OPTIMIZER_GAME_STARTING_TIMER_ROI: TimerSearchRoi = {
+  x: 925,
+  y: 43,
+  width: 28,
+  height: 34,
+  parseMode: "seconds",
+  minDigits: 1,
+  maxDigits: 2,
+};
+
+const OPTIMIZER_TIMER_ROIS: TimerSearchRoi[] = [...HELPER_TIMER_ROIS, OPTIMIZER_GAME_STARTING_TIMER_ROI];
 
 const MIN_ROW_PIXELS = 2;
 const PORTAL_TIME_ROI: Roi = {
@@ -110,6 +137,7 @@ const TIMER_DIGIT_TEMPLATE_ROWS: Record<string, string[][]> = {
     ["10000", "10000", "10000", "10110", "11111", "11111", "00110"],
     ["11000", "11000", "11110", "11110", "11111", "00110", "01100"],
     ["10001", "10011", "10111", "11111", "11111", "00100", "00000"],
+    ["00111", "01110", "11110", "11110", "11111", "11111", "00110"],
   ],
   "5": [
     ["11111", "10000", "11110", "00011", "00001", "00001", "11111"],
@@ -127,6 +155,7 @@ const TIMER_DIGIT_TEMPLATE_ROWS: Record<string, string[][]> = {
   ],
   "8": [
     ["01110", "10011", "11110", "01110", "10011", "11110", "01100"],
+    ["11111", "11011", "11111", "11111", "11011", "11111", "11110"],
   ],
   "9": [
     ["11111", "10011", "10011", "11111", "00011", "00011", "00011"],
@@ -278,7 +307,18 @@ function findTextBands(mask: Uint8Array, width: number, height: number): TextBan
   return bands;
 }
 
-function parseTimerSeconds(digits: string): number | null {
+function parseTimerSeconds(digits: string, mode: TimerParseMode): number | null {
+  if (mode === "seconds") {
+    if (digits.length < 1 || digits.length > 2) {
+      return null;
+    }
+
+    const secondsRemaining = Number(digits);
+    return Number.isFinite(secondsRemaining) && secondsRemaining >= 0 && secondsRemaining <= 120
+      ? secondsRemaining
+      : null;
+  }
+
   if (digits.length < 3 || digits.length > 4) {
     return null;
   }
@@ -461,7 +501,7 @@ function classifyDigit(bits: number[]): string | null {
 
 function detectGuardianOfTheRiftTimerWithProfile(
   cropped: RobotBitmap,
-  roi: Roi,
+  roi: TimerSearchRoi,
   profile: TimerMaskProfile,
 ): GuardianOfTheRiftTimerDetection | null {
   const mask = buildTimerTextMask(cropped, profile);
@@ -471,7 +511,7 @@ function detectGuardianOfTheRiftTimerWithProfile(
   }
 
   const digitSegments = resolveDigitSegments(mask, cropped.width, band);
-  if (digitSegments.length !== 3) {
+  if (digitSegments.length < roi.minDigits || digitSegments.length > roi.maxDigits) {
     return null;
   }
 
@@ -484,7 +524,7 @@ function detectGuardianOfTheRiftTimerWithProfile(
     rawText += digit;
   }
 
-  const secondsRemaining = parseTimerSeconds(rawText);
+  const secondsRemaining = parseTimerSeconds(rawText, roi.parseMode);
   const inkBounds = getBandInkBounds(mask, cropped.width, band);
   if (secondsRemaining === null || !inkBounds) {
     return null;
@@ -681,16 +721,23 @@ export function detectGuardianOfTheRiftPortalTime(bitmap: RobotBitmap): Guardian
   };
 }
 
-export function detectGuardianOfTheRiftTimer(bitmap: RobotBitmap): GuardianOfTheRiftTimerDetection {
-  let fallbackRoi = clampRoi(bitmap, TIMER_ROIS[0]);
+function detectGuardianOfTheRiftTimerWithRois(
+  bitmap: RobotBitmap,
+  timerRois: TimerSearchRoi[],
+): GuardianOfTheRiftTimerDetection {
+  let fallbackRoi = clampRoi(bitmap, timerRois[0]);
 
-  for (const timerRoi of TIMER_ROIS) {
+  for (const timerRoi of timerRois) {
     const roi = clampRoi(bitmap, timerRoi);
-    fallbackRoi = roi;
+    const clampedTimerRoi = {
+      ...timerRoi,
+      ...roi,
+    };
+    fallbackRoi = clampedTimerRoi;
     const cropped = cropBitmap(bitmap, roi);
 
     for (const profile of TIMER_MASK_PROFILES) {
-      const detection = detectGuardianOfTheRiftTimerWithProfile(cropped, roi, profile);
+      const detection = detectGuardianOfTheRiftTimerWithProfile(cropped, clampedTimerRoi, profile);
       if (detection) {
         return detection;
       }
@@ -702,6 +749,23 @@ export function detectGuardianOfTheRiftTimer(bitmap: RobotBitmap): GuardianOfThe
     rawText: null,
     ...fallbackRoi,
   };
+}
+
+export function detectGuardianOfTheRiftTimerFromHelperPanel(bitmap: RobotBitmap): GuardianOfTheRiftTimerDetection {
+  return detectGuardianOfTheRiftTimerWithRois(bitmap, HELPER_TIMER_ROIS);
+}
+
+export function detectGuardianOfTheRiftTimerFromOptimizerPanel(bitmap: RobotBitmap): GuardianOfTheRiftTimerDetection {
+  return detectGuardianOfTheRiftTimerWithRois(bitmap, OPTIMIZER_TIMER_ROIS);
+}
+
+export function detectGuardianOfTheRiftTimer(
+  bitmap: RobotBitmap,
+  mode: GuardianOfTheRiftOverlayMode = getGuardianOfTheRiftOverlayMode(),
+): GuardianOfTheRiftTimerDetection {
+  return mode === "helper"
+    ? detectGuardianOfTheRiftTimerFromHelperPanel(bitmap)
+    : detectGuardianOfTheRiftTimerFromOptimizerPanel(bitmap);
 }
 
 function setPngPixel(png: PNG, x: number, y: number, color: { r: number; g: number; b: number }): void {

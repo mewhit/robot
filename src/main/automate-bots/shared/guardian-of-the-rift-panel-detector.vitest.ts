@@ -3,10 +3,12 @@ import path from "path";
 import { PNG } from "pngjs";
 import { describe, expect, test } from "vitest";
 import {
+  detectGuardianOfTheRiftPowerBar,
   detectGuardianOfTheRiftRewardPoints,
   detectGuardianOfTheRiftTimeSincePortal,
   type GuardianOfTheRiftTimeSincePortalColor,
 } from "./guardian-of-the-rift-panel-detector";
+import { detectGuardianOfTheRiftTimer } from "./guardian-of-the-rift-timer-detector";
 import type { RobotBitmap } from "./ocr-engine";
 
 const PANEL_SCREENSHOT_DIR = "test-images/runescrafting/guardian-of-the-rift/pannel";
@@ -76,6 +78,53 @@ function drawTimeValuePixels(bitmap: RobotBitmap, color: { r: number; g: number;
   }
 }
 
+function drawPowerBarPixels(bitmap: RobotBitmap, color: { r: number; g: number; b: number }): void {
+  for (let y = 72; y <= 88; y += 1) {
+    for (let x = 18; x <= 215; x += 1) {
+      setPixel(bitmap, x, y, color);
+    }
+  }
+}
+
+const SYNTHETIC_DIGIT_ROWS: Record<string, string[]> = {
+  "1": ["00011", "01111", "11111", "11111", "00111", "00111", "00111"],
+  "5": ["11111", "11111", "11111", "11111", "11011", "11111", "11111"],
+};
+
+function drawTimeDigits(
+  bitmap: RobotBitmap,
+  rawText: string,
+  startX: number,
+  startY: number,
+  color: { r: number; g: number; b: number },
+): void {
+  const scale = 2;
+  let cursorX = startX;
+
+  for (const digit of rawText) {
+    const rows = SYNTHETIC_DIGIT_ROWS[digit];
+    if (!rows) {
+      throw new Error(`Missing synthetic digit rows for ${digit}`);
+    }
+
+    for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+      for (let columnIndex = 0; columnIndex < rows[rowIndex].length; columnIndex += 1) {
+        if (rows[rowIndex][columnIndex] !== "1") {
+          continue;
+        }
+
+        for (let yScale = 0; yScale < scale; yScale += 1) {
+          for (let xScale = 0; xScale < scale; xScale += 1) {
+            setPixel(bitmap, cursorX + columnIndex * scale + xScale, startY + rowIndex * scale + yScale, color);
+          }
+        }
+      }
+    }
+
+    cursorX += rows[0].length * scale + 3;
+  }
+}
+
 function expectedColorFromScreenshotPath(screenshotPath: string): GuardianOfTheRiftTimeSincePortalColor | null {
   const basename = path.basename(screenshotPath);
   const match = basename.match(/-(green|yellow|white|red)-/i);
@@ -101,6 +150,28 @@ function listPanelScreenshots(): string[] {
 }
 
 describe("Guardian of the Rift panel detector", () => {
+  test("detects Guardian Power yellow and blue bar states", async () => {
+    const yellowBitmap = await loadPngBitmap(
+      "test-images/runescrafting/guardian-of-the-rift/pannel/1298x1549-2k-125-yellow-145.png",
+    );
+    const blueBitmap = await loadPngBitmap(
+      "test-images/runescrafting/guardian-of-the-rift/active-guardian/1328x1549-2k-125-air-body.png",
+    );
+
+    expect(detectGuardianOfTheRiftPowerBar(yellowBitmap, "helper").fillColor).toBe("yellow");
+    expect(detectGuardianOfTheRiftPowerBar(blueBitmap, "helper").fillColor).toBe("blue");
+  });
+
+  test("classifies an empty Guardian Power bar and a missing panel", () => {
+    const emptyBitmap = createBitmap(260, 120, { r: 25, g: 25, b: 25 });
+    drawPowerBarPixels(emptyBitmap, { r: 150, g: 150, b: 145 });
+
+    const missingBitmap = createBitmap(260, 120, { r: 25, g: 25, b: 25 });
+
+    expect(detectGuardianOfTheRiftPowerBar(emptyBitmap, "helper").fillColor).toBe("empty");
+    expect(detectGuardianOfTheRiftPowerBar(missingBitmap, "helper").fillColor).toBe("missing");
+  });
+
   test("detects the time-since-portal color in current panel screenshots", async () => {
     const screenshotPaths = listPanelScreenshots();
     const unreadableScreenshots: string[] = [];
@@ -126,8 +197,8 @@ describe("Guardian of the Rift panel detector", () => {
         continue;
       }
 
-      const detection = detectGuardianOfTheRiftTimeSincePortal(bitmap);
-      const rewardPoints = detectGuardianOfTheRiftRewardPoints(bitmap);
+      const detection = detectGuardianOfTheRiftTimeSincePortal(bitmap, "helper");
+      const rewardPoints = detectGuardianOfTheRiftRewardPoints(bitmap, "helper");
 
       expect(detection.color, path.basename(screenshotPath)).toBe(expectedColor);
       expect(detection.secondsElapsed, path.basename(screenshotPath)).toBe(expectedSeconds);
@@ -151,7 +222,7 @@ describe("Guardian of the Rift panel detector", () => {
     const bitmap = createBitmap(260, 520, { r: 28, g: 26, b: 24 });
     drawTimeValuePixels(bitmap, { r: 235, g: 235, b: 230 });
 
-    const detection = detectGuardianOfTheRiftTimeSincePortal(bitmap);
+    const detection = detectGuardianOfTheRiftTimeSincePortal(bitmap, "helper");
 
     expect(detection.color).toBe("white");
     expect(detection.pixelCount).toBeGreaterThan(20);
@@ -164,7 +235,7 @@ describe("Guardian of the Rift panel detector", () => {
     }
 
     const bitmap = await loadPngBitmap(screenshotPath);
-    const rewardPoints = detectGuardianOfTheRiftRewardPoints(bitmap);
+    const rewardPoints = detectGuardianOfTheRiftRewardPoints(bitmap, "helper");
 
     expect(rewardPoints.elementalPoints).toBe(0);
     expect(rewardPoints.catalyticPoints).toBe(0);
@@ -176,9 +247,64 @@ describe("Guardian of the Rift panel detector", () => {
     const bitmap = createBitmap(260, 520, { r: 28, g: 26, b: 24 });
     drawTimeValuePixels(bitmap, { r: 245, g: 35, b: 30 });
 
-    const detection = detectGuardianOfTheRiftTimeSincePortal(bitmap);
+    const detection = detectGuardianOfTheRiftTimeSincePortal(bitmap, "helper");
 
     expect(detection.color).toBe("red");
     expect(detection.pixelCount).toBeGreaterThan(20);
+  });
+
+  test("classifies optimizer portal time color from parsed timer digits", () => {
+    const bitmap = createBitmap(260, 520, { r: 28, g: 26, b: 24 });
+
+    for (let y = 392; y <= 395; y += 1) {
+      for (let x = 116; x <= 225; x += 1) {
+        setPixel(bitmap, x, y, { r: 235, g: 235, b: 230 });
+      }
+    }
+
+    drawTimeDigits(bitmap, "115", 150, 404, { r: 245, g: 35, b: 30 });
+
+    const detection = detectGuardianOfTheRiftTimeSincePortal(bitmap, "optimizer");
+
+    expect(detection.secondsElapsed).toBe(75);
+    expect(detection.rawText).toBe("115");
+    expect(detection.color).toBe("red");
+    expect(detection.counts.red).toBeGreaterThan(detection.counts.white);
+  });
+
+  test("detects the optimizer overlay portal time and ignores unavailable reward points", async () => {
+    const bitmap = await loadPngBitmap(
+      "test-images/runescrafting/guardian-of-the-rift/1639x1549-2k-125-new-panel-time-and-reward-point.png",
+    );
+
+    const timeSincePortal = detectGuardianOfTheRiftTimeSincePortal(bitmap, "optimizer");
+    const rewardPoints = detectGuardianOfTheRiftRewardPoints(bitmap, "optimizer");
+    const timer = detectGuardianOfTheRiftTimer(bitmap, "optimizer");
+
+    expect(timeSincePortal.secondsElapsed).toBe(50);
+    expect(timeSincePortal.rawText).toBe("050");
+    expect(timeSincePortal.color).toBe("white");
+    expect(rewardPoints.elementalPoints).toBeNull();
+    expect(rewardPoints.catalyticPoints).toBeNull();
+    expect(rewardPoints.focus).toBeNull();
+    expect(timer.secondsRemaining).toBe(70);
+  });
+
+  test("detects the optimizer game-starting timer and portal time on the smaller-outline screenshot", async () => {
+    const bitmap = await loadPngBitmap(
+      "test-images/runescrafting/guardian-of-the-rift/1639x1549-2k-125-new-outlined.png",
+    );
+
+    const timeSincePortal = detectGuardianOfTheRiftTimeSincePortal(bitmap, "optimizer");
+    const rewardPoints = detectGuardianOfTheRiftRewardPoints(bitmap, "optimizer");
+    const timer = detectGuardianOfTheRiftTimer(bitmap, "optimizer");
+
+    expect(detectGuardianOfTheRiftPowerBar(bitmap, "optimizer").fillColor).toBe("empty");
+    expect(timeSincePortal.secondsElapsed).toBe(67);
+    expect(timeSincePortal.rawText).toBe("107");
+    expect(rewardPoints.elementalPoints).toBeNull();
+    expect(rewardPoints.catalyticPoints).toBeNull();
+    expect(timer.secondsRemaining).toBe(48);
+    expect(timer.rawText).toBe("48");
   });
 });

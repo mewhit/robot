@@ -1,4 +1,5 @@
 import type { RobotBitmap } from "./ocr-engine";
+import { getGuardianOfTheRiftOverlayMode, type GuardianOfTheRiftOverlayMode } from "./guardian-of-the-rift-overlay-mode";
 
 export type GuardianOfTheRiftTimeSincePortalColor = "green" | "yellow" | "white" | "red";
 
@@ -28,6 +29,20 @@ export type GuardianOfTheRiftRewardPointsDetection = {
   height: number;
 };
 
+export type GuardianOfTheRiftPowerBarFillColor = "blue" | "yellow" | "empty" | "missing";
+
+export type GuardianOfTheRiftPowerBarDetection = {
+  fillColor: GuardianOfTheRiftPowerBarFillColor;
+  bluePixels: number;
+  yellowPixels: number;
+  emptyPixels: number;
+  visiblePixels: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
 type Roi = {
   x: number;
   y: number;
@@ -47,12 +62,40 @@ type DigitComponent = Bounds & {
   pixels: Array<{ x: number; y: number }>;
 };
 
+type TimeSincePortalParseResult = {
+  secondsElapsed: number | null;
+  rawText: string | null;
+  components: DigitComponent[];
+};
+
+type TimeSincePortalParseMode = "seconds" | "mmss";
+
+type TimeSincePortalColorStats = {
+  counts: Record<GuardianOfTheRiftTimeSincePortalColor, number>;
+  boundsByColor: Record<GuardianOfTheRiftTimeSincePortalColor, Bounds | null>;
+};
+
 const TIME_SINCE_PORTAL_VALUE_ROI: Roi = {
   x: 168,
   y: 398,
   width: 44,
   height: 32,
 };
+
+const OPTIMIZER_TIME_SINCE_PORTAL_VALUE_ROIS: Roi[] = [
+  {
+    x: 116,
+    y: 392,
+    width: 112,
+    height: 38,
+  },
+  {
+    x: 96,
+    y: 388,
+    width: 132,
+    height: 42,
+  },
+];
 
 const REWARD_POINTS_VALUE_ROI: Roi = {
   x: 150,
@@ -61,6 +104,24 @@ const REWARD_POINTS_VALUE_ROI: Roi = {
   height: 40,
 };
 
+const OPTIMIZER_REWARD_POINTS_VALUE_ROI: Roi = {
+  x: 116,
+  y: 430,
+  width: 112,
+  height: 42,
+};
+
+const POWER_BAR_ROI: Roi = {
+  x: 17,
+  y: 70,
+  width: 200,
+  height: 20,
+};
+
+const MIN_POWER_BAR_BLUE_PIXELS = 500;
+const MIN_POWER_BAR_YELLOW_PIXELS = 80;
+const MIN_POWER_BAR_EMPTY_PIXELS = 400;
+const MIN_POWER_BAR_VISIBLE_PIXELS = 700;
 const MIN_TIME_SINCE_PORTAL_COLOR_PIXELS = 20;
 const TIME_SINCE_PORTAL_COLORS: GuardianOfTheRiftTimeSincePortalColor[] = ["green", "yellow", "white", "red"];
 const MIN_TIME_SINCE_PORTAL_DIGIT_PIXELS = 8;
@@ -199,6 +260,18 @@ function classifyTimeSincePortalPixel(r: number, g: number, b: number): Guardian
   return null;
 }
 
+function isPowerBarBluePixel(r: number, g: number, b: number): boolean {
+  return g >= 170 && b >= 170 && r <= 120 && g - r >= 70 && b - r >= 70;
+}
+
+function isPowerBarYellowPixel(r: number, g: number, b: number): boolean {
+  return r >= 170 && g >= 145 && b <= 130 && r - b >= 60 && g - b >= 50;
+}
+
+function isPowerBarEmptyPixel(r: number, g: number, b: number): boolean {
+  return r >= 115 && g >= 115 && b >= 105 && Math.max(r, g, b) - Math.min(r, g, b) <= 55;
+}
+
 function isRewardPointTextPixel(r: number, g: number, b: number): boolean {
   const maxChannel = Math.max(r, g, b);
   const minChannel = Math.min(r, g, b);
@@ -213,6 +286,61 @@ function pickBestColor(
   return TIME_SINCE_PORTAL_COLORS
     .slice()
     .sort((a, b) => counts[b] - counts[a])[0];
+}
+
+function collectTimeSincePortalColorStatsFromPixels(
+  bitmap: RobotBitmap,
+  pixels: Array<{ x: number; y: number }>,
+): TimeSincePortalColorStats {
+  const counts = createCounts();
+  const boundsByColor = createBounds();
+
+  for (const pixel of pixels) {
+    const offset = pixel.y * bitmap.byteWidth + pixel.x * bitmap.bytesPerPixel;
+    const b = bitmap.image[offset];
+    const g = bitmap.image[offset + 1];
+    const r = bitmap.image[offset + 2];
+    const color = classifyTimeSincePortalPixel(r, g, b);
+
+    if (!color) {
+      continue;
+    }
+
+    counts[color] += 1;
+    boundsByColor[color] = includePixelInBounds(boundsByColor[color], pixel.x, pixel.y);
+  }
+
+  return {
+    counts,
+    boundsByColor,
+  };
+}
+
+function collectTimeSincePortalColorStatsFromRoi(bitmap: RobotBitmap, roi: Roi): TimeSincePortalColorStats {
+  const counts = createCounts();
+  const boundsByColor = createBounds();
+
+  for (let y = roi.y; y < roi.y + roi.height; y += 1) {
+    for (let x = roi.x; x < roi.x + roi.width; x += 1) {
+      const offset = y * bitmap.byteWidth + x * bitmap.bytesPerPixel;
+      const b = bitmap.image[offset];
+      const g = bitmap.image[offset + 1];
+      const r = bitmap.image[offset + 2];
+      const color = classifyTimeSincePortalPixel(r, g, b);
+
+      if (!color) {
+        continue;
+      }
+
+      counts[color] += 1;
+      boundsByColor[color] = includePixelInBounds(boundsByColor[color], x, y);
+    }
+  }
+
+  return {
+    counts,
+    boundsByColor,
+  };
 }
 
 function buildDigitMask(
@@ -375,12 +503,77 @@ function classifyDigit(component: DigitComponent): string | null {
   return bestDistance <= 8 ? bestDigit : null;
 }
 
+function detectGuardianOfTheRiftPowerBarInRoi(bitmap: RobotBitmap, sourceRoi: Roi): GuardianOfTheRiftPowerBarDetection {
+  const roi = clampRoi(bitmap, sourceRoi);
+  let bluePixels = 0;
+  let yellowPixels = 0;
+  let emptyPixels = 0;
+
+  for (let y = roi.y; y < roi.y + roi.height; y += 1) {
+    for (let x = roi.x; x < roi.x + roi.width; x += 1) {
+      const offset = y * bitmap.byteWidth + x * bitmap.bytesPerPixel;
+      const b = bitmap.image[offset];
+      const g = bitmap.image[offset + 1];
+      const r = bitmap.image[offset + 2];
+
+      if (isPowerBarBluePixel(r, g, b)) {
+        bluePixels += 1;
+      } else if (isPowerBarYellowPixel(r, g, b)) {
+        yellowPixels += 1;
+      } else if (isPowerBarEmptyPixel(r, g, b)) {
+        emptyPixels += 1;
+      }
+    }
+  }
+
+  const visiblePixels = bluePixels + yellowPixels + emptyPixels;
+  let fillColor: GuardianOfTheRiftPowerBarFillColor = "missing";
+  if (bluePixels >= MIN_POWER_BAR_BLUE_PIXELS && bluePixels > yellowPixels) {
+    fillColor = "blue";
+  } else if (yellowPixels >= MIN_POWER_BAR_YELLOW_PIXELS) {
+    fillColor = "yellow";
+  } else if (emptyPixels >= MIN_POWER_BAR_EMPTY_PIXELS && visiblePixels >= MIN_POWER_BAR_VISIBLE_PIXELS) {
+    fillColor = "empty";
+  }
+
+  return {
+    fillColor,
+    bluePixels,
+    yellowPixels,
+    emptyPixels,
+    visiblePixels,
+    x: roi.x,
+    y: roi.y,
+    width: roi.width,
+    height: roi.height,
+  };
+}
+
+export function detectGuardianOfTheRiftPowerBarFromHelperPanel(bitmap: RobotBitmap): GuardianOfTheRiftPowerBarDetection {
+  return detectGuardianOfTheRiftPowerBarInRoi(bitmap, POWER_BAR_ROI);
+}
+
+export function detectGuardianOfTheRiftPowerBarFromOptimizerPanel(bitmap: RobotBitmap): GuardianOfTheRiftPowerBarDetection {
+  return detectGuardianOfTheRiftPowerBarInRoi(bitmap, POWER_BAR_ROI);
+}
+
+export function detectGuardianOfTheRiftPowerBar(
+  bitmap: RobotBitmap,
+  mode: GuardianOfTheRiftOverlayMode = getGuardianOfTheRiftOverlayMode(),
+): GuardianOfTheRiftPowerBarDetection {
+  return mode === "helper"
+    ? detectGuardianOfTheRiftPowerBarFromHelperPanel(bitmap)
+    : detectGuardianOfTheRiftPowerBarFromOptimizerPanel(bitmap);
+}
+
 function parseTimeSincePortalSeconds(
   bitmap: RobotBitmap,
   roi: Roi,
-): { secondsElapsed: number | null; rawText: string | null } {
+  parseMode: TimeSincePortalParseMode,
+): TimeSincePortalParseResult {
   const mask = buildDigitMask(bitmap, roi, (r, g, b) => classifyTimeSincePortalPixel(r, g, b) !== null);
   const components = collectDigitComponents(bitmap, roi, mask);
+  const parsedComponents: DigitComponent[] = [];
   let rawText = "";
 
   for (const component of components) {
@@ -390,20 +583,31 @@ function parseTimeSincePortalSeconds(
     }
 
     rawText += digit;
+    parsedComponents.push(component);
   }
 
   if (rawText.length === 0) {
     return {
       secondsElapsed: null,
       rawText: null,
+      components: [],
     };
   }
 
-  const parsed = Number(rawText);
+  const parsed =
+    parseMode === "mmss" && rawText.length >= 3
+      ? Number(rawText.slice(0, -2)) * 60 + Number(rawText.slice(-2))
+      : Number(rawText);
   return {
     secondsElapsed:
-      Number.isFinite(parsed) && parsed >= 0 && parsed <= MAX_TIME_SINCE_PORTAL_SECONDS ? parsed : null,
+      Number.isFinite(parsed) &&
+      parsed >= 0 &&
+      parsed <= MAX_TIME_SINCE_PORTAL_SECONDS &&
+      (parseMode !== "mmss" || rawText.length < 3 || Number(rawText.slice(-2)) < 60)
+        ? parsed
+        : null,
     rawText,
+    components: parsedComponents,
   };
 }
 
@@ -678,7 +882,20 @@ function resolveRewardPointSearchRois(bitmap: RobotBitmap): Roi[] {
   return [fixedRoi, broadRoi];
 }
 
-export function detectGuardianOfTheRiftRewardPoints(bitmap: RobotBitmap): GuardianOfTheRiftRewardPointsDetection {
+function createEmptyRewardPointsDetection(roi: Roi): GuardianOfTheRiftRewardPointsDetection {
+  return {
+    elementalPoints: null,
+    catalyticPoints: null,
+    rawText: null,
+    focus: null,
+    x: roi.x,
+    y: roi.y,
+    width: roi.width,
+    height: roi.height,
+  };
+}
+
+export function detectGuardianOfTheRiftRewardPointsFromHelperPanel(bitmap: RobotBitmap): GuardianOfTheRiftRewardPointsDetection {
   const rois = resolveRewardPointSearchRois(bitmap);
   const candidates = rois.flatMap((roi) => detectRewardPointsInRoi(bitmap, roi));
   const bestCandidate = candidates.sort((a, b) => b.score - a.score || a.y - b.y)[0];
@@ -695,50 +912,42 @@ export function detectGuardianOfTheRiftRewardPoints(bitmap: RobotBitmap): Guardi
     };
   }
 
-  const roi = rois[0];
-
-  return {
-    elementalPoints: null,
-    catalyticPoints: null,
-    rawText: null,
-    focus: null,
-    x: roi.x,
-    y: roi.y,
-    width: roi.width,
-    height: roi.height,
-  };
+  return createEmptyRewardPointsDetection(rois[0]);
 }
 
-export function detectGuardianOfTheRiftTimeSincePortal(
+export function detectGuardianOfTheRiftRewardPointsFromOptimizerPanel(bitmap: RobotBitmap): GuardianOfTheRiftRewardPointsDetection {
+  const roi = clampRoi(bitmap, OPTIMIZER_REWARD_POINTS_VALUE_ROI);
+  return createEmptyRewardPointsDetection(roi);
+}
+
+export function detectGuardianOfTheRiftRewardPoints(
   bitmap: RobotBitmap,
+  mode: GuardianOfTheRiftOverlayMode = getGuardianOfTheRiftOverlayMode(),
+): GuardianOfTheRiftRewardPointsDetection {
+  return mode === "helper"
+    ? detectGuardianOfTheRiftRewardPointsFromHelperPanel(bitmap)
+    : detectGuardianOfTheRiftRewardPointsFromOptimizerPanel(bitmap);
+}
+
+function detectGuardianOfTheRiftTimeSincePortalInRoi(
+  bitmap: RobotBitmap,
+  sourceRoi: Roi,
+  parseMode: TimeSincePortalParseMode,
 ): GuardianOfTheRiftTimeSincePortalDetection {
-  const roi = clampRoi(bitmap, TIME_SINCE_PORTAL_VALUE_ROI);
-  const counts = createCounts();
-  const boundsByColor = createBounds();
-
-  for (let y = roi.y; y < roi.y + roi.height; y += 1) {
-    for (let x = roi.x; x < roi.x + roi.width; x += 1) {
-      const offset = y * bitmap.byteWidth + x * bitmap.bytesPerPixel;
-      const b = bitmap.image[offset];
-      const g = bitmap.image[offset + 1];
-      const r = bitmap.image[offset + 2];
-      const color = classifyTimeSincePortalPixel(r, g, b);
-
-      if (!color) {
-        continue;
-      }
-
-      counts[color] += 1;
-      boundsByColor[color] = includePixelInBounds(boundsByColor[color], x, y);
-    }
-  }
+  const roi = clampRoi(bitmap, sourceRoi);
+  const parsedTime = parseTimeSincePortalSeconds(bitmap, roi, parseMode);
+  const digitPixels = parsedTime.components.flatMap((component) => component.pixels);
+  const colorStats =
+    digitPixels.length > 0
+      ? collectTimeSincePortalColorStatsFromPixels(bitmap, digitPixels)
+      : collectTimeSincePortalColorStatsFromRoi(bitmap, roi);
+  const { counts, boundsByColor } = colorStats;
 
   const bestColor = pickBestColor(counts);
   const bestPixelCount = bestColor ? counts[bestColor] : 0;
   const totalColorPixels = TIME_SINCE_PORTAL_COLORS.reduce((sum, color) => sum + counts[color], 0);
   const color = bestColor && bestPixelCount >= MIN_TIME_SINCE_PORTAL_COLOR_PIXELS ? bestColor : null;
   const bounds = color ? boundsByColor[color] : null;
-  const parsedTime = parseTimeSincePortalSeconds(bitmap, roi);
 
   return {
     color,
@@ -752,4 +961,33 @@ export function detectGuardianOfTheRiftTimeSincePortal(
     height: bounds ? bounds.maxY - bounds.minY + 1 : roi.height,
     counts,
   };
+}
+
+export function detectGuardianOfTheRiftTimeSincePortalFromHelperPanel(
+  bitmap: RobotBitmap,
+): GuardianOfTheRiftTimeSincePortalDetection {
+  return detectGuardianOfTheRiftTimeSincePortalInRoi(bitmap, TIME_SINCE_PORTAL_VALUE_ROI, "seconds");
+}
+
+export function detectGuardianOfTheRiftTimeSincePortalFromOptimizerPanel(
+  bitmap: RobotBitmap,
+): GuardianOfTheRiftTimeSincePortalDetection {
+  const detections = OPTIMIZER_TIME_SINCE_PORTAL_VALUE_ROIS.map((roi) =>
+    detectGuardianOfTheRiftTimeSincePortalInRoi(bitmap, roi, "mmss"),
+  );
+
+  return (
+    detections.find((detection) => detection.secondsElapsed !== null) ??
+    detections.find((detection) => detection.color !== null) ??
+    detections[0]
+  );
+}
+
+export function detectGuardianOfTheRiftTimeSincePortal(
+  bitmap: RobotBitmap,
+  mode: GuardianOfTheRiftOverlayMode = getGuardianOfTheRiftOverlayMode(),
+): GuardianOfTheRiftTimeSincePortalDetection {
+  return mode === "helper"
+    ? detectGuardianOfTheRiftTimeSincePortalFromHelperPanel(bitmap)
+    : detectGuardianOfTheRiftTimeSincePortalFromOptimizerPanel(bitmap);
 }
