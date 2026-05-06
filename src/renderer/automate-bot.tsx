@@ -40,6 +40,154 @@ function formatGuardianPouchLabel(value: GuardianOfTheRiftPouch): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
+const AUTOMATE_BOT_LOG_TOKEN_REGEX =
+  /(FF[0-9A-Fa-f]{6}|rewardPoints=|preference=|chosen=|skipped=|nextUnknown=|focus=|\b(?:elemental|catalytic|WARN|ERROR|LOG)\b)/gi;
+const AUTOMATE_BOT_COLOR_TOKEN_REGEX = /^FF[0-9A-Fa-f]{6}$/;
+
+function getAutomateBotLogLineClass(line: string): string {
+  const lowerLine = line.toLowerCase();
+  const classNames = ["automatebot-log-line"];
+
+  if (lowerLine.includes("guardian decision") || lowerLine.includes("guardian re-click decision")) {
+    classNames.push("automatebot-log-line-guardian-decision");
+  }
+
+  if (
+    lowerLine.includes("rewardpoints=") ||
+    lowerLine.includes("startup reward points") ||
+    lowerLine.includes("reward points")
+  ) {
+    classNames.push("automatebot-log-line-reward");
+  }
+
+  if (
+    lowerLine.includes("chosen=catalytic:") ||
+    lowerLine.includes("preference=catalytic->") ||
+    lowerLine.includes("focus=catalytic") ||
+    lowerLine.includes("clicked catalytic guardian") ||
+    lowerLine.includes("re-clicked catalytic guardian")
+  ) {
+    classNames.push("automatebot-log-line-catalytic-choice");
+  } else if (
+    lowerLine.includes("chosen=elemental:") ||
+    lowerLine.includes("preference=elemental->") ||
+    lowerLine.includes("focus=elemental") ||
+    lowerLine.includes("clicked elemental guardian") ||
+    lowerLine.includes("re-clicked elemental guardian")
+  ) {
+    classNames.push("automatebot-log-line-elemental-choice");
+  }
+
+  if (lowerLine.includes("clicked") || lowerLine.includes("re-clicked")) {
+    classNames.push("automatebot-log-line-click");
+  }
+
+  if (
+    (lowerLine.includes("skipped=") && !lowerLine.includes("skipped=none")) ||
+    lowerLine.includes("not visible") ||
+    lowerLine.includes("not found") ||
+    lowerLine.includes("too close") ||
+    lowerLine.includes("failed")
+  ) {
+    classNames.push("automatebot-log-line-blocked");
+  }
+
+  if (lowerLine.includes("[error]")) {
+    classNames.push("automatebot-log-line-error");
+  } else if (lowerLine.includes("[warn]")) {
+    classNames.push("automatebot-log-line-warn");
+  }
+
+  return classNames.join(" ");
+}
+
+function getCssColorFromArgbToken(token: string): string {
+  return `#${token.slice(2)}`;
+}
+
+function renderAutomateBotLogToken(token: string, key: string): React.ReactNode {
+  const lowerToken = token.toLowerCase();
+
+  if (AUTOMATE_BOT_COLOR_TOKEN_REGEX.test(token)) {
+    return (
+      <span key={key} className="automatebot-log-color-token" title={token}>
+        <span className="automatebot-log-color-swatch" style={{ backgroundColor: getCssColorFromArgbToken(token) }} />
+        <span className="automatebot-log-color-code">{token}</span>
+      </span>
+    );
+  }
+
+  if (lowerToken === "elemental") {
+    return (
+      <span key={key} className="automatebot-log-token automatebot-log-token-elemental">
+        {token}
+      </span>
+    );
+  }
+
+  if (lowerToken === "catalytic") {
+    return (
+      <span key={key} className="automatebot-log-token automatebot-log-token-catalytic">
+        {token}
+      </span>
+    );
+  }
+
+  if (lowerToken === "warn") {
+    return (
+      <span key={key} className="automatebot-log-token automatebot-log-token-warn">
+        {token}
+      </span>
+    );
+  }
+
+  if (lowerToken === "error") {
+    return (
+      <span key={key} className="automatebot-log-token automatebot-log-token-error">
+        {token}
+      </span>
+    );
+  }
+
+  if (lowerToken === "log") {
+    return (
+      <span key={key} className="automatebot-log-token automatebot-log-token-level">
+        {token}
+      </span>
+    );
+  }
+
+  return (
+    <span key={key} className="automatebot-log-token automatebot-log-token-key">
+      {token}
+    </span>
+  );
+}
+
+function renderAutomateBotLogLine(line: string): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  let cursor = 0;
+  let keyIndex = 0;
+  AUTOMATE_BOT_LOG_TOKEN_REGEX.lastIndex = 0;
+
+  let match = AUTOMATE_BOT_LOG_TOKEN_REGEX.exec(line);
+  while (match) {
+    if (match.index > cursor) {
+      nodes.push(<React.Fragment key={`text-${keyIndex++}`}>{line.slice(cursor, match.index)}</React.Fragment>);
+    }
+
+    nodes.push(renderAutomateBotLogToken(match[0], `token-${keyIndex++}`));
+    cursor = match.index + match[0].length;
+    match = AUTOMATE_BOT_LOG_TOKEN_REGEX.exec(line);
+  }
+
+  if (cursor < line.length) {
+    nodes.push(<React.Fragment key={`text-${keyIndex++}`}>{line.slice(cursor)}</React.Fragment>);
+  }
+
+  return nodes;
+}
+
 function TaskNodeComponent({
   node,
   selectableTaskIds,
@@ -265,8 +413,8 @@ export default function AutomateBot(props: AutomateBotProps) {
             <p className="automatebot-log-empty">No logs yet.</p>
           ) : (
             visibleLogLines.map((line, index) => (
-              <p key={`${index}-${line}`} className="automatebot-log-line">
-                {line}
+              <p key={`${index}-${line}`} className={getAutomateBotLogLineClass(line)}>
+                {renderAutomateBotLogLine(line)}
               </p>
             ))
           )}

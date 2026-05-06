@@ -64,6 +64,12 @@ const REWARD_POINTS_VALUE_ROI: Roi = {
 const MIN_TIME_SINCE_PORTAL_COLOR_PIXELS = 20;
 const TIME_SINCE_PORTAL_COLORS: GuardianOfTheRiftTimeSincePortalColor[] = ["green", "yellow", "white", "red"];
 const MIN_TIME_SINCE_PORTAL_DIGIT_PIXELS = 8;
+const REWARD_POINTS_MAX_DIGIT_GAP_PX = 7;
+const REWARD_POINTS_MAX_SLASH_GAP_PX = 10;
+const REWARD_POINTS_MAX_DIGITS_PER_SIDE = 3;
+const REWARD_POINTS_LABEL_LOOKBACK_PX = 150;
+const REWARD_POINTS_LABEL_PAD_Y = 5;
+const MAX_DIGIT_COMPONENT_WIDTH_PX = 20;
 const MAX_TIME_SINCE_PORTAL_SECONDS = 180;
 const MAX_REWARD_POINTS = 999;
 
@@ -301,7 +307,7 @@ function collectDigitComponents(bitmap: RobotBitmap, roi: Roi, mask: Uint8Array)
       if (
         pixels.length >= MIN_TIME_SINCE_PORTAL_DIGIT_PIXELS &&
         width >= 2 &&
-        width <= 12 &&
+        width <= MAX_DIGIT_COMPONENT_WIDTH_PX &&
         height >= 8 &&
         height <= 18
       ) {
@@ -422,6 +428,59 @@ function isRewardPointSlash(component: DigitComponent): boolean {
   return scoreBits(normalizeDigitComponent(component), REWARD_POINTS_SLASH_TEMPLATE) <= 7;
 }
 
+function createDigitComponentFromPixels(pixels: Array<{ x: number; y: number }>): DigitComponent | null {
+  if (pixels.length < MIN_TIME_SINCE_PORTAL_DIGIT_PIXELS) {
+    return null;
+  }
+
+  const minX = Math.min(...pixels.map((pixel) => pixel.x));
+  const minY = Math.min(...pixels.map((pixel) => pixel.y));
+  const maxX = Math.max(...pixels.map((pixel) => pixel.x));
+  const maxY = Math.max(...pixels.map((pixel) => pixel.y));
+  const width = maxX - minX + 1;
+  const height = maxY - minY + 1;
+
+  if (width < 2 || width > MAX_DIGIT_COMPONENT_WIDTH_PX || height < 8 || height > 18) {
+    return null;
+  }
+
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    pixelCount: pixels.length,
+    pixels,
+  };
+}
+
+function splitConnectedRewardPointComponent(component: DigitComponent): DigitComponent[] {
+  const width = component.maxX - component.minX + 1;
+  if (width <= 12) {
+    return [component];
+  }
+
+  for (let splitX = component.minX + 2; splitX <= component.maxX - 2; splitX += 1) {
+    const left = createDigitComponentFromPixels(component.pixels.filter((pixel) => pixel.x <= splitX));
+    const right = createDigitComponentFromPixels(component.pixels.filter((pixel) => pixel.x > splitX));
+    if (!left || !right) {
+      continue;
+    }
+
+    if ((isRewardPointSlash(left) && classifyDigit(right) !== null) || (classifyDigit(left) !== null && isRewardPointSlash(right))) {
+      return [left, right];
+    }
+  }
+
+  return [component];
+}
+
+function splitConnectedRewardPointComponents(components: DigitComponent[]): DigitComponent[] {
+  return components
+    .flatMap(splitConnectedRewardPointComponent)
+    .sort((a, b) => a.minX - b.minX);
+}
+
 function parseRewardPointNumber(components: DigitComponent[]): number | null {
   let rawText = "";
 
@@ -440,6 +499,69 @@ function parseRewardPointNumber(components: DigitComponent[]): number | null {
 
   const parsed = Number(rawText);
   return Number.isFinite(parsed) && parsed >= 0 && parsed <= MAX_REWARD_POINTS ? parsed : null;
+}
+
+function componentCenterY(component: DigitComponent): number {
+  return (component.minY + component.maxY) / 2;
+}
+
+function isSameTextRow(a: DigitComponent, b: DigitComponent): boolean {
+  const overlap = Math.min(a.maxY, b.maxY) - Math.max(a.minY, b.minY) + 1;
+  const minHeight = Math.min(a.maxY - a.minY + 1, b.maxY - b.minY + 1);
+
+  return overlap >= Math.max(3, minHeight * 0.45) && Math.abs(componentCenterY(a) - componentCenterY(b)) <= 7;
+}
+
+function collectAdjacentRewardPointDigits(
+  rowComponents: DigitComponent[],
+  slash: DigitComponent,
+  direction: "left" | "right",
+): DigitComponent[] {
+  const result: DigitComponent[] = [];
+
+  if (direction === "left") {
+    const candidates = rowComponents
+      .filter((component) => component.maxX < slash.minX)
+      .sort((a, b) => b.maxX - a.maxX);
+
+    let previousMinX = slash.minX;
+    for (const component of candidates) {
+      const gap = previousMinX - component.maxX;
+      if (gap > (result.length === 0 ? REWARD_POINTS_MAX_SLASH_GAP_PX : REWARD_POINTS_MAX_DIGIT_GAP_PX)) {
+        break;
+      }
+
+      result.push(component);
+      previousMinX = component.minX;
+
+      if (result.length >= REWARD_POINTS_MAX_DIGITS_PER_SIDE) {
+        break;
+      }
+    }
+
+    return result.reverse();
+  }
+
+  const candidates = rowComponents
+    .filter((component) => component.minX > slash.maxX)
+    .sort((a, b) => a.minX - b.minX);
+
+  let previousMaxX = slash.maxX;
+  for (const component of candidates) {
+    const gap = component.minX - previousMaxX;
+    if (gap > (result.length === 0 ? REWARD_POINTS_MAX_SLASH_GAP_PX : REWARD_POINTS_MAX_DIGIT_GAP_PX)) {
+      break;
+    }
+
+    result.push(component);
+    previousMaxX = component.maxX;
+
+    if (result.length >= REWARD_POINTS_MAX_DIGITS_PER_SIDE) {
+      break;
+    }
+  }
+
+  return result;
 }
 
 function resolveRewardPointFocus(
@@ -479,28 +601,111 @@ function getComponentsBounds(components: DigitComponent[], fallbackRoi: Roi): Bo
   };
 }
 
-export function detectGuardianOfTheRiftRewardPoints(bitmap: RobotBitmap): GuardianOfTheRiftRewardPointsDetection {
-  const roi = clampRoi(bitmap, REWARD_POINTS_VALUE_ROI);
+type RewardPointCandidate = GuardianOfTheRiftRewardPointsDetection & {
+  score: number;
+};
+
+function countRewardLabelPixels(bitmap: RobotBitmap, bounds: Bounds): number {
+  const minX = clamp(bounds.minX - REWARD_POINTS_LABEL_LOOKBACK_PX, 0, bitmap.width - 1);
+  const maxX = clamp(bounds.minX - 1, 0, bitmap.width - 1);
+  const minY = clamp(bounds.minY - REWARD_POINTS_LABEL_PAD_Y, 0, bitmap.height - 1);
+  const maxY = clamp(bounds.maxY + REWARD_POINTS_LABEL_PAD_Y, minY, bitmap.height - 1);
+  let pixels = 0;
+
+  if (maxX <= minX) {
+    return 0;
+  }
+
+  for (let y = minY; y <= maxY; y += 1) {
+    for (let x = minX; x <= maxX; x += 1) {
+      const offset = y * bitmap.byteWidth + x * bitmap.bytesPerPixel;
+      const b = bitmap.image[offset];
+      const g = bitmap.image[offset + 1];
+      const r = bitmap.image[offset + 2];
+      if (isRewardPointTextPixel(r, g, b)) {
+        pixels += 1;
+      }
+    }
+  }
+
+  return pixels;
+}
+
+function detectRewardPointsInRoi(bitmap: RobotBitmap, roi: Roi): RewardPointCandidate[] {
   const mask = buildDigitMask(bitmap, roi, isRewardPointTextPixel);
-  const components = collectDigitComponents(bitmap, roi, mask);
-  const slashIndex = components.findIndex(isRewardPointSlash);
-  const elementalComponents = slashIndex >= 0 ? components.slice(0, slashIndex) : [];
-  const catalyticComponents = slashIndex >= 0 ? components.slice(slashIndex + 1) : [];
-  const elementalPoints = parseRewardPointNumber(elementalComponents);
-  const catalyticPoints = parseRewardPointNumber(catalyticComponents);
-  const rawText =
-    elementalPoints === null || catalyticPoints === null ? null : `${elementalPoints}/${catalyticPoints}`;
-  const bounds = getComponentsBounds(components, roi);
+  const components = splitConnectedRewardPointComponents(collectDigitComponents(bitmap, roi, mask));
+  const candidates: RewardPointCandidate[] = [];
+
+  for (const slash of components.filter(isRewardPointSlash)) {
+    const rowComponents = components.filter((component) => component !== slash && isSameTextRow(component, slash));
+    const elementalComponents = collectAdjacentRewardPointDigits(rowComponents, slash, "left");
+    const catalyticComponents = collectAdjacentRewardPointDigits(rowComponents, slash, "right");
+    const elementalPoints = parseRewardPointNumber(elementalComponents);
+    const catalyticPoints = parseRewardPointNumber(catalyticComponents);
+
+    if (elementalPoints === null || catalyticPoints === null) {
+      continue;
+    }
+
+    const bounds = getComponentsBounds([...elementalComponents, slash, ...catalyticComponents], roi);
+    const labelPixels = countRewardLabelPixels(bitmap, bounds);
+
+    candidates.push({
+      elementalPoints,
+      catalyticPoints,
+      rawText: `${elementalPoints}/${catalyticPoints}`,
+      focus: resolveRewardPointFocus(elementalPoints, catalyticPoints),
+      x: bounds.minX,
+      y: bounds.minY,
+      width: bounds.maxX - bounds.minX + 1,
+      height: bounds.maxY - bounds.minY + 1,
+      score: labelPixels,
+    });
+  }
+
+  return candidates;
+}
+
+function resolveRewardPointSearchRois(bitmap: RobotBitmap): Roi[] {
+  const fixedRoi = clampRoi(bitmap, REWARD_POINTS_VALUE_ROI);
+  const broadRoi = clampRoi(bitmap, {
+    x: 0,
+    y: 0,
+    width: Math.min(bitmap.width, Math.max(650, Math.round(bitmap.width * 0.48))),
+    height: Math.min(bitmap.height, Math.max(520, Math.round(bitmap.height * 0.5))),
+  });
+
+  return [fixedRoi, broadRoi];
+}
+
+export function detectGuardianOfTheRiftRewardPoints(bitmap: RobotBitmap): GuardianOfTheRiftRewardPointsDetection {
+  const rois = resolveRewardPointSearchRois(bitmap);
+  const candidates = rois.flatMap((roi) => detectRewardPointsInRoi(bitmap, roi));
+  const bestCandidate = candidates.sort((a, b) => b.score - a.score || a.y - b.y)[0];
+  if (bestCandidate) {
+    return {
+      elementalPoints: bestCandidate.elementalPoints,
+      catalyticPoints: bestCandidate.catalyticPoints,
+      rawText: bestCandidate.rawText,
+      focus: bestCandidate.focus,
+      x: bestCandidate.x,
+      y: bestCandidate.y,
+      width: bestCandidate.width,
+      height: bestCandidate.height,
+    };
+  }
+
+  const roi = rois[0];
 
   return {
-    elementalPoints,
-    catalyticPoints,
-    rawText,
-    focus: resolveRewardPointFocus(elementalPoints, catalyticPoints),
-    x: bounds.minX,
-    y: bounds.minY,
-    width: bounds.maxX - bounds.minX + 1,
-    height: bounds.maxY - bounds.minY + 1,
+    elementalPoints: null,
+    catalyticPoints: null,
+    rawText: null,
+    focus: null,
+    x: roi.x,
+    y: roi.y,
+    width: roi.width,
+    height: roi.height,
   };
 }
 

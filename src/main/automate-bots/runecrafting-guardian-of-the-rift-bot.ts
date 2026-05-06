@@ -33,6 +33,7 @@ import {
   GUARDIAN_OF_THE_RIFT_PORTAL_MARKER_COLOR_HEX,
   loadGuardianOfTheRiftPortalOpenIconTemplate,
   pickNearestGuardianOfTheRiftPortalMarker,
+  type GuardianOfTheRiftPortalMarkerDetection,
   type GuardianOfTheRiftPortalOpenIconTemplate,
 } from "./shared/guardian-of-the-rift-portal-detector";
 import {
@@ -90,7 +91,7 @@ type BotPhase =
   | "find-final-portal"
   | "wait-after-final-portal-click"
   | "recover-final-portal-arrival"
-  | "find-portal-mining-magenta"
+  | "find-portal-mining"
   | "portal-mining"
   | "fill-pouches-after-portal-mining-full"
   | "find-portal-exit"
@@ -124,7 +125,7 @@ type EngineFunctionKey =
   | "findFinalPortal"
   | "waitAfterFinalPortalClick"
   | "recoverFinalPortalArrival"
-  | "findPortalMiningMagenta"
+  | "findPortalMining"
   | "portalMining"
   | "fillPouchesAfterPortalMiningFull"
   | "findPortalExit"
@@ -179,6 +180,13 @@ type GuardianOfTheRiftPouchInventoryMemory = {
   pouches: Record<GuardianOfTheRiftDetectablePouch, GuardianOfTheRiftPouchLocation | null>;
 };
 
+type CachedMarker<T> = {
+  marker: T;
+  firstSeenAtMs: number;
+  lastSeenAtMs: number;
+  loopIndex: number;
+};
+
 type BotState = {
   loopIndex: number;
   currentFunction: EngineFunctionKey;
@@ -208,6 +216,7 @@ type BotState = {
   miningTimerLocalStartSecondsRemaining: number | null;
   miningTimerLocalStartedAtMs: number | null;
   miningStatusGreenStartedAtMs: number | null;
+  miningAgilityCourseMarkerCache: CachedMarker<ColoredMarkerDetection> | null;
   inventoryFreeSlots: number | null;
   pouchInventory: GuardianOfTheRiftPouchInventoryMemory;
   pouchClickQueue: GuardianOfTheRiftPouchLocation[];
@@ -236,6 +245,7 @@ type BotState = {
   greatGuardianClickDistancePx: number | null;
   chargedCellDepositArrivalDeadlineMs: number;
   chargedCellDepositClickDistancePx: number | null;
+  chargedCellToRuneCameraReadyAtMs: number;
   chargedCellDepositPlayerTileFallbackPending: boolean;
   runeDepositArrivalDeadlineMs: number;
   runeDepositClickDistancePx: number | null;
@@ -245,6 +255,7 @@ type BotState = {
   finalPortalTeleportGraceDeadlineMs: number;
   finalPortalClickDistancePx: number | null;
   portalMiningArrivalDeadlineMs: number;
+  portalMiningExitPortalMarkerCache: CachedMarker<GuardianOfTheRiftPortalMarkerDetection> | null;
   portalExitClickReadyAtMs: number;
   portalExitArrivalDeadlineMs: number;
   portalExitClickDistancePx: number | null;
@@ -256,7 +267,7 @@ type BotState = {
   missingRuneDepositTicks: number;
   missingFinalPortalOpenIconTicks: number;
   missingFinalPortalTicks: number;
-  missingPortalMiningMagentaTicks: number;
+  missingPortalMiningOrangeTicks: number;
   missingPortalExitTicks: number;
 };
 
@@ -389,13 +400,14 @@ const AGILITY_COURSE_TARGET_Y = 9503;
 const AGILITY_COURSE_EXIT_TARGET_X = 3633;
 const AGILITY_COURSE_EXIT_TARGET_Y = 9503;
 const AGILITY_COURSE_MARKER_MIN_PIXELS = 50;
-const PORTAL_MINING_MARKER_COLOR_HEX = "FFAD00FF";
-const PORTAL_MINING_MAGENTA_MIN_PIXELS = 50;
+const PORTAL_MINING_MARKER_COLOR_HEX = "FFFF7300";
+const PORTAL_MINING_ORANGE_MIN_PIXELS = 50;
 const PORTAL_MINING_ZONE_CHUNK_IDS = [920739, 930740, 918691, 918692] as const;
 const FINAL_PORTAL_MINING_TILE_X = 3592;
 const FINAL_PORTAL_MINING_TILE_Y = 9503;
 const FINAL_PORTAL_TELEPORT_CONFIRM_GRACE_TICKS = 3;
 const SALMON_PORTAL_PRE_CLICK_SETTLE_TICKS = 1;
+const SALMON_PORTAL_CLICK_RATIO_X = 0.36;
 const AGILITY_EAST_CLICK_RATIO_X = 0.68;
 const AGILITY_EAST_CLICK_RATIO_Y = 0.5;
 const AGILITY_EAST_CLICK_LOCK_TICKS = 3;
@@ -418,7 +430,6 @@ const RUNE_DEPOSIT_SOUTH_CLICK_MIN_RATIO_X = 0.42;
 const RUNE_DEPOSIT_SOUTH_CLICK_MAX_RATIO_X = 0.56;
 const RUNE_DEPOSIT_SOUTH_CLICK_RATIO_Y = 0.74;
 const RUNE_DEPOSIT_SOUTH_MIN_DISTANCE_RATIO = 0.16;
-const RUNE_DEPOSIT_CLICK_RATIO_Y = 0.72;
 const RUNE_DEPOSIT_PRE_CLICK_RECAPTURE_SETTLE_MS = 200;
 const CHARGED_CELL_DEPOSIT_CLICK_RATIO_X = 0.64;
 const CHARGED_CELL_DEPOSIT_PLAYER_TILE_VERIFY_TICKS = 2;
@@ -429,6 +440,11 @@ const WORKBENCH_MAGENTA_MIN_HEIGHT_PX = 24;
 const WORKBENCH_MAGENTA_MIN_FILL_RATIO = 0.18;
 const GREEN_MIN_PIXELS = 240;
 const CATALYTIC_GUARDIAN_BLUE_MIN_PIXELS = 180;
+const ACTIVE_GUARDIAN_MIN_WIDTH_PX = 80;
+const ACTIVE_GUARDIAN_MIN_HEIGHT_PX = 80;
+const ACTIVE_GUARDIAN_MIN_PIXELS = 2_500;
+const ACTIVE_GUARDIAN_MIN_ASPECT_RATIO = 0.45;
+const ACTIVE_GUARDIAN_MAX_ASPECT_RATIO = 2.8;
 const GUARDIAN_BLACK_MAX_COMPONENT = 70;
 const GUARDIAN_BLACK_MIN_EDGE_MARGIN_PX = 2;
 const GREAT_GUARDIAN_BLUE_MIN_PIXELS = 120;
@@ -461,6 +477,7 @@ const CHARGED_CELL_DEPOSIT_CAMERA_ROTATE_KEY = "a";
 const CHARGED_CELL_DEPOSIT_CAMERA_ROTATE_LOCK_TICKS = 1;
 const POST_RETURN_CAMERA_NORTH_KEY = "n";
 const CHARGED_CELL_TO_RUNE_CAMERA_KEY = "m";
+const CHARGED_CELL_TO_RUNE_CAMERA_SETTLE_MS = BOT_TICK_MS;
 const POST_RUNE_DEPOSIT_CAMERA_NORTH_KEY = "n";
 const WORKBENCH_INVENTORY_CHANGE_CHECK_TICKS = 2;
 const PORTAL_MINING_INVENTORY_CHANGE_CHECK_TICKS = 5;
@@ -473,6 +490,7 @@ const MINING_TIMER_OCR_MAX_FORWARD_DRIFT_SECONDS = 1;
 const MINING_TIMER_OCR_EXTRA_DROP_TOLERANCE_SECONDS = 0;
 const MINING_STATUS_GREEN_MAX_DURATION_MS = 90_000;
 const MINING_TIME_SINCE_PORTAL_THRESHOLD_SECONDS = 90;
+const MINING_TARGET_CACHE_STABLE_DISTANCE_PX = 24;
 const TIMER_PRESENCE_ROI = { x: 88, y: 116, width: 96, height: 34 };
 const TIMER_PRESENCE_MIN_BRIGHT_PIXELS = 18;
 const ENABLE_COORDINATE_AUTO_SCREENSHOTS = false;
@@ -514,7 +532,7 @@ const WORKFLOW_STEPS = {
   FIND_FINAL_PORTAL: "Step 23/30 Check for salmon portal",
   MOVE_TO_FINAL_PORTAL: "Step 24/30 Move to portal",
   RECOVER_FINAL_PORTAL_ARRIVAL: "Step 24.B/30 Recover salmon portal arrival",
-  CHECK_PORTAL_MINING_MAGENTA: "Step 25/30 Check if magenta is clickable",
+  CHECK_PORTAL_MINING_ORANGE: "Step 25/30 Check if orange mining marker is clickable",
   TRAVEL_TO_PORTAL_MINING: "Step 26/30 Travel to mining",
   PORTAL_MINE_UNTIL_FULL: "Step 27/30 Mining until inventory is full",
   FILL_POUCHES_AFTER_PORTAL_MINING_FULL: "Step 27.B/30 Fill pouches after portal mining full",
@@ -704,7 +722,7 @@ function setCurrentLogPhase(phase: BotPhase | "startup" | null | undefined): voi
     phase === "find-final-portal" ||
     phase === "wait-after-final-portal-click" ||
     phase === "recover-final-portal-arrival" ||
-    phase === "find-portal-mining-magenta" ||
+    phase === "find-portal-mining" ||
     phase === "portal-mining" ||
     phase === "fill-pouches-after-portal-mining-full" ||
     phase === "find-portal-exit" ||
@@ -715,10 +733,10 @@ function setCurrentLogPhase(phase: BotPhase | "startup" | null | undefined): voi
 }
 
 function formatLogLine(message: string): string {
-  const stepMatch = /^(Step [^:]+): (.*)$/.exec(message);
+  const stepMatch = /^Step\s+([^\s:]+)[^:]*:\s*(.*)$/.exec(message);
   if (stepMatch) {
-    const [, step, detail] = stepMatch;
-    return `[${formatElapsedSinceStart()}] #${currentLogLoopIndex} [${step}] [${currentLogPhase}] ${detail}`;
+    const [, stepNumber, detail] = stepMatch;
+    return `[${formatElapsedSinceStart()}] #${currentLogLoopIndex} [${stepNumber}] [${currentLogPhase}] ${detail}`;
   }
 
   return `[${formatElapsedSinceStart()}] #${currentLogLoopIndex} [${currentLogPhase}] ${message}`;
@@ -911,6 +929,7 @@ function createInitialState(): BotState {
     miningTimerLocalStartSecondsRemaining: null,
     miningTimerLocalStartedAtMs: null,
     miningStatusGreenStartedAtMs: null,
+    miningAgilityCourseMarkerCache: null,
     inventoryFreeSlots: null,
     pouchInventory: createEmptyPouchInventoryMemory(),
     pouchClickQueue: [],
@@ -939,6 +958,7 @@ function createInitialState(): BotState {
     greatGuardianClickDistancePx: null,
     chargedCellDepositArrivalDeadlineMs: 0,
     chargedCellDepositClickDistancePx: null,
+    chargedCellToRuneCameraReadyAtMs: 0,
     chargedCellDepositPlayerTileFallbackPending: false,
     runeDepositArrivalDeadlineMs: 0,
     runeDepositClickDistancePx: null,
@@ -948,6 +968,7 @@ function createInitialState(): BotState {
     finalPortalTeleportGraceDeadlineMs: 0,
     finalPortalClickDistancePx: null,
     portalMiningArrivalDeadlineMs: 0,
+    portalMiningExitPortalMarkerCache: null,
     portalExitClickReadyAtMs: 0,
     portalExitArrivalDeadlineMs: 0,
     portalExitClickDistancePx: null,
@@ -959,7 +980,7 @@ function createInitialState(): BotState {
     missingRuneDepositTicks: 0,
     missingFinalPortalOpenIconTicks: 0,
     missingFinalPortalTicks: 0,
-    missingPortalMiningMagentaTicks: 0,
+    missingPortalMiningOrangeTicks: 0,
     missingPortalExitTicks: 0,
   };
 }
@@ -984,10 +1005,6 @@ function isWorkbenchMagentaPixel(r: number, g: number, b: number): boolean {
   return r >= 145 && r <= 205 && g <= 45 && b >= 225 && b - r >= 35;
 }
 
-function isPortalMiningMagentaPixel(r: number, g: number, b: number): boolean {
-  return Math.abs(r - 173) <= 10 && g <= 24 && Math.abs(b - 255) <= 10;
-}
-
 function isGuardianGreenPixel(r: number, g: number, b: number): boolean {
   return g >= 190 && r <= 80 && b <= 80 && g - Math.max(r, b) >= 140;
 }
@@ -1001,10 +1018,15 @@ function isGreatGuardianBluePixel(r: number, g: number, b: number): boolean {
 }
 
 function isCatalyticGuardianBluePixel(r: number, g: number, b: number): boolean {
-  const royalBlue = Math.abs(r - 65) <= 24 && Math.abs(g - 105) <= 28 && Math.abs(b - 225) <= 30 && b - r >= 120;
-  const capturedSaturatedBlue = b >= 175 && r <= 115 && g <= 150 && b - r >= 85 && b - g >= 70;
+  if (isGreatGuardianBluePixel(r, g, b)) {
+    return false;
+  }
 
-  return royalBlue || capturedSaturatedBlue;
+  const royalBlue = Math.abs(r - 65) <= 24 && Math.abs(g - 105) <= 28 && Math.abs(b - 225) <= 30 && b - r >= 120;
+  const capturedSaturatedBlue = b >= 175 && r <= 115 && g >= 50 && g <= 150 && b - r >= 85 && b - g >= 70;
+  const transparentDarkBlue = b >= 70 && b <= 140 && r <= 35 && g <= 50 && b - r >= 65 && b - g >= 50;
+
+  return royalBlue || capturedSaturatedBlue || transparentDarkBlue;
 }
 
 function isChargedCellDepositPurplePixel(r: number, g: number, b: number): boolean {
@@ -1046,7 +1068,7 @@ function resolveReturnPortalSearchBounds(bitmap: RobotBitmap): SearchBounds {
   };
 }
 
-function resolvePortalMiningMagentaSearchBounds(bitmap: RobotBitmap): SearchBounds {
+function resolvePortalMiningOrangeSearchBounds(bitmap: RobotBitmap): SearchBounds {
   return {
     minX: clamp(Math.round(bitmap.width * 0.02), 0, bitmap.width - 1),
     minY: clamp(Math.round(bitmap.height * 0.04), 0, bitmap.height - 1),
@@ -1400,15 +1422,15 @@ function detectAllWorkbenchMagentaObjects(
   return detections.sort((a, b) => b.pixelCount - a.pixelCount);
 }
 
-function detectAllPortalMiningMagentaObjects(
+function detectAllPortalMiningOrangeObjects(
   bitmap: RobotBitmap,
-  minPixels: number = PORTAL_MINING_MAGENTA_MIN_PIXELS,
+  minPixels: number = PORTAL_MINING_ORANGE_MIN_PIXELS,
 ): ColoredMarkerDetection[] {
   return detectAllColoredMarkers(
     bitmap,
-    isPortalMiningMagentaPixel,
+    isStrictOrangePixel,
     minPixels,
-    resolvePortalMiningMagentaSearchBounds(bitmap),
+    resolvePortalMiningOrangeSearchBounds(bitmap),
   );
 }
 
@@ -1520,6 +1542,21 @@ function detectAllColoredMarkers(
 
 function detectAllGreatGuardianBlueObjects(bitmap: RobotBitmap): ColoredMarkerDetection[] {
   return detectAllColoredMarkers(bitmap, isGreatGuardianBluePixel, GREAT_GUARDIAN_BLUE_MIN_PIXELS);
+}
+
+function isFullActiveGuardianMarker(detection: ColoredMarkerDetection): boolean {
+  const aspectRatio = detection.width / Math.max(1, detection.height);
+  return (
+    detection.width >= ACTIVE_GUARDIAN_MIN_WIDTH_PX &&
+    detection.height >= ACTIVE_GUARDIAN_MIN_HEIGHT_PX &&
+    detection.pixelCount >= ACTIVE_GUARDIAN_MIN_PIXELS &&
+    aspectRatio >= ACTIVE_GUARDIAN_MIN_ASPECT_RATIO &&
+    aspectRatio <= ACTIVE_GUARDIAN_MAX_ASPECT_RATIO
+  );
+}
+
+function filterFullActiveGuardianMarkers(detections: ColoredMarkerDetection[]): ColoredMarkerDetection[] {
+  return detections.filter(isFullActiveGuardianMarker);
 }
 
 function detectAllCatalyticGuardianBlueObjects(bitmap: RobotBitmap): ColoredMarkerDetection[] {
@@ -1755,6 +1792,16 @@ function getBoundsCenterPoint(marker: Pick<OrangeObjectDetection, "minX" | "minY
   };
 }
 
+function getSalmonPortalClickPoint(marker: Pick<OrangeObjectDetection, "minX" | "minY" | "maxX" | "maxY">): {
+  centerX: number;
+  centerY: number;
+} {
+  return {
+    centerX: Math.round(marker.minX + (marker.maxX - marker.minX) * SALMON_PORTAL_CLICK_RATIO_X),
+    centerY: Math.round((marker.minY + marker.maxY) / 2),
+  };
+}
+
 function getBoundsCenterRightPoint(marker: Pick<OrangeObjectDetection, "minX" | "minY" | "maxX" | "maxY">): {
   centerX: number;
   centerY: number;
@@ -1762,16 +1809,6 @@ function getBoundsCenterRightPoint(marker: Pick<OrangeObjectDetection, "minX" | 
   return {
     centerX: Math.round(marker.minX + (marker.maxX - marker.minX) * CHARGED_CELL_DEPOSIT_CLICK_RATIO_X),
     centerY: Math.round((marker.minY + marker.maxY) / 2),
-  };
-}
-
-function getBoundsBottomCenterPoint(marker: Pick<OrangeObjectDetection, "minX" | "minY" | "maxX" | "maxY">): {
-  centerX: number;
-  centerY: number;
-} {
-  return {
-    centerX: Math.round((marker.minX + marker.maxX) / 2),
-    centerY: Math.round(marker.minY + (marker.maxY - marker.minY) * RUNE_DEPOSIT_CLICK_RATIO_Y),
   };
 }
 
@@ -2017,6 +2054,8 @@ function transitionToMiningState(state: BotState): BotState {
     miningTimerLocalStartSecondsRemaining: null,
     miningTimerLocalStartedAtMs: null,
     miningStatusGreenStartedAtMs: null,
+    miningAgilityCourseMarkerCache: null,
+    portalMiningExitPortalMarkerCache: null,
   };
 }
 
@@ -2039,6 +2078,8 @@ function startMiningMonitorState(state: BotState, secondsRemaining: number | nul
     miningTimerLocalStartSecondsRemaining: null,
     miningTimerLocalStartedAtMs: null,
     miningStatusGreenStartedAtMs: null,
+    miningAgilityCourseMarkerCache: null,
+    portalMiningExitPortalMarkerCache: null,
   };
 }
 
@@ -2151,12 +2192,99 @@ function formatColoredMarkerCandidates(detections: ColoredMarkerDetection[], lim
     .join("; ");
 }
 
+function updateCachedMarker<T extends { centerX: number; centerY: number }>(
+  cache: CachedMarker<T> | null,
+  marker: T,
+  nowMs: number,
+  loopIndex: number,
+): CachedMarker<T> {
+  const isSameMarker =
+    cache !== null && distanceBetween(cache.marker, marker) <= MINING_TARGET_CACHE_STABLE_DISTANCE_PX;
+
+  return {
+    marker,
+    firstSeenAtMs: isSameMarker ? cache.firstSeenAtMs : nowMs,
+    lastSeenAtMs: nowMs,
+    loopIndex,
+  };
+}
+
+function isCachedMarkerSettled<T>(cache: CachedMarker<T>, nowMs: number, settleTicks: number): boolean {
+  return nowMs >= cache.firstSeenAtMs + settleTicks * GAME_TICK_MS;
+}
+
+function rememberMiningAgilityCourseMarker(state: BotState, nowMs: number, bitmap: RobotBitmap): BotState {
+  const playerAnchor = getPlayerAnchor(bitmap);
+  const markers = detectAllAgilityCourseMarkers(bitmap);
+  const marker = pickNearestColoredMarker(markers, playerAnchor);
+  if (!marker) {
+    return state;
+  }
+
+  const cache = updateCachedMarker(state.miningAgilityCourseMarkerCache, marker, nowMs, state.loopIndex);
+  if (cache.firstSeenAtMs === nowMs) {
+    log(
+      stepMessage(
+        WORKFLOW_STEPS.START_MINING,
+        `Cached FFCCFF00 agility yellow marker during mining at local=(${marker.centerX},${marker.centerY}) size=${marker.width}x${marker.height} px=${marker.pixelCount}; will use it when mining completes.`,
+      ),
+    );
+  }
+
+  return {
+    ...state,
+    miningAgilityCourseMarkerCache: cache,
+  };
+}
+
+function rememberPortalMiningExitPortalMarker(state: BotState, nowMs: number, bitmap: RobotBitmap): BotState {
+  const playerAnchor = getPlayerAnchor(bitmap);
+  const portalCandidates = detectGuardianOfTheRiftPortalMarkersInScreenshot(bitmap);
+  const exitPortal = pickNearestGuardianOfTheRiftPortalMarker(portalCandidates, playerAnchor);
+  if (!exitPortal) {
+    return state;
+  }
+
+  const cache = updateCachedMarker(state.portalMiningExitPortalMarkerCache, exitPortal, nowMs, state.loopIndex);
+  if (cache.firstSeenAtMs === nowMs) {
+    const exitPortalClickPoint = getSalmonPortalClickPoint(exitPortal);
+    log(
+      stepMessage(
+        WORKFLOW_STEPS.PORTAL_MINE_UNTIL_FULL,
+        `Cached ${GUARDIAN_OF_THE_RIFT_PORTAL_MARKER_COLOR_HEX} salmon exit portal during portal mining at center-left=(${exitPortalClickPoint.centerX},${exitPortalClickPoint.centerY}) size=${exitPortal.width}x${exitPortal.height} px=${exitPortal.pixelCount}; will use it when inventory is full.`,
+      ),
+    );
+  }
+
+  return {
+    ...state,
+    portalMiningExitPortalMarkerCache: cache,
+  };
+}
+
 function formatActiveGuardianRuneMatch(match: GuardianOfTheRiftRuneMatch | null): string {
   if (!match) {
     return "none";
   }
 
   return `${match.rune} score=${match.score.toFixed(3)} local=(${match.centerX},${match.centerY})`;
+}
+
+function formatGuardianDecision(selection: GuardianTravelTargetSelection): string {
+  return [
+    `rewardPoints=${formatRewardPoints(selection.rewardPoints)}`,
+    `preference=${selection.preferenceOrder.join("->")}`,
+    `chosen=${
+      selection.target
+        ? `${selection.target.slot}:${selection.target.runeMatch.rune}@${selection.target.colorHex} local=(${selection.target.clickPoint.centerX},${selection.target.clickPoint.centerY}) bounds=(${selection.target.marker.minX},${selection.target.marker.minY})-${selection.target.marker.maxX},${selection.target.marker.maxY} size=${selection.target.marker.width}x${selection.target.marker.height} px=${selection.target.marker.pixelCount}`
+        : "none"
+    }`,
+    `active elemental=${formatActiveGuardianRuneMatch(selection.elementalRune)}`,
+    `catalytic=${formatActiveGuardianRuneMatch(selection.catalyticRune)}`,
+    `skipped=${selection.skippedReasons.join("; ") || "none"}`,
+    `greenCandidates=${formatColoredMarkerCandidates(selection.greenCandidates)}`,
+    `catalyticCandidates=${formatColoredMarkerCandidates(selection.catalyticCandidates)}`,
+  ].join("; ");
 }
 
 function getOppositeGuardianSlot(slot: GuardianOfTheRiftSlot): GuardianOfTheRiftSlot {
@@ -2187,6 +2315,20 @@ function getGuardianSlotPreferenceOrder(
   return ["elemental", "catalytic"];
 }
 
+function shouldRotateCameraForMissingGuardianTarget(
+  selection: GuardianTravelTargetSelection,
+  config: GuardianOfTheRiftConfig,
+): boolean {
+  if (selection.target) {
+    return false;
+  }
+
+  return selection.preferenceOrder.some((slot) => {
+    const runeMatch = slot === "elemental" ? selection.elementalRune : selection.catalyticRune;
+    return runeMatch !== null && config.activeGuardianElements[runeMatch.rune] !== false;
+  });
+}
+
 function selectGuardianTravelTarget(
   bitmap: RobotBitmap,
   config: GuardianOfTheRiftConfig,
@@ -2197,8 +2339,10 @@ function selectGuardianTravelTarget(
   const rewardPoints = detectGuardianOfTheRiftRewardPoints(bitmap);
   const greenCandidates = detectAllGreenObjects(bitmap, GREEN_MIN_PIXELS);
   const catalyticCandidates = detectAllCatalyticGuardianBlueObjects(bitmap);
-  const greenMarker = pickLargestGreenObject(greenCandidates);
-  const catalyticMarker = pickLargestColoredMarker(catalyticCandidates);
+  const fullGreenCandidates = filterFullActiveGuardianMarkers(greenCandidates);
+  const fullCatalyticCandidates = filterFullActiveGuardianMarkers(catalyticCandidates);
+  const greenMarker = pickLargestGreenObject(fullGreenCandidates);
+  const catalyticMarker = pickLargestColoredMarker(fullCatalyticCandidates);
   const skippedReasons: string[] = [];
   const targets: GuardianTravelTarget[] = [];
   const preferenceOrder = getGuardianSlotPreferenceOrder(rewardPoints, unknownRewardNextGuardianSlot);
@@ -2221,7 +2365,11 @@ function selectGuardianTravelTarget(
     }
 
     if (!marker) {
-      skippedReasons.push(`${slot}: ${colorHex} marker was not visible`);
+      const visibleCandidates = slot === "elemental" ? greenCandidates : catalyticCandidates;
+      const fullCandidates = slot === "elemental" ? fullGreenCandidates : fullCatalyticCandidates;
+      skippedReasons.push(
+        `${slot}: ${colorHex} full-size marker was not visible (${fullCandidates.length}/${visibleCandidates.length} candidate(s) passed shape filter)`,
+      );
       return;
     }
 
@@ -2762,6 +2910,7 @@ function runFindOrangeTick(
       ...state,
       missingOrangeTicks,
       miningStatusGreenStartedAtMs: null,
+      miningAgilityCourseMarkerCache: null,
       actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
     };
   }
@@ -2892,6 +3041,7 @@ function transitionToWorkbenchState(
     miningTimerLocalStartSecondsRemaining: null,
     miningTimerLocalStartedAtMs: null,
     miningStatusGreenStartedAtMs: null,
+    miningAgilityCourseMarkerCache: null,
   };
 }
 
@@ -2903,15 +3053,24 @@ function clickAgilityCourseYellowBeforeWorkbench(
   reason: string,
 ): BotState {
   const playerAnchor = getPlayerAnchor(tickCapture.bitmap);
-  const yellowMarkers = detectAllAgilityCourseMarkers(tickCapture.bitmap);
-  const nearestYellowMarker = pickNearestColoredMarker(yellowMarkers, playerAnchor);
+  const cachedMarker = state.miningAgilityCourseMarkerCache;
+  let yellowMarkers: ColoredMarkerDetection[] | null = null;
+  let nearestYellowMarker = cachedMarker?.marker ?? null;
+  let markerSource = cachedMarker ? "cached during mining" : "fresh";
+
+  if (!nearestYellowMarker) {
+    yellowMarkers = detectAllAgilityCourseMarkers(tickCapture.bitmap);
+    nearestYellowMarker = pickNearestColoredMarker(yellowMarkers, playerAnchor);
+    markerSource = "fresh";
+  }
+
   if (!nearestYellowMarker) {
     const missingAgilityCourseTicks = state.missingAgilityCourseTicks + 1;
     if (missingAgilityCourseTicks === 1 || missingAgilityCourseTicks % 5 === 0) {
       warn(
         stepMessage(
           WORKFLOW_STEPS.AGILITY_COURSE_CLICK_YELLOW_AFTER_TIMER,
-          `${reason}; no nearby FFCCFF00 yellow marker is visible yet. Candidates=${formatColoredMarkerCandidates(yellowMarkers)}.`,
+          `${reason}; no nearby FFCCFF00 yellow marker is visible yet. Candidates=${formatColoredMarkerCandidates(yellowMarkers ?? detectAllAgilityCourseMarkers(tickCapture.bitmap))}.`,
         ),
       );
     }
@@ -2924,26 +3083,32 @@ function clickAgilityCourseYellowBeforeWorkbench(
     };
   }
 
-  if (state.agilityMiningYellowClickReadyAtMs === 0) {
-    const readyAtMs = nowMs + AGILITY_YELLOW_PRE_CLICK_SETTLE_TICKS * GAME_TICK_MS;
+  const markerCache =
+    cachedMarker ?? updateCachedMarker(null, nearestYellowMarker, nowMs, state.loopIndex);
+  const readyAtMs = markerCache.firstSeenAtMs + AGILITY_YELLOW_PRE_CLICK_SETTLE_TICKS * GAME_TICK_MS;
+  const isCachedReady = isCachedMarkerSettled(markerCache, nowMs, AGILITY_YELLOW_PRE_CLICK_SETTLE_TICKS);
+
+  if (!isCachedReady && state.agilityMiningYellowClickReadyAtMs === 0) {
     log(
       stepMessage(
         WORKFLOW_STEPS.AGILITY_COURSE_CLICK_YELLOW_AFTER_TIMER,
-        `${reason}; nearby FFCCFF00 yellow marker found at local=(${nearestYellowMarker.centerX},${nearestYellowMarker.centerY}); waiting ${AGILITY_YELLOW_PRE_CLICK_SETTLE_TICKS} game tick(s) before clicking.`,
+        `${reason}; nearby FFCCFF00 yellow marker found (${markerSource}) at local=(${nearestYellowMarker.centerX},${nearestYellowMarker.centerY}); waiting ${Math.max(1, Math.ceil((readyAtMs - nowMs) / GAME_TICK_MS))} game tick(s) before clicking.`,
       ),
     );
 
     return {
       ...state,
+      miningAgilityCourseMarkerCache: markerCache,
       agilityMiningYellowClickReadyAtMs: readyAtMs,
       missingAgilityCourseTicks: 0,
       actionLockUntilMs: readyAtMs,
     };
   }
 
-  if (nowMs < state.agilityMiningYellowClickReadyAtMs) {
+  if (!isCachedReady && nowMs < state.agilityMiningYellowClickReadyAtMs) {
     return {
       ...state,
+      miningAgilityCourseMarkerCache: markerCache,
       actionLockUntilMs: state.agilityMiningYellowClickReadyAtMs,
     };
   }
@@ -2954,7 +3119,7 @@ function clickAgilityCourseYellowBeforeWorkbench(
   log(
     stepMessage(
       WORKFLOW_STEPS.AGILITY_COURSE_CLICK_YELLOW_AFTER_TIMER,
-      `${reason}; clicked nearby FFCCFF00 yellow marker at (${clicked.x},${clicked.y}) local=(${nearestYellowMarker.centerX},${nearestYellowMarker.centerY}) pixels=${nearestYellowMarker.pixelCount}; waiting ${AGILITY_YELLOW_CLICK_EXTRA_SETTLE_TICKS} extra game tick(s) before workbench search (${formatTravelEstimate(travel)}).`,
+      `${reason}; clicked ${markerSource} FFCCFF00 yellow marker at (${clicked.x},${clicked.y}) local=(${nearestYellowMarker.centerX},${nearestYellowMarker.centerY}) pixels=${nearestYellowMarker.pixelCount}; waiting ${AGILITY_YELLOW_CLICK_EXTRA_SETTLE_TICKS} extra game tick(s) before workbench search (${formatTravelEstimate(travel)}).`,
     ),
   );
 
@@ -2962,6 +3127,7 @@ function clickAgilityCourseYellowBeforeWorkbench(
     ...state,
     currentFunction: "waitAfterAgilityMiningYellowClick",
     phase: "wait-after-agility-mining-yellow-click",
+    miningAgilityCourseMarkerCache: null,
     agilityMiningYellowClickReadyAtMs: 0,
     agilityMiningYellowArrivalDeadlineMs: clickedAtMs + (travel.waitTicks + AGILITY_YELLOW_CLICK_EXTRA_SETTLE_TICKS) * GAME_TICK_MS,
     agilityMiningYellowClickDistancePx: travel.distancePx,
@@ -3286,6 +3452,7 @@ function reclickMiningNodeFromMiningStatus(
     miningOrangeReclicked: true,
     missingOrangeTicks: 0,
     miningStatusGreenStartedAtMs: null,
+    miningAgilityCourseMarkerCache: null,
     actionLockUntilMs: clickedAtMs + reclickDelayMs,
   };
 }
@@ -3314,6 +3481,15 @@ function runMiningTick(
   );
   const miningStatusJustTurnedGreen = state.miningStatusGreenStartedAtMs === null;
   const timeSincePortal = detectGuardianOfTheRiftTimeSincePortal(tickCapture.bitmap);
+  let currentState: BotState = {
+    ...state,
+    miningStatusGreenStartedAtMs,
+    missingMiningTimerTicks: 0,
+  };
+
+  if (config.useAgilityCourse) {
+    currentState = rememberMiningAgilityCourseMarker(currentState, nowMs, tickCapture.bitmap);
+  }
 
   if (miningStatusJustTurnedGreen) {
     log(
@@ -3332,9 +3508,7 @@ function runMiningTick(
     if (config.useAgilityCourse) {
       return clickAgilityCourseYellowBeforeWorkbench(
         {
-          ...state,
-          miningStatusGreenStartedAtMs,
-          missingMiningTimerTicks: 0,
+          ...currentState,
         },
         nowMs,
         tickCapture,
@@ -3345,9 +3519,7 @@ function runMiningTick(
 
     return transitionToWorkbenchState(
       {
-        ...state,
-        miningStatusGreenStartedAtMs,
-        missingMiningTimerTicks: 0,
+        ...currentState,
       },
       `Time since portal reached ${timeSincePortal.secondsElapsed}s (${formatTimeSincePortal(timeSincePortal)}) after ${elapsedSeconds}s of local mining; searching for the magenta workbench marker.`,
     );
@@ -3358,9 +3530,7 @@ function runMiningTick(
     if (config.useAgilityCourse) {
       return clickAgilityCourseYellowBeforeWorkbench(
         {
-          ...state,
-          miningStatusGreenStartedAtMs,
-          missingMiningTimerTicks: 0,
+          ...currentState,
         },
         nowMs,
         tickCapture,
@@ -3377,9 +3547,7 @@ function runMiningTick(
     );
     return transitionToWorkbenchState(
       {
-        ...state,
-        miningStatusGreenStartedAtMs,
-        missingMiningTimerTicks: 0,
+        ...currentState,
       },
       "Mining status stayed green for 90s; searching for the magenta workbench marker.",
     );
@@ -3395,9 +3563,7 @@ function runMiningTick(
   }
 
   return {
-    ...state,
-    miningStatusGreenStartedAtMs,
-    missingMiningTimerTicks: 0,
+    ...currentState,
     actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
   };
 }
@@ -3491,6 +3657,7 @@ function transitionToGuardianTravelState(
     greatGuardianClickDistancePx: null,
     chargedCellDepositArrivalDeadlineMs: 0,
     chargedCellDepositClickDistancePx: null,
+    chargedCellToRuneCameraReadyAtMs: 0,
     runeDepositArrivalDeadlineMs: 0,
     runeDepositClickDistancePx: null,
     runeDepositInventoryFreeSlotsBeforeClick: null,
@@ -3528,6 +3695,7 @@ function transitionToGuardianRunecraftingState(state: BotState, location: Guardi
     greatGuardianClickDistancePx: null,
     chargedCellDepositArrivalDeadlineMs: 0,
     chargedCellDepositClickDistancePx: null,
+    chargedCellToRuneCameraReadyAtMs: 0,
     runeDepositArrivalDeadlineMs: 0,
     runeDepositClickDistancePx: null,
     runeDepositInventoryFreeSlotsBeforeClick: null,
@@ -3773,15 +3941,19 @@ function runTravelToGuardianTick(
   );
   if (!guardianTargetSelection.target) {
     const missingGuardianGreenTicks = state.missingGuardianGreenTicks + 1;
-    const hasEnabledVisibleTarget =
-      guardianTargetSelection.skippedReasons.some((reason) => reason.includes("marker was not visible")) &&
-      guardianTargetSelection.skippedReasons.some((reason) => !reason.includes("is disabled in config"));
-    const rotated = hasEnabledVisibleTarget ? tapKey(GUARDIAN_GREEN_OUTLINE_CAMERA_ROTATE_KEY) : false;
+    const shouldRotateCamera = shouldRotateCameraForMissingGuardianTarget(guardianTargetSelection, config);
+    const rotated = shouldRotateCamera ? tapKey(GUARDIAN_GREEN_OUTLINE_CAMERA_ROTATE_KEY) : false;
     if (missingGuardianGreenTicks === 1 || missingGuardianGreenTicks % 5 === 0) {
       warn(
         stepMessage(
           WORKFLOW_STEPS.FIND_GUARDIAN,
-          `No enabled active guardian target found; rewardPoints=${formatRewardPoints(guardianTargetSelection.rewardPoints)} preference=${guardianTargetSelection.preferenceOrder.join("->")}; active elemental=${formatActiveGuardianRuneMatch(guardianTargetSelection.elementalRune)}, catalytic=${formatActiveGuardianRuneMatch(guardianTargetSelection.catalyticRune)}; skipped=${guardianTargetSelection.skippedReasons.join("; ") || "none"}; greenCandidates=${formatColoredMarkerCandidates(guardianTargetSelection.greenCandidates)}, catalyticCandidates=${formatColoredMarkerCandidates(guardianTargetSelection.catalyticCandidates)}. ${rotated ? `Tapped '${GUARDIAN_GREEN_OUTLINE_CAMERA_ROTATE_KEY}'` : "Waiting without guardian click"} before retry ${missingGuardianGreenTicks}.`,
+          `Guardian decision: ${formatGuardianDecision(guardianTargetSelection)}. No enabled active guardian target found; ${
+            shouldRotateCamera
+              ? rotated
+                ? `tapped '${GUARDIAN_GREEN_OUTLINE_CAMERA_ROTATE_KEY}' to rotate camera`
+                : `could not tap '${GUARDIAN_GREEN_OUTLINE_CAMERA_ROTATE_KEY}' to rotate camera`
+              : "waiting without guardian click"
+          } before retry ${missingGuardianGreenTicks}.`,
         ),
       );
     }
@@ -3789,7 +3961,8 @@ function runTravelToGuardianTick(
     return {
       ...state,
       missingGuardianGreenTicks,
-      actionLockUntilMs: nowMs + GUARDIAN_GREEN_OUTLINE_CAMERA_ROTATE_LOCK_TICKS * GAME_TICK_MS,
+      actionLockUntilMs:
+        nowMs + (shouldRotateCamera ? GUARDIAN_GREEN_OUTLINE_CAMERA_ROTATE_LOCK_TICKS * GAME_TICK_MS : FAST_ACTION_RETRY_MS),
     };
   }
 
@@ -3800,7 +3973,7 @@ function runTravelToGuardianTick(
     warn(
       stepMessage(
         WORKFLOW_STEPS.FIND_GUARDIAN,
-        `Enabled ${target.slot} guardian (${target.runeMatch.rune}) click point local=(${target.clickPoint.centerX},${target.clickPoint.centerY}) is too close to the screen edge for a safe click; bounds=(${target.marker.minX},${target.marker.minY})-${target.marker.maxX},${target.marker.maxY}. ${rotated ? `Tapped '${GUARDIAN_GREEN_OUTLINE_CAMERA_ROTATE_KEY}'` : "Waiting"} before retry ${missingGuardianGreenTicks}.`,
+        `Guardian decision: ${formatGuardianDecision(guardianTargetSelection)}. Enabled ${target.slot} guardian (${target.runeMatch.rune}) click point is too close to the screen edge for a safe click; ${rotated ? `tapped '${GUARDIAN_GREEN_OUTLINE_CAMERA_ROTATE_KEY}'` : "waiting"} before retry ${missingGuardianGreenTicks}.`,
       ),
     );
 
@@ -3813,6 +3986,12 @@ function runTravelToGuardianTick(
 
   const playerAnchor = getPlayerAnchor(tickCapture.bitmap);
   const travel = estimateTravelWaitTicks(playerAnchor, target.clickPoint);
+  log(
+    stepMessage(
+      WORKFLOW_STEPS.FIND_GUARDIAN,
+      `Guardian decision: ${formatGuardianDecision(guardianTargetSelection)}.`,
+    ),
+  );
   const clicked = clickScreenPoint(
     captureBounds.x + target.clickPoint.centerX,
     captureBounds.y + target.clickPoint.centerY,
@@ -3904,7 +4083,7 @@ async function runWaitAfterGuardianClickTick(
         warn(
           stepMessage(
             WORKFLOW_STEPS.TELEPORT_TO_ALTAR,
-            `Still in crafting region after guardian travel deadline, but ${target.slot} guardian (${target.runeMatch.rune}) click point local=(${target.clickPoint.centerX},${target.clickPoint.centerY}) is too close to the screen edge for a safe re-click; bounds=(${target.marker.minX},${target.marker.minY})-${target.marker.maxX},${target.marker.maxY}. ${rotated ? `Tapped '${GUARDIAN_GREEN_OUTLINE_CAMERA_ROTATE_KEY}'` : "Waiting"} before retry ${missingGuardianYellowTicks}.`,
+            `Guardian re-click decision: ${formatGuardianDecision(guardianTargetSelection)}. Still in crafting region after guardian travel deadline, but ${target.slot} guardian (${target.runeMatch.rune}) click point is too close to the screen edge for a safe re-click; ${rotated ? `tapped '${GUARDIAN_GREEN_OUTLINE_CAMERA_ROTATE_KEY}'` : "waiting"} before retry ${missingGuardianYellowTicks}.`,
           ),
         );
 
@@ -3916,6 +4095,12 @@ async function runWaitAfterGuardianClickTick(
       }
 
       const travel = estimateTravelWaitTicks(playerAnchor, target.clickPoint);
+      log(
+        stepMessage(
+          WORKFLOW_STEPS.TELEPORT_TO_ALTAR,
+          `Guardian re-click decision: ${formatGuardianDecision(guardianTargetSelection)}.`,
+        ),
+      );
       const clicked = clickScreenPoint(
         captureBounds.x + target.clickPoint.centerX,
         captureBounds.y + target.clickPoint.centerY,
@@ -3941,11 +4126,19 @@ async function runWaitAfterGuardianClickTick(
     }
 
     const missingGuardianYellowTicks = state.missingGuardianYellowTicks + 1;
+    const shouldRotateCamera = shouldRotateCameraForMissingGuardianTarget(guardianTargetSelection, config);
+    const rotated = shouldRotateCamera ? tapKey(GUARDIAN_GREEN_OUTLINE_CAMERA_ROTATE_KEY) : false;
     if (missingGuardianYellowTicks === 1 || missingGuardianYellowTicks % 5 === 0) {
       warn(
         stepMessage(
           WORKFLOW_STEPS.TELEPORT_TO_ALTAR,
-          `Teleport out of crafting region not confirmed yet; current chunk=${guardianLocation.chunkId ?? "unknown"} region=${guardianLocation.regionId ?? "unknown"} matched='${guardianLocation.matchedLine ?? "null"}'. No enabled guardian target is available for re-click; rewardPoints=${formatRewardPoints(guardianTargetSelection.rewardPoints)} preference=${guardianTargetSelection.preferenceOrder.join("->")}; active elemental=${formatActiveGuardianRuneMatch(guardianTargetSelection.elementalRune)}, catalytic=${formatActiveGuardianRuneMatch(guardianTargetSelection.catalyticRune)}; skipped=${guardianTargetSelection.skippedReasons.join("; ") || "none"}; greenCandidates=${formatColoredMarkerCandidates(guardianTargetSelection.greenCandidates)}, catalyticCandidates=${formatColoredMarkerCandidates(guardianTargetSelection.catalyticCandidates)}.`,
+          `Guardian re-click decision: ${formatGuardianDecision(guardianTargetSelection)}. Teleport out of crafting region not confirmed yet; current chunk=${guardianLocation.chunkId ?? "unknown"} region=${guardianLocation.regionId ?? "unknown"} matched='${guardianLocation.matchedLine ?? "null"}'. No enabled guardian target is available for re-click; ${
+            shouldRotateCamera
+              ? rotated
+                ? `tapped '${GUARDIAN_GREEN_OUTLINE_CAMERA_ROTATE_KEY}' to rotate camera`
+                : `could not tap '${GUARDIAN_GREEN_OUTLINE_CAMERA_ROTATE_KEY}' to rotate camera`
+              : "waiting without camera rotate"
+          }.`,
         ),
       );
     }
@@ -3953,7 +4146,8 @@ async function runWaitAfterGuardianClickTick(
     return {
       ...state,
       missingGuardianYellowTicks,
-      actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
+      actionLockUntilMs:
+        nowMs + (shouldRotateCamera ? GUARDIAN_GREEN_OUTLINE_CAMERA_ROTATE_LOCK_TICKS * GAME_TICK_MS : FAST_ACTION_RETRY_MS),
     };
   }
 
@@ -4430,11 +4624,12 @@ function transitionToPendingPostReturnDepositState(state: BotState, nowMs: numbe
     finalPortalTeleportGraceDeadlineMs: 0,
     finalPortalClickDistancePx: null,
     portalMiningArrivalDeadlineMs: 0,
+    portalMiningExitPortalMarkerCache: null,
     portalExitArrivalDeadlineMs: 0,
     portalExitClickDistancePx: null,
     missingFinalPortalOpenIconTicks: 0,
     missingFinalPortalTicks: 0,
-    missingPortalMiningMagentaTicks: 0,
+    missingPortalMiningOrangeTicks: 0,
     missingPortalExitTicks: 0,
     actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
   };
@@ -4492,9 +4687,10 @@ function transitionToPostPortalDepositResumeState(state: BotState, nowMs: number
     ...state,
     inventoryFreeSlots: 0,
     portalMiningArrivalDeadlineMs: 0,
+    portalMiningExitPortalMarkerCache: null,
     portalExitArrivalDeadlineMs: 0,
     portalExitClickDistancePx: null,
-    missingPortalMiningMagentaTicks: 0,
+    missingPortalMiningOrangeTicks: 0,
     missingPortalExitTicks: 0,
     actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
   };
@@ -4504,7 +4700,7 @@ function transitionToPostPortalDepositResumeState(state: BotState, nowMs: number
     log(
       stepMessage(
         WORKFLOW_STEPS.FIND_GREAT_GUARDIAN,
-        "Portal mining finished before Great Guardian deposit was completed; depositing Great Guardian before green guardian teleport.",
+        "Portal mining finished before Great Guardian deposit was completed; depositing Great Guardian before active guardian travel.",
       ),
     );
     return {
@@ -4523,7 +4719,7 @@ function transitionToPostPortalDepositResumeState(state: BotState, nowMs: number
     log(
       stepMessage(
         WORKFLOW_STEPS.FIND_CHARGED_CELL_DEPOSIT,
-        "Portal mining finished before charged cell deposit was completed; depositing charged cell before green guardian teleport.",
+        "Portal mining finished before charged cell deposit was completed; depositing charged cell before active guardian travel.",
       ),
     );
     return {
@@ -4540,7 +4736,7 @@ function transitionToPostPortalDepositResumeState(state: BotState, nowMs: number
 
   return transitionToGuardianTravelState(
     baseState,
-    "Portal return confirmed; searching for the green guardian outline.",
+    "Portal return confirmed; searching for the active guardian outline.",
   );
 }
 
@@ -4627,7 +4823,7 @@ async function runWaitAfterGuardianReturnClickTick(
         finalPortalClickDistancePx: null,
         missingFinalPortalOpenIconTicks: 0,
         missingFinalPortalTicks: 0,
-        missingPortalMiningMagentaTicks: 0,
+        missingPortalMiningOrangeTicks: 0,
       },
       `Returned to region ${GUARDIAN_CRAFTING_REGION_ID} after salmon portal recovery; waiting for salmon portal availability.`,
     );
@@ -4646,7 +4842,7 @@ async function runWaitAfterGuardianReturnClickTick(
       portalMiningArrivalDeadlineMs: 0,
       portalExitArrivalDeadlineMs: 0,
       portalExitClickDistancePx: null,
-      missingPortalMiningMagentaTicks: 0,
+      missingPortalMiningOrangeTicks: 0,
       missingPortalExitTicks: 0,
     }, nowMs);
   }
@@ -4881,7 +5077,7 @@ function runWaitAfterGreatGuardianClickTick(
     log(
       stepMessage(
         WORKFLOW_STEPS.FIND_CHARGED_CELL_DEPOSIT,
-        `Post-portal Great Guardian deposit verified: free-space ${currentState.inventoryFreeSlots} -> ${inventoryAfterClick.count}. Depositing charged cell before green guardian teleport. Inventory history=${formatInventoryHistory(verifiedState.inventoryHistory)}.`,
+        `Post-portal Great Guardian deposit verified: free-space ${currentState.inventoryFreeSlots} -> ${inventoryAfterClick.count}. Depositing charged cell before active guardian travel. Inventory history=${formatInventoryHistory(verifiedState.inventoryHistory)}.`,
       ),
     );
     return {
@@ -4953,20 +5149,22 @@ function runFindChargedCellDepositTick(
         log(
           stepMessage(
             WORKFLOW_STEPS.TRAVEL_TO_CHARGED_CELL_DEPOSIT,
-            `Charged-cell deposit retry could not find the purple marker after a failed deposit; clicked under the player cyan tile at (${clicked.x},${clicked.y}) local=(${playerTile.centerX},${playerTile.centerY}) bounds=(${playerTile.x},${playerTile.y})-(${playerTile.x + playerTile.width - 1},${playerTile.y + playerTile.height - 1}) pixels=${playerTile.pixelCount}. Checking inventory for ${CHARGED_CELL_DEPOSIT_PLAYER_TILE_VERIFY_TICKS} game tick(s).`,
+            `Charged-cell deposit retry could not find the purple marker after a failed deposit; clicked under the player cyan tile at (${clicked.x},${clicked.y}) local=(${playerTile.centerX},${playerTile.centerY}) bounds=(${playerTile.x},${playerTile.y})-(${playerTile.x + playerTile.width - 1},${playerTile.y + playerTile.height - 1}) pixels=${playerTile.pixelCount}. Waiting one bot tick before tapping '${CHARGED_CELL_TO_RUNE_CAMERA_KEY}' to turn the camera; checking inventory for ${CHARGED_CELL_DEPOSIT_PLAYER_TILE_VERIFY_TICKS} game tick(s).`,
           ),
         );
 
+        const cameraReadyAtMs = clickedAtMs + CHARGED_CELL_TO_RUNE_CAMERA_SETTLE_MS;
         return {
           ...currentState,
           currentFunction: "waitAfterChargedCellDepositClick",
           phase: "wait-after-charged-cell-deposit-click",
           chargedCellDepositArrivalDeadlineMs: clickedAtMs + CHARGED_CELL_DEPOSIT_PLAYER_TILE_VERIFY_TICKS * GAME_TICK_MS,
           chargedCellDepositClickDistancePx: 0,
+          chargedCellToRuneCameraReadyAtMs: cameraReadyAtMs,
           chargedCellDepositPlayerTileFallbackPending: false,
           missingChargedCellDepositTicks: 0,
           missingInventoryCountTicks: 0,
-          actionLockUntilMs: 0,
+          actionLockUntilMs: cameraReadyAtMs,
         };
       }
     }
@@ -4997,11 +5195,11 @@ function runFindChargedCellDepositTick(
     captureBounds,
   );
   const clickedAtMs = Date.now();
-  const cameraPrepared = tapKey(CHARGED_CELL_TO_RUNE_CAMERA_KEY);
+  const cameraReadyAtMs = clickedAtMs + CHARGED_CELL_TO_RUNE_CAMERA_SETTLE_MS;
   log(
     stepMessage(
       WORKFLOW_STEPS.TRAVEL_TO_CHARGED_CELL_DEPOSIT,
-      `Clicked center-right of charged cell deposit marker at (${clicked.x},${clicked.y}) local=(${chargedCellDepositClickPoint.centerX},${chargedCellDepositClickPoint.centerY}) bounds=(${chargedCellDeposit.minX},${chargedCellDeposit.minY})-(${chargedCellDeposit.maxX},${chargedCellDeposit.maxY}) pixels=${chargedCellDeposit.pixelCount}; ${cameraPrepared ? `tapped '${CHARGED_CELL_TO_RUNE_CAMERA_KEY}'` : `could not tap '${CHARGED_CELL_TO_RUNE_CAMERA_KEY}'`} to prepare rune deposit camera; checking inventory until travel deadline (${formatTravelEstimate(travel)}).`,
+      `Clicked center-right of charged cell deposit marker at (${clicked.x},${clicked.y}) local=(${chargedCellDepositClickPoint.centerX},${chargedCellDepositClickPoint.centerY}) bounds=(${chargedCellDeposit.minX},${chargedCellDeposit.minY})-(${chargedCellDeposit.maxX},${chargedCellDeposit.maxY}) pixels=${chargedCellDeposit.pixelCount}; waiting one bot tick before tapping '${CHARGED_CELL_TO_RUNE_CAMERA_KEY}' to turn the camera; checking inventory until travel deadline (${formatTravelEstimate(travel)}).`,
     ),
   );
 
@@ -5011,10 +5209,11 @@ function runFindChargedCellDepositTick(
     phase: "wait-after-charged-cell-deposit-click",
     chargedCellDepositArrivalDeadlineMs: clickedAtMs + travel.waitTicks * GAME_TICK_MS,
     chargedCellDepositClickDistancePx: travel.distancePx,
+    chargedCellToRuneCameraReadyAtMs: cameraReadyAtMs,
     chargedCellDepositPlayerTileFallbackPending: false,
     missingChargedCellDepositTicks: 0,
     missingInventoryCountTicks: 0,
-    actionLockUntilMs: 0,
+    actionLockUntilMs: cameraReadyAtMs,
   };
 }
 
@@ -5026,6 +5225,29 @@ function runWaitAfterChargedCellDepositClickTick(
 ): BotState {
   if (nowMs < state.actionLockUntilMs) {
     return state;
+  }
+
+  if (state.chargedCellToRuneCameraReadyAtMs > 0) {
+    if (nowMs < state.chargedCellToRuneCameraReadyAtMs) {
+      return {
+        ...state,
+        actionLockUntilMs: state.chargedCellToRuneCameraReadyAtMs,
+      };
+    }
+
+    const cameraPrepared = tapKey(CHARGED_CELL_TO_RUNE_CAMERA_KEY);
+    log(
+      stepMessage(
+        WORKFLOW_STEPS.TRAVEL_TO_CHARGED_CELL_DEPOSIT,
+        `${cameraPrepared ? `Tapped '${CHARGED_CELL_TO_RUNE_CAMERA_KEY}'` : `Could not tap '${CHARGED_CELL_TO_RUNE_CAMERA_KEY}'`} to turn the camera after waiting one bot tick from the charged-cell deposit click.`,
+      ),
+    );
+
+    return {
+      ...state,
+      chargedCellToRuneCameraReadyAtMs: 0,
+      actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
+    };
   }
 
   const currentState = markOpenPortalAfterCurrentPostReturnAction(
@@ -5172,7 +5394,7 @@ function runWaitAfterChargedCellDepositClickTick(
         postPortalDepositResume: null,
         openPortalAfterCurrentPostReturnAction: false,
       },
-      `Post-portal charged cell deposit verified: free-space ${currentState.inventoryFreeSlots} -> ${inventoryAfterClick.count}. Searching for the green guardian outline. Inventory history=${formatInventoryHistory(verifiedState.inventoryHistory)}.`,
+      `Post-portal charged cell deposit verified: free-space ${currentState.inventoryFreeSlots} -> ${inventoryAfterClick.count}. Searching for the active guardian outline. Inventory history=${formatInventoryHistory(verifiedState.inventoryHistory)}.`,
     );
   }
 
@@ -5228,7 +5450,7 @@ function transitionAfterRuneDepositVerified(
       inventoryFreeSlots: afterFreeSlots,
       missingFinalPortalOpenIconTicks: 0,
       missingFinalPortalTicks: 0,
-      missingPortalMiningMagentaTicks: 0,
+      missingPortalMiningOrangeTicks: 0,
       missingPortalExitTicks: 0,
     },
     "rune-deposit",
@@ -5394,14 +5616,14 @@ async function runFindRuneDepositTick(
     );
   }
 
-  const runeDepositClickPoint = getBoundsBottomCenterPoint(freshRuneDeposit);
+  const runeDepositClickPoint = getBoundsCenterPoint(freshRuneDeposit);
   const travel = estimateTravelWaitTicks(freshPlayerAnchor, runeDepositClickPoint);
   const clicked = clickScreenPoint(captureBounds.x + runeDepositClickPoint.centerX, captureBounds.y + runeDepositClickPoint.centerY, captureBounds);
   const clickedAtMs = Date.now();
   log(
     stepMessage(
       WORKFLOW_STEPS.TRAVEL_TO_RUNE_DEPOSIT,
-      `Clicked bottom-center of rune deposit marker from just-in-time recapture at (${clicked.x},${clicked.y}) local=(${runeDepositClickPoint.centerX},${runeDepositClickPoint.centerY}) bounds=(${freshRuneDeposit.minX},${freshRuneDeposit.minY})-${freshRuneDeposit.maxX},${freshRuneDeposit.maxY} pixels=${freshRuneDeposit.pixelCount}; inventory free-space before deposit=${inventoryBeforeClick.count}; checking inventory until travel deadline (${formatTravelEstimate(travel)}).`,
+      `Clicked exact center of rune deposit marker from just-in-time recapture at (${clicked.x},${clicked.y}) local=(${runeDepositClickPoint.centerX},${runeDepositClickPoint.centerY}) bounds=(${freshRuneDeposit.minX},${freshRuneDeposit.minY})-${freshRuneDeposit.maxX},${freshRuneDeposit.maxY} pixels=${freshRuneDeposit.pixelCount}; inventory free-space before deposit=${inventoryBeforeClick.count}; checking inventory until travel deadline (${formatTravelEstimate(travel)}).`,
     ),
   );
 
@@ -5558,6 +5780,7 @@ function transitionToFinalPortalWaitState(state: BotState, reason: string): BotS
     portalMiningPouchesFilledThisCycle: false,
     finalPortalClickReadyAtMs: 0,
     finalPortalTeleportGraceDeadlineMs: 0,
+    portalMiningExitPortalMarkerCache: null,
     missingFinalPortalOpenIconTicks: 0,
     missingFinalPortalTicks: 0,
   };
@@ -5575,6 +5798,7 @@ function transitionToFinalPortalSearchState(state: BotState, nowMs: number, reas
     missingFinalPortalOpenIconTicks: 0,
     finalPortalClickReadyAtMs: 0,
     finalPortalTeleportGraceDeadlineMs: 0,
+    portalMiningExitPortalMarkerCache: null,
     missingFinalPortalTicks: 0,
     actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
   };
@@ -5663,12 +5887,13 @@ function runFindFinalPortalTick(
     };
   }
 
+  const finalPortalClickPoint = getSalmonPortalClickPoint(finalPortal);
   if (state.finalPortalClickReadyAtMs === 0) {
     const readyAtMs = nowMs + SALMON_PORTAL_PRE_CLICK_SETTLE_TICKS * GAME_TICK_MS;
     log(
       stepMessage(
         WORKFLOW_STEPS.FIND_FINAL_PORTAL,
-        `${GUARDIAN_OF_THE_RIFT_PORTAL_MARKER_COLOR_HEX} salmon portal marker found at local=(${finalPortal.centerX},${finalPortal.centerY}); waiting ${SALMON_PORTAL_PRE_CLICK_SETTLE_TICKS} game tick(s) before clicking.`,
+        `${GUARDIAN_OF_THE_RIFT_PORTAL_MARKER_COLOR_HEX} salmon portal marker found at center-left=(${finalPortalClickPoint.centerX},${finalPortalClickPoint.centerY}); waiting ${SALMON_PORTAL_PRE_CLICK_SETTLE_TICKS} game tick(s) before clicking.`,
       ),
     );
 
@@ -5687,13 +5912,13 @@ function runFindFinalPortalTick(
     };
   }
 
-  const travel = estimateTravelWaitTicks(playerAnchor, finalPortal);
-  const clicked = clickScreenPoint(captureBounds.x + finalPortal.centerX, captureBounds.y + finalPortal.centerY, captureBounds);
+  const travel = estimateTravelWaitTicks(playerAnchor, finalPortalClickPoint);
+  const clicked = clickScreenPoint(captureBounds.x + finalPortalClickPoint.centerX, captureBounds.y + finalPortalClickPoint.centerY, captureBounds);
   const clickedAtMs = Date.now();
   log(
     stepMessage(
       WORKFLOW_STEPS.MOVE_TO_FINAL_PORTAL,
-      `Clicked ${GUARDIAN_OF_THE_RIFT_PORTAL_MARKER_COLOR_HEX} portal marker at (${clicked.x},${clicked.y}) local=(${finalPortal.centerX},${finalPortal.centerY}) bounds=(${finalPortal.minX},${finalPortal.minY})-${finalPortal.maxX},${finalPortal.maxY} pixels=${finalPortal.pixelCount}; waiting before checking the magenta mining marker (${formatTravelEstimate(travel)}).`,
+      `Clicked center-left of ${GUARDIAN_OF_THE_RIFT_PORTAL_MARKER_COLOR_HEX} portal marker at (${clicked.x},${clicked.y}) local=(${finalPortalClickPoint.centerX},${finalPortalClickPoint.centerY}) bounds=(${finalPortal.minX},${finalPortal.minY})-${finalPortal.maxX},${finalPortal.maxY} pixels=${finalPortal.pixelCount}; waiting before checking the orange mining marker (${formatTravelEstimate(travel)}).`,
     ),
   );
 
@@ -5776,7 +6001,7 @@ function clickPortalMiningMarker(
   log(
     stepMessage(
       WORKFLOW_STEPS.TRAVEL_TO_PORTAL_MINING,
-      `${reason}; clicked ${PORTAL_MINING_MARKER_COLOR_HEX} mining marker at (${clicked.x},${clicked.y}) local=(${miningTarget.centerX},${miningTarget.centerY}) bounds=(${miningTarget.minX},${miningTarget.minY})-(${miningTarget.maxX},${miningTarget.maxY}) pixels=${miningTarget.pixelCount}; tile=${formatGuardianCoordinateLocation(location)}; waiting before monitoring inventory (${formatTravelEstimate(travel)}).`,
+      `${reason}; clicked ${PORTAL_MINING_MARKER_COLOR_HEX} orange mining marker at (${clicked.x},${clicked.y}) local=(${miningTarget.centerX},${miningTarget.centerY}) bounds=(${miningTarget.minX},${miningTarget.minY})-(${miningTarget.maxX},${miningTarget.maxY}) pixels=${miningTarget.pixelCount}; tile=${formatGuardianCoordinateLocation(location)}; waiting before monitoring inventory (${formatTravelEstimate(travel)}).`,
     ),
   );
 
@@ -5788,7 +6013,8 @@ function clickPortalMiningMarker(
     finalPortalTeleportGraceDeadlineMs: 0,
     finalPortalClickDistancePx: null,
     portalMiningArrivalDeadlineMs: clickedAtMs + travel.waitTicks * GAME_TICK_MS,
-    missingPortalMiningMagentaTicks: 0,
+    portalMiningExitPortalMarkerCache: null,
+    missingPortalMiningOrangeTicks: 0,
     missingInventoryCountTicks: 0,
     inventoryFreeSlots: null,
     craftingInventoryChangeDeadlineMs: 0,
@@ -5805,7 +6031,7 @@ function transitionToFinalPortalArrivalRecoveryState(state: BotState, nowMs: num
     phase: "recover-final-portal-arrival",
     finalPortalArrivalDeadlineMs: 0,
     finalPortalTeleportGraceDeadlineMs: 0,
-    missingPortalMiningMagentaTicks: 0,
+    missingPortalMiningOrangeTicks: 0,
     actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
   };
 }
@@ -5830,7 +6056,7 @@ function runWaitAfterFinalPortalClickTick(
     return transitionToFinalPortalArrivalRecoveryState(
       state,
       nowMs,
-      `Salmon portal travel read outside region ${GUARDIAN_CRAFTING_REGION_ID}: tile=${formatGuardianCoordinateLocation(location)} region=${location.regionId} chunk=${location.chunkId} raw='${location.matchedLine}'. Entering salmon-arrival recovery instead of red-portal recovery; each rotation will check for tile ${FINAL_PORTAL_MINING_TILE_X},${FINAL_PORTAL_MINING_TILE_Y} and the ${PORTAL_MINING_MARKER_COLOR_HEX} mining marker.`,
+      `Salmon portal travel read outside region ${GUARDIAN_CRAFTING_REGION_ID}: tile=${formatGuardianCoordinateLocation(location)} region=${location.regionId} chunk=${location.chunkId} raw='${location.matchedLine}'. Entering salmon-arrival recovery instead of red-portal recovery; each rotation will check for tile ${FINAL_PORTAL_MINING_TILE_X},${FINAL_PORTAL_MINING_TILE_Y} and the ${PORTAL_MINING_MARKER_COLOR_HEX} orange mining marker.`,
     );
   }
 
@@ -5842,12 +6068,13 @@ function runWaitAfterFinalPortalClickTick(
     const retryPortal = pickNearestGuardianOfTheRiftPortalMarker(portalCandidates, playerAnchor);
 
     if (retryPortal) {
+      const retryPortalClickPoint = getSalmonPortalClickPoint(retryPortal);
       if (state.finalPortalClickReadyAtMs === 0) {
         const readyAtMs = nowMs + SALMON_PORTAL_PRE_CLICK_SETTLE_TICKS * GAME_TICK_MS;
         log(
           stepMessage(
             WORKFLOW_STEPS.MOVE_TO_FINAL_PORTAL,
-            `Salmon portal arrival tile ${FINAL_PORTAL_MINING_TILE_X},${FINAL_PORTAL_MINING_TILE_Y} is not confirmed yet; ${GUARDIAN_OF_THE_RIFT_PORTAL_MARKER_COLOR_HEX} retry portal marker is visible at local=(${retryPortal.centerX},${retryPortal.centerY}). Waiting ${SALMON_PORTAL_PRE_CLICK_SETTLE_TICKS} game tick(s) before re-clicking.`,
+            `Salmon portal arrival tile ${FINAL_PORTAL_MINING_TILE_X},${FINAL_PORTAL_MINING_TILE_Y} is not confirmed yet; ${GUARDIAN_OF_THE_RIFT_PORTAL_MARKER_COLOR_HEX} retry portal marker is visible at center-left=(${retryPortalClickPoint.centerX},${retryPortalClickPoint.centerY}). Waiting ${SALMON_PORTAL_PRE_CLICK_SETTLE_TICKS} game tick(s) before re-clicking.`,
           ),
         );
 
@@ -5865,13 +6092,13 @@ function runWaitAfterFinalPortalClickTick(
         };
       }
 
-      const travel = estimateTravelWaitTicks(playerAnchor, retryPortal);
-      const clicked = clickScreenPoint(captureBounds.x + retryPortal.centerX, captureBounds.y + retryPortal.centerY, captureBounds);
+      const travel = estimateTravelWaitTicks(playerAnchor, retryPortalClickPoint);
+      const clicked = clickScreenPoint(captureBounds.x + retryPortalClickPoint.centerX, captureBounds.y + retryPortalClickPoint.centerY, captureBounds);
       const clickedAtMs = Date.now();
       log(
         stepMessage(
           WORKFLOW_STEPS.MOVE_TO_FINAL_PORTAL,
-          `Salmon portal arrival tile ${FINAL_PORTAL_MINING_TILE_X},${FINAL_PORTAL_MINING_TILE_Y} is not confirmed yet (current tile=${formatGuardianCoordinateLocation(location)} raw='${location?.matchedLine ?? "unreadable"}'); re-clicked ${GUARDIAN_OF_THE_RIFT_PORTAL_MARKER_COLOR_HEX} portal marker at (${clicked.x},${clicked.y}) local=(${retryPortal.centerX},${retryPortal.centerY}) bounds=(${retryPortal.minX},${retryPortal.minY})-${retryPortal.maxX},${retryPortal.maxY} pixels=${retryPortal.pixelCount}; waiting again before checking the magenta mining marker (${formatTravelEstimate(travel)}).`,
+          `Salmon portal arrival tile ${FINAL_PORTAL_MINING_TILE_X},${FINAL_PORTAL_MINING_TILE_Y} is not confirmed yet (current tile=${formatGuardianCoordinateLocation(location)} raw='${location?.matchedLine ?? "unreadable"}'); re-clicked center-left of ${GUARDIAN_OF_THE_RIFT_PORTAL_MARKER_COLOR_HEX} portal marker at (${clicked.x},${clicked.y}) local=(${retryPortalClickPoint.centerX},${retryPortalClickPoint.centerY}) bounds=(${retryPortal.minX},${retryPortal.minY})-${retryPortal.maxX},${retryPortal.maxY} pixels=${retryPortal.pixelCount}; waiting again before checking the orange mining marker (${formatTravelEstimate(travel)}).`,
         ),
       );
 
@@ -5884,7 +6111,7 @@ function runWaitAfterFinalPortalClickTick(
         finalPortalTeleportGraceDeadlineMs: 0,
         finalPortalClickDistancePx: travel.distancePx,
         missingFinalPortalTicks: 0,
-        missingPortalMiningMagentaTicks: 0,
+        missingPortalMiningOrangeTicks: 0,
         actionLockUntilMs: clickedAtMs + GUARDIAN_RETURN_CLICK_LOCK_TICKS * GAME_TICK_MS,
       };
     }
@@ -5894,13 +6121,13 @@ function runWaitAfterFinalPortalClickTick(
         state.finalPortalTeleportGraceDeadlineMs > 0
           ? state.finalPortalTeleportGraceDeadlineMs
           : nowMs + FINAL_PORTAL_TELEPORT_CONFIRM_GRACE_TICKS * GAME_TICK_MS;
-      const missingPortalMiningMagentaTicks = state.missingPortalMiningMagentaTicks + 1;
+      const missingPortalMiningOrangeTicks = state.missingPortalMiningOrangeTicks + 1;
 
       if (nowMs < graceDeadlineMs) {
-        if (state.finalPortalTeleportGraceDeadlineMs === 0 || missingPortalMiningMagentaTicks % 5 === 0) {
+        if (state.finalPortalTeleportGraceDeadlineMs === 0 || missingPortalMiningOrangeTicks % 5 === 0) {
           warn(
             stepMessage(
-              WORKFLOW_STEPS.CHECK_PORTAL_MINING_MAGENTA,
+              WORKFLOW_STEPS.CHECK_PORTAL_MINING_ORANGE,
               `Open-portal icon disappeared before arrival tile ${FINAL_PORTAL_MINING_TILE_X},${FINAL_PORTAL_MINING_TILE_Y} was confirmed; waiting ${Math.ceil((graceDeadlineMs - nowMs) / GAME_TICK_MS)} more game tick(s) for teleport/coordinate update. Current tile=${formatGuardianCoordinateLocation(location)}, ${formatMiningStatus(miningStatus)}.`,
             ),
           );
@@ -5909,7 +6136,7 @@ function runWaitAfterFinalPortalClickTick(
         return {
           ...state,
           finalPortalTeleportGraceDeadlineMs: graceDeadlineMs,
-          missingPortalMiningMagentaTicks,
+          missingPortalMiningOrangeTicks,
           actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
         };
       }
@@ -5921,12 +6148,12 @@ function runWaitAfterFinalPortalClickTick(
       );
     }
 
-    const missingPortalMiningMagentaTicks = state.missingPortalMiningMagentaTicks + 1;
-    if (missingPortalMiningMagentaTicks === 1 || missingPortalMiningMagentaTicks % 5 === 0) {
+    const missingPortalMiningOrangeTicks = state.missingPortalMiningOrangeTicks + 1;
+    if (missingPortalMiningOrangeTicks === 1 || missingPortalMiningOrangeTicks % 5 === 0) {
       warn(
         stepMessage(
-          WORKFLOW_STEPS.CHECK_PORTAL_MINING_MAGENTA,
-          `Waiting for salmon portal arrival tile ${FINAL_PORTAL_MINING_TILE_X},${FINAL_PORTAL_MINING_TILE_Y} before magenta search; current tile=${formatGuardianCoordinateLocation(location)} raw='${location?.matchedLine ?? "unreadable"}'.`,
+          WORKFLOW_STEPS.CHECK_PORTAL_MINING_ORANGE,
+          `Waiting for salmon portal arrival tile ${FINAL_PORTAL_MINING_TILE_X},${FINAL_PORTAL_MINING_TILE_Y} before orange mining marker search; current tile=${formatGuardianCoordinateLocation(location)} raw='${location?.matchedLine ?? "unreadable"}'.`,
         ),
       );
     }
@@ -5934,14 +6161,14 @@ function runWaitAfterFinalPortalClickTick(
     return {
       ...state,
       finalPortalTeleportGraceDeadlineMs: 0,
-      missingPortalMiningMagentaTicks,
+      missingPortalMiningOrangeTicks,
       actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
     };
   }
 
   const playerAnchor = getPlayerAnchor(tickCapture.bitmap);
-  const magentaObjects = detectAllPortalMiningMagentaObjects(tickCapture.bitmap, PORTAL_MINING_MAGENTA_MIN_PIXELS);
-  const miningTarget = pickNearestColoredMarker(magentaObjects, playerAnchor);
+  const orangeObjects = detectAllPortalMiningOrangeObjects(tickCapture.bitmap, PORTAL_MINING_ORANGE_MIN_PIXELS);
+  const miningTarget = pickNearestColoredMarker(orangeObjects, playerAnchor);
   if (miningTarget) {
     return clickPortalMiningMarker(
       state,
@@ -5949,25 +6176,25 @@ function runWaitAfterFinalPortalClickTick(
       playerAnchor,
       miningTarget,
       location,
-      `Portal arrival confirmed at tile ${formatGuardianCoordinateLocation(location)} and ${PORTAL_MINING_MARKER_COLOR_HEX} mining marker is visible`,
+      `Portal arrival confirmed at tile ${formatGuardianCoordinateLocation(location)} and ${PORTAL_MINING_MARKER_COLOR_HEX} orange mining marker is visible`,
     );
   }
 
   log(
     stepMessage(
-      WORKFLOW_STEPS.CHECK_PORTAL_MINING_MAGENTA,
-      `Portal travel wait complete at tile ${formatGuardianCoordinateLocation(location)}, but no clickable ${PORTAL_MINING_MARKER_COLOR_HEX} mining marker is visible yet. Candidates=${formatColoredMarkerCandidates(magentaObjects)}. Continuing marker search (distance=${state.finalPortalClickDistancePx === null ? "unknown" : `${Math.round(state.finalPortalClickDistancePx)}px`}).`,
+      WORKFLOW_STEPS.CHECK_PORTAL_MINING_ORANGE,
+      `Portal travel wait complete at tile ${formatGuardianCoordinateLocation(location)}, but no clickable ${PORTAL_MINING_MARKER_COLOR_HEX} orange mining marker is visible yet. Candidates=${formatColoredMarkerCandidates(orangeObjects)}. Continuing marker search (distance=${state.finalPortalClickDistancePx === null ? "unknown" : `${Math.round(state.finalPortalClickDistancePx)}px`}).`,
     ),
   );
 
   return {
     ...state,
-    currentFunction: "findPortalMiningMagenta",
-    phase: "find-portal-mining-magenta",
+    currentFunction: "findPortalMining",
+    phase: "find-portal-mining",
     finalPortalArrivalDeadlineMs: 0,
     finalPortalTeleportGraceDeadlineMs: 0,
     finalPortalClickDistancePx: null,
-    missingPortalMiningMagentaTicks: 0,
+    missingPortalMiningOrangeTicks: 0,
     actionLockUntilMs: 0,
   };
 }
@@ -5984,8 +6211,8 @@ function runRecoverFinalPortalArrivalTick(
 
   const location = readCoordinateOverlayLocation(tickCapture.bitmap, currentWindowsScalePercent);
   const playerAnchor = getPlayerAnchor(tickCapture.bitmap);
-  const magentaObjects = detectAllPortalMiningMagentaObjects(tickCapture.bitmap, PORTAL_MINING_MAGENTA_MIN_PIXELS);
-  const miningTarget = pickNearestColoredMarker(magentaObjects, playerAnchor);
+  const orangeObjects = detectAllPortalMiningOrangeObjects(tickCapture.bitmap, PORTAL_MINING_ORANGE_MIN_PIXELS);
+  const miningTarget = pickNearestColoredMarker(orangeObjects, playerAnchor);
   if (isAtFinalPortalMiningTile(location) && miningTarget) {
     return clickPortalMiningMarker(
       state,
@@ -5993,7 +6220,7 @@ function runRecoverFinalPortalArrivalTick(
       playerAnchor,
       miningTarget,
       location,
-      `Salmon-arrival recovery confirmed tile ${FINAL_PORTAL_MINING_TILE_X},${FINAL_PORTAL_MINING_TILE_Y} and ${PORTAL_MINING_MARKER_COLOR_HEX} mining marker`,
+      `Salmon-arrival recovery confirmed tile ${FINAL_PORTAL_MINING_TILE_X},${FINAL_PORTAL_MINING_TILE_Y} and ${PORTAL_MINING_MARKER_COLOR_HEX} orange mining marker`,
     );
   }
 
@@ -6014,7 +6241,8 @@ function runRecoverFinalPortalArrivalTick(
       finalPortalTeleportGraceDeadlineMs: 0,
       finalPortalClickDistancePx: null,
       portalMiningArrivalDeadlineMs: 0,
-      missingPortalMiningMagentaTicks: 0,
+      portalMiningExitPortalMarkerCache: null,
+      missingPortalMiningOrangeTicks: 0,
       missingInventoryCountTicks: 0,
       inventoryFreeSlots: null,
       craftingInventoryChangeDeadlineMs: 0,
@@ -6025,12 +6253,13 @@ function runRecoverFinalPortalArrivalTick(
   const portalCandidates = detectGuardianOfTheRiftPortalMarkersInScreenshot(tickCapture.bitmap);
   const retryPortal = pickNearestGuardianOfTheRiftPortalMarker(portalCandidates, playerAnchor);
   if (!isAtFinalPortalMiningTile(location) && retryPortal) {
+    const retryPortalClickPoint = getSalmonPortalClickPoint(retryPortal);
     if (state.finalPortalClickReadyAtMs === 0) {
       const readyAtMs = nowMs + SALMON_PORTAL_PRE_CLICK_SETTLE_TICKS * GAME_TICK_MS;
       log(
         stepMessage(
           WORKFLOW_STEPS.RECOVER_FINAL_PORTAL_ARRIVAL,
-          `Salmon-arrival recovery sees ${GUARDIAN_OF_THE_RIFT_PORTAL_MARKER_COLOR_HEX} retry portal marker at local=(${retryPortal.centerX},${retryPortal.centerY}); waiting ${SALMON_PORTAL_PRE_CLICK_SETTLE_TICKS} game tick(s) before re-clicking.`,
+          `Salmon-arrival recovery sees ${GUARDIAN_OF_THE_RIFT_PORTAL_MARKER_COLOR_HEX} retry portal marker at center-left=(${retryPortalClickPoint.centerX},${retryPortalClickPoint.centerY}); waiting ${SALMON_PORTAL_PRE_CLICK_SETTLE_TICKS} game tick(s) before re-clicking.`,
         ),
       );
 
@@ -6048,13 +6277,13 @@ function runRecoverFinalPortalArrivalTick(
       };
     }
 
-    const travel = estimateTravelWaitTicks(playerAnchor, retryPortal);
-    const clicked = clickScreenPoint(captureBounds.x + retryPortal.centerX, captureBounds.y + retryPortal.centerY, captureBounds);
+    const travel = estimateTravelWaitTicks(playerAnchor, retryPortalClickPoint);
+    const clicked = clickScreenPoint(captureBounds.x + retryPortalClickPoint.centerX, captureBounds.y + retryPortalClickPoint.centerY, captureBounds);
     const clickedAtMs = Date.now();
     log(
       stepMessage(
         WORKFLOW_STEPS.MOVE_TO_FINAL_PORTAL,
-        `Salmon-arrival recovery did not confirm tile ${FINAL_PORTAL_MINING_TILE_X},${FINAL_PORTAL_MINING_TILE_Y} yet (current tile=${formatGuardianCoordinateLocation(location)} raw='${location?.matchedLine ?? "unreadable"}'); re-clicked ${GUARDIAN_OF_THE_RIFT_PORTAL_MARKER_COLOR_HEX} portal marker at (${clicked.x},${clicked.y}) local=(${retryPortal.centerX},${retryPortal.centerY}) bounds=(${retryPortal.minX},${retryPortal.minY})-${retryPortal.maxX},${retryPortal.maxY} pixels=${retryPortal.pixelCount}; waiting again before recovery checks (${formatTravelEstimate(travel)}).`,
+        `Salmon-arrival recovery did not confirm tile ${FINAL_PORTAL_MINING_TILE_X},${FINAL_PORTAL_MINING_TILE_Y} yet (current tile=${formatGuardianCoordinateLocation(location)} raw='${location?.matchedLine ?? "unreadable"}'); re-clicked center-left of ${GUARDIAN_OF_THE_RIFT_PORTAL_MARKER_COLOR_HEX} portal marker at (${clicked.x},${clicked.y}) local=(${retryPortalClickPoint.centerX},${retryPortalClickPoint.centerY}) bounds=(${retryPortal.minX},${retryPortal.minY})-${retryPortal.maxX},${retryPortal.maxY} pixels=${retryPortal.pixelCount}; waiting again before recovery checks (${formatTravelEstimate(travel)}).`,
       ),
     );
 
@@ -6067,30 +6296,30 @@ function runRecoverFinalPortalArrivalTick(
       finalPortalTeleportGraceDeadlineMs: 0,
       finalPortalClickDistancePx: travel.distancePx,
       missingFinalPortalTicks: 0,
-      missingPortalMiningMagentaTicks: 0,
+      missingPortalMiningOrangeTicks: 0,
       actionLockUntilMs: clickedAtMs + GUARDIAN_RETURN_CLICK_LOCK_TICKS * GAME_TICK_MS,
     };
   }
 
-  const missingPortalMiningMagentaTicks = state.missingPortalMiningMagentaTicks + 1;
+  const missingPortalMiningOrangeTicks = state.missingPortalMiningOrangeTicks + 1;
   const rotated = tapKey(GUARDIAN_SALMON_PORTAL_CAMERA_ROTATE_KEY);
-  if (missingPortalMiningMagentaTicks === 1 || missingPortalMiningMagentaTicks % 5 === 0) {
+  if (missingPortalMiningOrangeTicks === 1 || missingPortalMiningOrangeTicks % 5 === 0) {
     warn(
       stepMessage(
         WORKFLOW_STEPS.RECOVER_FINAL_PORTAL_ARRIVAL,
-        `Salmon-arrival recovery did not confirm both tile ${FINAL_PORTAL_MINING_TILE_X},${FINAL_PORTAL_MINING_TILE_Y} and ${PORTAL_MINING_MARKER_COLOR_HEX} mining marker yet; current tile=${formatGuardianCoordinateLocation(location)} region=${location?.regionId ?? "unknown"} chunk=${location?.chunkId ?? "unknown"} raw='${location?.matchedLine ?? "unreadable"}', miningCandidates=${formatColoredMarkerCandidates(magentaObjects)}, portalCandidates=${formatGuardianOfTheRiftPortalCandidates(portalCandidates)}, ${formatMiningStatus(miningStatus)}. ${rotated ? `Tapped '${GUARDIAN_SALMON_PORTAL_CAMERA_ROTATE_KEY}'` : `Could not tap '${GUARDIAN_SALMON_PORTAL_CAMERA_ROTATE_KEY}'`} before retry ${missingPortalMiningMagentaTicks}.`,
+        `Salmon-arrival recovery did not confirm both tile ${FINAL_PORTAL_MINING_TILE_X},${FINAL_PORTAL_MINING_TILE_Y} and ${PORTAL_MINING_MARKER_COLOR_HEX} orange mining marker yet; current tile=${formatGuardianCoordinateLocation(location)} region=${location?.regionId ?? "unknown"} chunk=${location?.chunkId ?? "unknown"} raw='${location?.matchedLine ?? "unreadable"}', miningCandidates=${formatColoredMarkerCandidates(orangeObjects)}, portalCandidates=${formatGuardianOfTheRiftPortalCandidates(portalCandidates)}, ${formatMiningStatus(miningStatus)}. ${rotated ? `Tapped '${GUARDIAN_SALMON_PORTAL_CAMERA_ROTATE_KEY}'` : `Could not tap '${GUARDIAN_SALMON_PORTAL_CAMERA_ROTATE_KEY}'`} before retry ${missingPortalMiningOrangeTicks}.`,
       ),
     );
   }
 
   return {
     ...state,
-    missingPortalMiningMagentaTicks,
+    missingPortalMiningOrangeTicks,
     actionLockUntilMs: nowMs + GUARDIAN_SALMON_PORTAL_CAMERA_ROTATE_LOCK_TICKS * GAME_TICK_MS,
   };
 }
 
-function runFindPortalMiningMagentaTick(
+function runFindPortalMiningTick(
   state: BotState,
   nowMs: number,
   tickCapture: TickCapture,
@@ -6101,22 +6330,22 @@ function runFindPortalMiningMagentaTick(
   }
 
   const playerAnchor = getPlayerAnchor(tickCapture.bitmap);
-  const magentaObjects = detectAllPortalMiningMagentaObjects(tickCapture.bitmap, PORTAL_MINING_MAGENTA_MIN_PIXELS);
-  const miningTarget = pickNearestColoredMarker(magentaObjects, playerAnchor);
+  const orangeObjects = detectAllPortalMiningOrangeObjects(tickCapture.bitmap, PORTAL_MINING_ORANGE_MIN_PIXELS);
+  const miningTarget = pickNearestColoredMarker(orangeObjects, playerAnchor);
   if (!miningTarget) {
-    const missingPortalMiningMagentaTicks = state.missingPortalMiningMagentaTicks + 1;
-    if (missingPortalMiningMagentaTicks === 1 || missingPortalMiningMagentaTicks % 5 === 0) {
+    const missingPortalMiningOrangeTicks = state.missingPortalMiningOrangeTicks + 1;
+    if (missingPortalMiningOrangeTicks === 1 || missingPortalMiningOrangeTicks % 5 === 0) {
       warn(
         stepMessage(
-          WORKFLOW_STEPS.CHECK_PORTAL_MINING_MAGENTA,
-          `No clickable ${PORTAL_MINING_MARKER_COLOR_HEX} mining marker found yet. Candidates=${formatColoredMarkerCandidates(magentaObjects)}.`,
+          WORKFLOW_STEPS.CHECK_PORTAL_MINING_ORANGE,
+          `No clickable ${PORTAL_MINING_MARKER_COLOR_HEX} orange mining marker found yet. Candidates=${formatColoredMarkerCandidates(orangeObjects)}.`,
         ),
       );
     }
 
     return {
       ...state,
-      missingPortalMiningMagentaTicks,
+      missingPortalMiningOrangeTicks,
       actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
     };
   }
@@ -6127,7 +6356,7 @@ function runFindPortalMiningMagentaTick(
   log(
     stepMessage(
       WORKFLOW_STEPS.TRAVEL_TO_PORTAL_MINING,
-      `Clicked ${PORTAL_MINING_MARKER_COLOR_HEX} mining marker at (${clicked.x},${clicked.y}) local=(${miningTarget.centerX},${miningTarget.centerY}) bounds=(${miningTarget.minX},${miningTarget.minY})-(${miningTarget.maxX},${miningTarget.maxY}) pixels=${miningTarget.pixelCount}; waiting before monitoring inventory (${formatTravelEstimate(travel)}).`,
+      `Clicked ${PORTAL_MINING_MARKER_COLOR_HEX} orange mining marker at (${clicked.x},${clicked.y}) local=(${miningTarget.centerX},${miningTarget.centerY}) bounds=(${miningTarget.minX},${miningTarget.minY})-(${miningTarget.maxX},${miningTarget.maxY}) pixels=${miningTarget.pixelCount}; waiting before monitoring inventory (${formatTravelEstimate(travel)}).`,
     ),
   );
 
@@ -6136,7 +6365,7 @@ function runFindPortalMiningMagentaTick(
     currentFunction: "portalMining",
     phase: "portal-mining",
     portalMiningArrivalDeadlineMs: clickedAtMs + travel.waitTicks * GAME_TICK_MS,
-    missingPortalMiningMagentaTicks: 0,
+    missingPortalMiningOrangeTicks: 0,
     missingInventoryCountTicks: 0,
     inventoryFreeSlots: null,
     craftingInventoryChangeDeadlineMs: 0,
@@ -6158,11 +6387,12 @@ function runPortalMiningTick(
     return state;
   }
 
+  const currentState = rememberPortalMiningExitPortalMarker(state, nowMs, tickCapture.bitmap);
   const inventory = detectInventoryCount(tickCapture.bitmap);
   if (inventory.count === null) {
-    const missingInventoryCountTicks = state.missingInventoryCountTicks + 1;
+    const missingInventoryCountTicks = currentState.missingInventoryCountTicks + 1;
     if (missingInventoryCountTicks === 1 || missingInventoryCountTicks % 10 === 0) {
-      const debugPath = `test-image-debug/guardian-portal-mining-inventory-${state.loopIndex}.png`;
+      const debugPath = `test-image-debug/guardian-portal-mining-inventory-${currentState.loopIndex}.png`;
       saveBitmapWithInventoryCountDebug(tickCapture.bitmap, inventory, debugPath);
       warn(
         stepMessage(
@@ -6173,32 +6403,32 @@ function runPortalMiningTick(
     }
 
     return {
-      ...state,
+      ...currentState,
       missingInventoryCountTicks,
       actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
     };
   }
 
   if (inventory.count === 0) {
-    const rememberedPouches = getRememberedPouchLocations(state);
-    if (!state.portalMiningPouchesFilledThisCycle && rememberedPouches.length > 0) {
+    const rememberedPouches = getRememberedPouchLocations(currentState);
+    if (!currentState.portalMiningPouchesFilledThisCycle && rememberedPouches.length > 0) {
       setAutomateBotCurrentStep(STEP_FILL_POUCHES_ID);
       log(
         stepMessage(
           WORKFLOW_STEPS.FILL_POUCHES_AFTER_PORTAL_MINING_FULL,
-          `Inventory is full after portal mining and ${rememberedPouches.length} remembered pouch(es) are available; filling pouches one per game tick before reclicking the magenta mining marker.`,
+          `Inventory is full after portal mining and ${rememberedPouches.length} remembered pouch(es) are available; filling pouches one per game tick before reclicking the orange mining marker.`,
         ),
       );
 
       return {
-        ...state,
+        ...currentState,
         currentFunction: "fillPouchesAfterPortalMiningFull",
         phase: "fill-pouches-after-portal-mining-full",
         pouchClickQueue: rememberedPouches,
         pouchClickIndex: 0,
         inventoryFreeSlots: inventory.count,
         missingInventoryCountTicks: 0,
-        missingPortalMiningMagentaTicks: 0,
+        missingPortalMiningOrangeTicks: 0,
         craftingInventoryChangeDeadlineMs: 0,
         portalMiningPouchesFilledThisCycle: true,
         actionLockUntilMs: 0,
@@ -6207,7 +6437,7 @@ function runPortalMiningTick(
 
     log(stepMessage(WORKFLOW_STEPS.PORTAL_MINE_UNTIL_FULL, "Inventory is full after portal mining; finding exit portal."));
     return {
-      ...state,
+      ...currentState,
       currentFunction: "findPortalExit",
       phase: "find-portal-exit",
       inventoryFreeSlots: inventory.count,
@@ -6218,15 +6448,15 @@ function runPortalMiningTick(
     };
   }
 
-  if (state.inventoryFreeSlots === null || inventory.count !== state.inventoryFreeSlots) {
+  if (currentState.inventoryFreeSlots === null || inventory.count !== currentState.inventoryFreeSlots) {
     log(
       stepMessage(
         WORKFLOW_STEPS.PORTAL_MINE_UNTIL_FULL,
-        `Portal mining inventory free-space ${state.inventoryFreeSlots === null ? "initialized" : "changed"}: ${state.inventoryFreeSlots ?? "unknown"} -> ${inventory.count}.`,
+        `Portal mining inventory free-space ${currentState.inventoryFreeSlots === null ? "initialized" : "changed"}: ${currentState.inventoryFreeSlots ?? "unknown"} -> ${inventory.count}.`,
       ),
     );
     return {
-      ...state,
+      ...currentState,
       inventoryFreeSlots: inventory.count,
       missingInventoryCountTicks: 0,
       craftingInventoryChangeDeadlineMs: nowMs + PORTAL_MINING_INVENTORY_CHANGE_CHECK_TICKS * GAME_TICK_MS,
@@ -6234,27 +6464,27 @@ function runPortalMiningTick(
     };
   }
 
-  if (state.craftingInventoryChangeDeadlineMs > 0 && nowMs >= state.craftingInventoryChangeDeadlineMs) {
+  if (currentState.craftingInventoryChangeDeadlineMs > 0 && nowMs >= currentState.craftingInventoryChangeDeadlineMs) {
     warn(
       stepMessage(
         WORKFLOW_STEPS.PORTAL_MINE_UNTIL_FULL,
-        `Inventory free-space stayed at ${inventory.count} for ${PORTAL_MINING_INVENTORY_CHANGE_CHECK_TICKS} tick(s); checking magenta mining marker again.`,
+        `Inventory free-space stayed at ${inventory.count} for ${PORTAL_MINING_INVENTORY_CHANGE_CHECK_TICKS} tick(s); checking orange mining marker again.`,
       ),
     );
     return {
-      ...state,
-      currentFunction: "findPortalMiningMagenta",
-      phase: "find-portal-mining-magenta",
+      ...currentState,
+      currentFunction: "findPortalMining",
+      phase: "find-portal-mining",
       inventoryFreeSlots: inventory.count,
       missingInventoryCountTicks: 0,
-      missingPortalMiningMagentaTicks: 0,
+      missingPortalMiningOrangeTicks: 0,
       craftingInventoryChangeDeadlineMs: 0,
       actionLockUntilMs: 0,
     };
   }
 
   return {
-    ...state,
+    ...currentState,
     inventoryFreeSlots: inventory.count,
     missingInventoryCountTicks: 0,
     actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
@@ -6280,18 +6510,18 @@ function runFillPouchesAfterPortalMiningFullTick(
     log(
       stepMessage(
         WORKFLOW_STEPS.FILL_POUCHES_AFTER_PORTAL_MINING_FULL,
-        `Finished filling ${filledPouchCount} remembered pouch(es); waiting one game tick before returning to magenta mining marker search to reclick mining.`,
+        `Finished filling ${filledPouchCount} remembered pouch(es); waiting one game tick before returning to orange mining marker search to reclick mining.`,
       ),
     );
 
     return {
       ...nextState,
       ...resetPouchClickQueue(),
-      currentFunction: "findPortalMiningMagenta",
-      phase: "find-portal-mining-magenta",
+      currentFunction: "findPortalMining",
+      phase: "find-portal-mining",
       inventoryFreeSlots: null,
       missingInventoryCountTicks: 0,
-      missingPortalMiningMagentaTicks: 0,
+      missingPortalMiningOrangeTicks: 0,
       craftingInventoryChangeDeadlineMs: 0,
       actionLockUntilMs: nowMs + POUCH_POST_SEQUENCE_SETTLE_MS,
     };
@@ -6300,20 +6530,52 @@ function runFillPouchesAfterPortalMiningFullTick(
   log(
     stepMessage(
       WORKFLOW_STEPS.FILL_POUCHES_AFTER_PORTAL_MINING_FULL,
-      `Finished filling ${state.pouchClickQueue.length} remembered pouch(es); returning to magenta mining marker search to reclick mining.`,
+      `Finished filling ${state.pouchClickQueue.length} remembered pouch(es); returning to orange mining marker search to reclick mining.`,
     ),
   );
 
   return {
     ...state,
     ...resetPouchClickQueue(),
-    currentFunction: "findPortalMiningMagenta",
-    phase: "find-portal-mining-magenta",
+    currentFunction: "findPortalMining",
+    phase: "find-portal-mining",
     inventoryFreeSlots: null,
     missingInventoryCountTicks: 0,
-    missingPortalMiningMagentaTicks: 0,
+    missingPortalMiningOrangeTicks: 0,
     craftingInventoryChangeDeadlineMs: 0,
     actionLockUntilMs: 0,
+  };
+}
+
+function clickPortalExitMarker(
+  state: BotState,
+  nowMs: number,
+  captureBounds: ScreenCaptureBounds,
+  playerAnchor: { centerX: number; centerY: number },
+  exitPortal: GuardianOfTheRiftPortalMarkerDetection,
+  markerSource: string,
+): BotState {
+  const exitPortalClickPoint = getSalmonPortalClickPoint(exitPortal);
+  const travel = estimateTravelWaitTicks(playerAnchor, exitPortalClickPoint);
+  const clicked = clickScreenPoint(captureBounds.x + exitPortalClickPoint.centerX, captureBounds.y + exitPortalClickPoint.centerY, captureBounds);
+  const clickedAtMs = Date.now();
+  log(
+    stepMessage(
+      WORKFLOW_STEPS.FIND_PORTAL_EXIT,
+      `Clicked center-left of ${markerSource} ${GUARDIAN_OF_THE_RIFT_PORTAL_MARKER_COLOR_HEX} portal marker at (${clicked.x},${clicked.y}) local=(${exitPortalClickPoint.centerX},${exitPortalClickPoint.centerY}) bounds=(${exitPortal.minX},${exitPortal.minY})-${exitPortal.maxX},${exitPortal.maxY} pixels=${exitPortal.pixelCount}; waiting to return before repeating guardian click (${formatTravelEstimate(travel)}).`,
+    ),
+  );
+
+  return {
+    ...state,
+    currentFunction: "waitAfterPortalExitClick",
+    phase: "wait-after-portal-exit-click",
+    portalMiningExitPortalMarkerCache: null,
+    portalExitClickReadyAtMs: 0,
+    portalExitArrivalDeadlineMs: clickedAtMs + travel.waitTicks * GAME_TICK_MS,
+    portalExitClickDistancePx: travel.distancePx,
+    missingPortalExitTicks: 0,
+    actionLockUntilMs: clickedAtMs + GUARDIAN_RETURN_CLICK_LOCK_TICKS * GAME_TICK_MS,
   };
 }
 
@@ -6348,6 +6610,30 @@ function runFindPortalExitTick(
   }
 
   const playerAnchor = getPlayerAnchor(tickCapture.bitmap);
+  const cachedExitPortal = state.portalMiningExitPortalMarkerCache;
+  if (cachedExitPortal) {
+    const cachedExitPortalClickPoint = getSalmonPortalClickPoint(cachedExitPortal.marker);
+    const readyAtMs = cachedExitPortal.firstSeenAtMs + SALMON_PORTAL_PRE_CLICK_SETTLE_TICKS * GAME_TICK_MS;
+    if (nowMs < readyAtMs) {
+      if (state.portalExitClickReadyAtMs === 0) {
+        log(
+          stepMessage(
+            WORKFLOW_STEPS.FIND_PORTAL_EXIT,
+            `${GUARDIAN_OF_THE_RIFT_PORTAL_MARKER_COLOR_HEX} cached salmon exit portal was seen during portal mining at center-left=(${cachedExitPortalClickPoint.centerX},${cachedExitPortalClickPoint.centerY}); waiting ${Math.max(1, Math.ceil((readyAtMs - nowMs) / GAME_TICK_MS))} game tick(s) before clicking.`,
+          ),
+        );
+      }
+
+      return {
+        ...state,
+        portalExitClickReadyAtMs: readyAtMs,
+        actionLockUntilMs: readyAtMs,
+      };
+    }
+
+    return clickPortalExitMarker(state, nowMs, captureBounds, playerAnchor, cachedExitPortal.marker, "cached");
+  }
+
   const portalCandidates = detectGuardianOfTheRiftPortalMarkersInScreenshot(tickCapture.bitmap);
   const exitPortal = pickNearestGuardianOfTheRiftPortalMarker(portalCandidates, playerAnchor);
   if (!exitPortal) {
@@ -6360,17 +6646,20 @@ function runFindPortalExitTick(
     return transitionToPostPortalDepositResumeState(state, nowMs);
   }
 
+  const exitPortalClickPoint = getSalmonPortalClickPoint(exitPortal);
+  const portalExitCache = updateCachedMarker(null, exitPortal, nowMs, state.loopIndex);
   if (state.portalExitClickReadyAtMs === 0) {
-    const readyAtMs = nowMs + SALMON_PORTAL_PRE_CLICK_SETTLE_TICKS * GAME_TICK_MS;
+    const readyAtMs = portalExitCache.firstSeenAtMs + SALMON_PORTAL_PRE_CLICK_SETTLE_TICKS * GAME_TICK_MS;
     log(
       stepMessage(
         WORKFLOW_STEPS.FIND_PORTAL_EXIT,
-        `${GUARDIAN_OF_THE_RIFT_PORTAL_MARKER_COLOR_HEX} salmon exit portal marker found at local=(${exitPortal.centerX},${exitPortal.centerY}); waiting ${SALMON_PORTAL_PRE_CLICK_SETTLE_TICKS} game tick(s) before clicking.`,
+        `${GUARDIAN_OF_THE_RIFT_PORTAL_MARKER_COLOR_HEX} salmon exit portal marker found at center-left=(${exitPortalClickPoint.centerX},${exitPortalClickPoint.centerY}); waiting ${SALMON_PORTAL_PRE_CLICK_SETTLE_TICKS} game tick(s) before clicking.`,
       ),
     );
 
     return {
       ...state,
+      portalMiningExitPortalMarkerCache: portalExitCache,
       portalExitClickReadyAtMs: readyAtMs,
       missingPortalExitTicks: 0,
       actionLockUntilMs: readyAtMs,
@@ -6380,30 +6669,22 @@ function runFindPortalExitTick(
   if (nowMs < state.portalExitClickReadyAtMs) {
     return {
       ...state,
+      portalMiningExitPortalMarkerCache: portalExitCache,
       actionLockUntilMs: state.portalExitClickReadyAtMs,
     };
   }
 
-  const travel = estimateTravelWaitTicks(playerAnchor, exitPortal);
-  const clicked = clickScreenPoint(captureBounds.x + exitPortal.centerX, captureBounds.y + exitPortal.centerY, captureBounds);
-  const clickedAtMs = Date.now();
-  log(
-    stepMessage(
-      WORKFLOW_STEPS.FIND_PORTAL_EXIT,
-      `Clicked ${GUARDIAN_OF_THE_RIFT_PORTAL_MARKER_COLOR_HEX} portal marker at (${clicked.x},${clicked.y}) local=(${exitPortal.centerX},${exitPortal.centerY}) bounds=(${exitPortal.minX},${exitPortal.minY})-${exitPortal.maxX},${exitPortal.maxY} pixels=${exitPortal.pixelCount}; waiting to return before repeating guardian click (${formatTravelEstimate(travel)}).`,
-    ),
+  return clickPortalExitMarker(
+    {
+      ...state,
+      portalMiningExitPortalMarkerCache: portalExitCache,
+    },
+    nowMs,
+    captureBounds,
+    playerAnchor,
+    exitPortal,
+    "fresh",
   );
-
-  return {
-    ...state,
-    currentFunction: "waitAfterPortalExitClick",
-    phase: "wait-after-portal-exit-click",
-    portalExitClickReadyAtMs: 0,
-    portalExitArrivalDeadlineMs: clickedAtMs + travel.waitTicks * GAME_TICK_MS,
-    portalExitClickDistancePx: travel.distancePx,
-    missingPortalExitTicks: 0,
-    actionLockUntilMs: clickedAtMs + GUARDIAN_RETURN_CLICK_LOCK_TICKS * GAME_TICK_MS,
-  };
 }
 
 function runWaitAfterPortalExitClickTick(state: BotState, nowMs: number, tickCapture: TickCapture): BotState {
@@ -6751,11 +7032,11 @@ async function runLoop(
             ? runRecoverFinalPortalArrivalTick(state, nowMs, tickCapture, captureBounds)
             : state;
         },
-        findPortalMiningMagenta: ({ state, nowMs, tickCapture }) => {
+        findPortalMining: ({ state, nowMs, tickCapture }) => {
           setCurrentLogLoopIndex(state.loopIndex);
           setCurrentLogPhase(state.phase);
-          return state.phase === "find-portal-mining-magenta"
-            ? runFindPortalMiningMagentaTick(state, nowMs, tickCapture, captureBounds)
+          return state.phase === "find-portal-mining"
+            ? runFindPortalMiningTick(state, nowMs, tickCapture, captureBounds)
             : state;
         },
         portalMining: ({ state, nowMs, tickCapture }) => {

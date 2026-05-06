@@ -157,6 +157,21 @@ describe("Guardian of the Rift panel detector", () => {
     expect(detection.pixelCount).toBeGreaterThan(20);
   });
 
+  test("detects reward points when the panel is moved away from the fixed ROI", async () => {
+    const screenshotPath = "test-images/runescrafting/guardian-of-the-rift/outlined/1598x1549-2k-125-1.png";
+    if (!fs.existsSync(screenshotPath)) {
+      return;
+    }
+
+    const bitmap = await loadPngBitmap(screenshotPath);
+    const rewardPoints = detectGuardianOfTheRiftRewardPoints(bitmap);
+
+    expect(rewardPoints.elementalPoints).toBe(0);
+    expect(rewardPoints.catalyticPoints).toBe(0);
+    expect(rewardPoints.rawText).toBe("0/0");
+    expect(rewardPoints.focus).toBe("balanced");
+  });
+
   test("classifies a red time-since-portal value when a screenshot is not available yet", () => {
     const bitmap = createBitmap(260, 520, { r: 28, g: 26, b: 24 });
     drawTimeValuePixels(bitmap, { r: 245, g: 35, b: 30 });

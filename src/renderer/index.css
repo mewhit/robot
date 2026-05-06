@@ -215,6 +215,110 @@
 
   .automatebot-log-line {
     @apply m-0 break-words text-slate-200;
+    border-left: 3px solid transparent;
+    border-radius: 3px;
+    padding: 1px 6px;
+  }
+
+  .automatebot-log-line-guardian-decision {
+    background: rgba(30, 41, 59, 0.72);
+  }
+
+  .automatebot-log-line-reward {
+    border-left-color: #06b6d4;
+  }
+
+  .automatebot-log-line-elemental-choice {
+    border-left-color: #22c55e;
+  }
+
+  .automatebot-log-line-catalytic-choice {
+    border-left-color: #4169e1;
+  }
+
+  .automatebot-log-line-click {
+    box-shadow: inset 0 0 0 1px rgba(20, 184, 166, 0.18);
+  }
+
+  .automatebot-log-line-blocked {
+    border-left-color: #f59e0b;
+  }
+
+  .automatebot-log-line-warn {
+    background: rgba(120, 53, 15, 0.45);
+    border-left-color: #f59e0b;
+    color: #fde68a;
+  }
+
+  .automatebot-log-line-error {
+    background: rgba(127, 29, 29, 0.55);
+    border-left-color: #ef4444;
+    color: #fecaca;
+  }
+
+  .automatebot-log-token {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 3px;
+    padding: 0 3px;
+    margin: 0 1px;
+    font-weight: 700;
+    line-height: 1.35;
+  }
+
+  .automatebot-log-token-key {
+    background: rgba(148, 163, 184, 0.16);
+    color: #e2e8f0;
+  }
+
+  .automatebot-log-token-elemental {
+    background: rgba(34, 197, 94, 0.16);
+    color: #bbf7d0;
+  }
+
+  .automatebot-log-token-catalytic {
+    background: rgba(65, 105, 225, 0.24);
+    color: #dbeafe;
+  }
+
+  .automatebot-log-token-warn {
+    background: rgba(245, 158, 11, 0.18);
+    color: #fde68a;
+  }
+
+  .automatebot-log-token-error {
+    background: rgba(239, 68, 68, 0.2);
+    color: #fecaca;
+  }
+
+  .automatebot-log-token-level {
+    color: #94a3b8;
+    opacity: 0.82;
+  }
+
+  .automatebot-log-color-token {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    border-radius: 3px;
+    padding: 0 3px;
+    margin: 0 1px;
+    background: rgba(15, 23, 42, 0.85);
+    box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.28);
+    font-weight: 700;
+    line-height: 1.35;
+  }
+
+  .automatebot-log-color-swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    border: 1px solid rgba(255, 255, 255, 0.7);
+    flex: 0 0 auto;
+  }
+
+  .automatebot-log-color-code {
+    color: #e2e8f0;
   }
 
   .debug-view {
