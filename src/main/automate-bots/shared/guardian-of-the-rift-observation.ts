@@ -11,7 +11,9 @@ import {
   type GuardianOfTheRiftUnchargedCellTemplate,
 } from "./guardian-of-the-rift-uncharged-cell-detector";
 import {
+  detectGuardianOfTheRiftRewardPoints,
   detectGuardianOfTheRiftTimeSincePortal,
+  type GuardianOfTheRiftRewardPointFocus,
   type GuardianOfTheRiftTimeSincePortalColor,
 } from "./guardian-of-the-rift-panel-detector";
 
@@ -22,7 +24,11 @@ export type GuardianOfTheRiftObservation = {
   timerSecondsRemaining: number | null;
   elementalGuardian: GuardianOfTheRiftRune | null;
   catalyticGuardian: GuardianOfTheRiftRune | null;
+  elementalRewardPoints: number | null;
+  catalyticRewardPoints: number | null;
+  rewardPointFocus: GuardianOfTheRiftRewardPointFocus | null;
   timeSincePortalColor: GuardianOfTheRiftTimeSincePortalColor | null;
+  timeSincePortalSecondsElapsed: number | null;
   unchargedCellCount: number | null;
   hasTenUnchargedCells: boolean;
   inventoryFreeSlots: number | null;
@@ -55,6 +61,7 @@ export function observeGuardianOfTheRiftState(
   const activeRunes = detectGuardianOfTheRiftActiveRunes(bitmap, runeTemplates);
   const timer = detectGuardianOfTheRiftTimer(bitmap);
   const timeSincePortal = detectGuardianOfTheRiftTimeSincePortal(bitmap);
+  const rewardPoints = detectGuardianOfTheRiftRewardPoints(bitmap);
   const unchargedCells = detectGuardianOfTheRiftUnchargedCellCount(bitmap, unchargedCellTemplates);
   const inventory = detectInventoryCount(bitmap);
 
@@ -71,7 +78,11 @@ export function observeGuardianOfTheRiftState(
     timerSecondsRemaining,
     elementalGuardian,
     catalyticGuardian,
+    elementalRewardPoints: rewardPoints.elementalPoints,
+    catalyticRewardPoints: rewardPoints.catalyticPoints,
+    rewardPointFocus: rewardPoints.focus,
     timeSincePortalColor: timeSincePortal.color,
+    timeSincePortalSecondsElapsed: timeSincePortal.secondsElapsed,
     unchargedCellCount: unchargedCells.count,
     hasTenUnchargedCells: unchargedCells.hasTenUnchargedCells,
     inventoryFreeSlots: inventory.count,

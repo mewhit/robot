@@ -3,6 +3,7 @@ import path from "path";
 import { PNG } from "pngjs";
 import { describe, expect, test } from "vitest";
 import {
+  detectGuardianOfTheRiftRewardPoints,
   detectGuardianOfTheRiftTimeSincePortal,
   type GuardianOfTheRiftTimeSincePortalColor,
 } from "./guardian-of-the-rift-panel-detector";
@@ -81,6 +82,12 @@ function expectedColorFromScreenshotPath(screenshotPath: string): GuardianOfTheR
   return match ? (match[1].toLowerCase() as GuardianOfTheRiftTimeSincePortalColor) : null;
 }
 
+function expectedSecondsFromScreenshotPath(screenshotPath: string): number | null {
+  const basename = path.basename(screenshotPath, path.extname(screenshotPath));
+  const match = basename.match(/-(\d+)$/);
+  return match ? Number(match[1]) : null;
+}
+
 function listPanelScreenshots(): string[] {
   if (!fs.existsSync(PANEL_SCREENSHOT_DIR)) {
     return [];
@@ -103,9 +110,11 @@ describe("Guardian of the Rift panel detector", () => {
 
     for (const screenshotPath of screenshotPaths) {
       const expectedColor = expectedColorFromScreenshotPath(screenshotPath);
+      const expectedSeconds = expectedSecondsFromScreenshotPath(screenshotPath);
       expect(expectedColor, `Missing expected color in filename: ${path.basename(screenshotPath)}`).not.toBeNull();
+      expect(expectedSeconds, `Missing expected seconds in filename: ${path.basename(screenshotPath)}`).not.toBeNull();
 
-      if (!expectedColor) {
+      if (!expectedColor || expectedSeconds === null) {
         continue;
       }
 
@@ -118,10 +127,17 @@ describe("Guardian of the Rift panel detector", () => {
       }
 
       const detection = detectGuardianOfTheRiftTimeSincePortal(bitmap);
+      const rewardPoints = detectGuardianOfTheRiftRewardPoints(bitmap);
 
       expect(detection.color, path.basename(screenshotPath)).toBe(expectedColor);
+      expect(detection.secondsElapsed, path.basename(screenshotPath)).toBe(expectedSeconds);
+      expect(detection.rawText, path.basename(screenshotPath)).toBe(String(expectedSeconds));
       expect(detection.pixelCount, path.basename(screenshotPath)).toBeGreaterThan(20);
       expect(detection.confidence, path.basename(screenshotPath)).toBeGreaterThan(0.8);
+      expect(rewardPoints.elementalPoints, path.basename(screenshotPath)).toBe(22);
+      expect(rewardPoints.catalyticPoints, path.basename(screenshotPath)).toBe(15);
+      expect(rewardPoints.rawText, path.basename(screenshotPath)).toBe("22/15");
+      expect(rewardPoints.focus, path.basename(screenshotPath)).toBe("catalytic");
       tested += 1;
     }
 
