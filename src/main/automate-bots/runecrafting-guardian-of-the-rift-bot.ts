@@ -245,6 +245,8 @@ type BotState = {
   guardianAltarCameraUnwindReadyAtMs: number;
   guardianReturnArrivalDeadlineMs: number;
   guardianReturnClickDistancePx: number | null;
+  returnPortalCameraNorthReadyAtMs: number;
+  returnPortalCameraNorthPreparedThisClick: boolean;
   unknownRewardNextGuardianSlot: GuardianOfTheRiftSlot;
   returnPortalRecoveryTarget: ReturnPortalRecoveryTarget | null;
   openPortalAfterCurrentPostReturnAction: boolean;
@@ -259,6 +261,8 @@ type BotState = {
   runeDepositClickDistancePx: number | null;
   runeDepositInventoryFreeSlotsBeforeClick: number | null;
   runeDepositMarkerCache: CachedMarker<ColoredMarkerDetection> | null;
+  runeDepositCameraNorthReadyAtMs: number;
+  runeDepositCameraNorthPreparedThisClick: boolean;
   finalPortalClickReadyAtMs: number;
   finalPortalArrivalDeadlineMs: number;
   finalPortalTeleportGraceDeadlineMs: number;
@@ -388,7 +392,7 @@ const PRE_DECISION_CAPTURE_SETTLE_MS = 80;
 const STARTUP_SETTLE_MS = 180;
 const STARTUP_COORDINATE_VALIDATION_DELAY_MS = BOT_TICK_MS;
 const POUCH_CLICKS_PER_GAME_TICK = 1;
-const POUCH_CLICK_LOCK_MS = GAME_TICK_MS;
+const POUCH_CLICK_LOCK_MS = BOT_TICK_MS;
 const POUCH_POST_SEQUENCE_SETTLE_MS = GAME_TICK_MS;
 const CLICK_SAFE_EDGE_MARGIN_PX = 3;
 const PURE_RED_MIN_PIXEL_COUNT = 24;
@@ -507,9 +511,11 @@ const CHARGED_CELL_DEPOSIT_CAMERA_ROTATE_LOCK_TICKS = 1;
 const END_OF_ROUND_SIGNAL_CONFIRMATION_TICKS = 2;
 const END_OF_ROUND_MISSING_DEPOSIT_SKIP_TICKS = 2;
 const POST_RETURN_CAMERA_NORTH_KEY = "n";
+const RETURN_PORTAL_CAMERA_NORTH_SETTLE_MS = 2 * BOT_TICK_MS;
 const CHARGED_CELL_TO_RUNE_CAMERA_KEY = "m";
 const CHARGED_CELL_TO_RUNE_CAMERA_SETTLE_MS = BOT_TICK_MS;
 const POST_RUNE_DEPOSIT_CAMERA_NORTH_KEY = "n";
+const RUNE_DEPOSIT_CAMERA_NORTH_SETTLE_MS = BOT_TICK_MS;
 const WORKBENCH_INVENTORY_CHANGE_CHECK_TICKS = 2;
 const WORKBENCH_INVENTORY_NO_CHANGE_MAX_WARNINGS = 3;
 const PORTAL_MINING_INVENTORY_CHANGE_CHECK_TICKS = 5;
@@ -666,20 +672,24 @@ function clickNextRememberedPouchBatch(
   captureBounds: ScreenCaptureBounds,
   nowMs: number,
   step: (typeof WORKFLOW_STEPS)[keyof typeof WORKFLOW_STEPS],
+  batchSize = POUCH_CLICKS_PER_GAME_TICK,
+  batchLabel: string | null = null,
 ): BotState {
+  const clicksPerBatch = Math.max(1, Math.floor(batchSize));
   const clickIndex = clamp(state.pouchClickIndex, 0, state.pouchClickQueue.length);
-  const batch = state.pouchClickQueue.slice(clickIndex, clickIndex + POUCH_CLICKS_PER_GAME_TICK);
+  const batch = state.pouchClickQueue.slice(clickIndex, clickIndex + clicksPerBatch);
   for (const location of batch) {
     clickScreenPoint(location.screenCenterX, location.screenCenterY, captureBounds);
   }
 
   const nextClickIndex = clickIndex + batch.length;
-  const totalBatches = Math.max(1, Math.ceil(state.pouchClickQueue.length / POUCH_CLICKS_PER_GAME_TICK));
-  const batchNumber = Math.min(totalBatches, Math.floor(clickIndex / POUCH_CLICKS_PER_GAME_TICK) + 1);
+  const totalBatches = Math.max(1, Math.ceil(state.pouchClickQueue.length / clicksPerBatch));
+  const batchNumber = Math.min(totalBatches, Math.floor(clickIndex / clicksPerBatch) + 1);
+  const clickLabel = batchLabel ?? `pouch batch ${batchNumber}/${totalBatches}`;
   log(
     stepMessage(
       step,
-      `Clicked pouch batch ${batchNumber}/${totalBatches}: ${formatPouchClickList(batch)} (${nextClickIndex}/${state.pouchClickQueue.length} pouch click(s) done).`,
+      `Clicked ${clickLabel}: ${formatPouchClickList(batch)} (${nextClickIndex}/${state.pouchClickQueue.length} pouch click(s) done).`,
     ),
   );
 
@@ -1021,6 +1031,8 @@ function createInitialState(): BotState {
     guardianAltarCameraUnwindReadyAtMs: 0,
     guardianReturnArrivalDeadlineMs: 0,
     guardianReturnClickDistancePx: null,
+    returnPortalCameraNorthReadyAtMs: 0,
+    returnPortalCameraNorthPreparedThisClick: false,
     unknownRewardNextGuardianSlot: "elemental",
     returnPortalRecoveryTarget: null,
     openPortalAfterCurrentPostReturnAction: false,
@@ -1035,6 +1047,8 @@ function createInitialState(): BotState {
     runeDepositClickDistancePx: null,
     runeDepositInventoryFreeSlotsBeforeClick: null,
     runeDepositMarkerCache: null,
+    runeDepositCameraNorthReadyAtMs: 0,
+    runeDepositCameraNorthPreparedThisClick: false,
     finalPortalClickReadyAtMs: 0,
     finalPortalArrivalDeadlineMs: 0,
     finalPortalTeleportGraceDeadlineMs: 0,
@@ -3685,6 +3699,8 @@ function transitionToEndOfRoundRuneDepositState(state: BotState, nowMs: number, 
     runeDepositArrivalDeadlineMs: 0,
     runeDepositClickDistancePx: null,
     runeDepositInventoryFreeSlotsBeforeClick: null,
+    runeDepositCameraNorthReadyAtMs: 0,
+    runeDepositCameraNorthPreparedThisClick: false,
     missingInventoryCountTicks: 0,
     missingChargedCellDepositTicks: 0,
     missingRuneDepositTicks: 0,
@@ -4120,6 +4136,8 @@ function transitionToGuardianTravelState(
     altarPouchesEmptiedThisCycle: false,
     guardianReturnArrivalDeadlineMs: 0,
     guardianReturnClickDistancePx: null,
+    returnPortalCameraNorthReadyAtMs: 0,
+    returnPortalCameraNorthPreparedThisClick: false,
     returnPortalRecoveryTarget: null,
     openPortalAfterCurrentPostReturnAction: false,
     postPortalDepositResume: null,
@@ -4133,6 +4151,8 @@ function transitionToGuardianTravelState(
     runeDepositArrivalDeadlineMs: 0,
     runeDepositClickDistancePx: null,
     runeDepositInventoryFreeSlotsBeforeClick: null,
+    runeDepositCameraNorthReadyAtMs: 0,
+    runeDepositCameraNorthPreparedThisClick: false,
     missingGuardianGreenTicks: 0,
     missingGuardianYellowTicks: 0,
     missingGuardianReturnRedTicks: 0,
@@ -4162,6 +4182,8 @@ function transitionToGuardianRunecraftingState(state: BotState, location: Guardi
     altarPouchesEmptiedThisCycle: false,
     guardianReturnArrivalDeadlineMs: 0,
     guardianReturnClickDistancePx: null,
+    returnPortalCameraNorthReadyAtMs: 0,
+    returnPortalCameraNorthPreparedThisClick: false,
     returnPortalRecoveryTarget: null,
     openPortalAfterCurrentPostReturnAction: false,
     postPortalDepositResume: null,
@@ -4175,6 +4197,8 @@ function transitionToGuardianRunecraftingState(state: BotState, location: Guardi
     runeDepositArrivalDeadlineMs: 0,
     runeDepositClickDistancePx: null,
     runeDepositInventoryFreeSlotsBeforeClick: null,
+    runeDepositCameraNorthReadyAtMs: 0,
+    runeDepositCameraNorthPreparedThisClick: false,
     missingGuardianGreenTicks: 0,
     missingGuardianYellowTicks: 0,
     missingGuardianReturnRedTicks: 0,
@@ -4197,14 +4221,30 @@ function createStartupInitialState(
   const validationLocation = validationBitmap ? readGuardianCoordinateLocation(validationBitmap) : primaryLocation;
   const decisionBitmap = validationBitmap ?? bitmap;
   const inventory = detectInventoryCount(decisionBitmap);
+  const rememberedPouches = getRememberedPouchLocations(state);
+  const startupState =
+    inventory.count === 0 && rememberedPouches.length > 0
+      ? {
+          ...state,
+          craftingPouchesFilledThisCycle: true,
+        }
+      : state;
   log(
     `Startup phase check: inventoryFreeSlots=${inventory.count ?? "null"} inventoryRaw=${inventory.rawText ?? "null"} primary=${formatGuardianCoordinateDebug(primaryLocation)} validation=${formatGuardianCoordinateDebug(validationLocation)}.`,
   );
+  if (startupState.craftingPouchesFilledThisCycle && !state.craftingPouchesFilledThisCycle) {
+    log(
+      stepMessage(
+        WORKFLOW_STEPS.CRAFT_UNTIL_FULL,
+        `Startup detected full inventory and ${rememberedPouches.length} remembered pouch(es); assuming pouch(es) are already full for the next altar cycle.`,
+      ),
+    );
+  }
 
   if (hasLeftGuardianCraftingAreaLocation(primaryLocation) && hasLeftGuardianCraftingAreaLocation(validationLocation)) {
     return transitionToGuardianRunecraftingState(
       {
-        ...state,
+        ...startupState,
         inventoryFreeSlots: inventory.count,
         missingInventoryCountTicks: inventory.count === null ? 1 : 0,
       },
@@ -4223,7 +4263,7 @@ function createStartupInitialState(
 
   if (inventory.count === 0) {
     return transitionToGuardianTravelState({
-      ...state,
+      ...startupState,
       inventoryFreeSlots: inventory.count,
       missingInventoryCountTicks: 0,
     });
@@ -4232,7 +4272,7 @@ function createStartupInitialState(
   setAutomateBotCurrentStep(STEP_PICK_UNCHARGED_CELL_ID);
   log(stepMessage(WORKFLOW_STEPS.TAKE_UNCHARGED_CELL, "Startup phase check selected uncharged-cell pickup."));
   return {
-    ...state,
+    ...startupState,
     inventoryFreeSlots: inventory.count,
     missingInventoryCountTicks: inventory.count === null ? 1 : 0,
   };
@@ -4291,7 +4331,7 @@ function runCraftingTick(
       log(
         stepMessage(
           WORKFLOW_STEPS.FILL_POUCHES_AFTER_WORKBENCH_FULL,
-          `Inventory is full after workbench and ${rememberedPouches.length} remembered pouch(es) are available; filling pouches one per game tick before reclicking workbench.`,
+          `Inventory is full after workbench and ${rememberedPouches.length} remembered pouch(es) are available; filling pouches one per bot tick before reclicking workbench.`,
         ),
       );
 
@@ -5081,7 +5121,7 @@ function runWaitAfterGuardianYellowClickTick(
     log(
       stepMessage(
         WORKFLOW_STEPS.EMPTY_POUCHES_AT_ALTAR,
-        `Inventory free-space changed to ${inventory.count} after first altar click and ${rememberedPouches.length} remembered pouch(es) were filled this cycle; emptying pouches one per game tick before clicking altar a second time.`,
+        `Inventory free-space changed to ${inventory.count} after first altar click and ${rememberedPouches.length} remembered pouch(es) were filled this cycle; emptying pouches one per bot tick before clicking altar a second time.`,
       ),
     );
 
@@ -5207,6 +5247,8 @@ function transitionToReturnPortalRecoveryState(
     returnPortalRecoveryTarget: target,
     guardianReturnArrivalDeadlineMs: 0,
     guardianReturnClickDistancePx: null,
+    returnPortalCameraNorthReadyAtMs: 0,
+    returnPortalCameraNorthPreparedThisClick: false,
     finalPortalArrivalDeadlineMs: 0,
     finalPortalTeleportGraceDeadlineMs: 0,
     finalPortalClickDistancePx: null,
@@ -5234,13 +5276,60 @@ function runFindReturnPortalTick(
   const returnPortal = pickNearestColoredMarker(portalCandidates, playerAnchor);
   if (!returnPortal) {
     const missingGuardianReturnRedTicks = state.missingGuardianReturnRedTicks + 1;
+    const location = readGuardianCoordinateLocation(tickCapture.bitmap);
+    if (state.returnPortalRecoveryTarget === "finalPortal" && location?.regionId === GUARDIAN_CRAFTING_REGION_ID) {
+      warn(
+        stepMessage(
+          WORKFLOW_STEPS.FIND_PORTAL,
+          `No ${RETURN_PORTAL_MARKER_COLOR_HEX} red portal marker was found after salmon portal recovery, but coordinate now reads region ${GUARDIAN_CRAFTING_REGION_ID}: tile=${formatGuardianCoordinateLocation(location)} chunk=${location.chunkId} raw='${location.matchedLine}'. Treating the first outside-region read as stale/transition and retrying salmon portal flow instead of rotating for red portal.`,
+        ),
+      );
+      return transitionToFinalPortalWaitState(
+        {
+          ...state,
+          returnPortalRecoveryTarget: null,
+          guardianReturnArrivalDeadlineMs: 0,
+          guardianReturnClickDistancePx: null,
+          returnPortalCameraNorthReadyAtMs: 0,
+          returnPortalCameraNorthPreparedThisClick: false,
+          missingGuardianReturnRedTicks: 0,
+          missingFinalPortalOpenIconTicks: 0,
+          missingFinalPortalTicks: 0,
+          actionLockUntilMs: 0,
+        },
+        `Recovered from salmon portal outside-region read; coordinate is back in region ${GUARDIAN_CRAFTING_REGION_ID}, so waiting for salmon portal availability again.`,
+      );
+    }
+
+    if (state.returnPortalRecoveryTarget === "portalExit" && location?.regionId === GUARDIAN_CRAFTING_REGION_ID) {
+      warn(
+        stepMessage(
+          WORKFLOW_STEPS.FIND_PORTAL,
+          `No ${RETURN_PORTAL_MARKER_COLOR_HEX} red portal marker was found after salmon exit recovery, but coordinate now reads region ${GUARDIAN_CRAFTING_REGION_ID}: tile=${formatGuardianCoordinateLocation(location)} chunk=${location.chunkId} raw='${location.matchedLine}'. Resuming post-portal flow instead of rotating for red portal.`,
+        ),
+      );
+      return transitionToPostPortalDepositResumeState(
+        {
+          ...state,
+          returnPortalRecoveryTarget: null,
+          guardianReturnArrivalDeadlineMs: 0,
+          guardianReturnClickDistancePx: null,
+          returnPortalCameraNorthReadyAtMs: 0,
+          returnPortalCameraNorthPreparedThisClick: false,
+          missingGuardianReturnRedTicks: 0,
+          actionLockUntilMs: 0,
+        },
+        nowMs,
+      );
+    }
+
     const rotated = tapKey(GUARDIAN_RETURN_PORTAL_CAMERA_ROTATE_KEY);
     const returnReason = state.returnPortalRecoveryTarget ? "after salmon portal recovery" : "after inventory emptied";
 
     warn(
       stepMessage(
         WORKFLOW_STEPS.FIND_PORTAL,
-        `No ${RETURN_PORTAL_MARKER_COLOR_HEX} red portal marker was found ${returnReason}; ${rotated ? `tapped '${GUARDIAN_RETURN_PORTAL_CAMERA_ROTATE_KEY}'` : `could not tap '${GUARDIAN_RETURN_PORTAL_CAMERA_ROTATE_KEY}'`} to rotate camera before retry ${missingGuardianReturnRedTicks}. Candidates=${formatColoredMarkerCandidates(portalCandidates)}.`,
+        `No ${RETURN_PORTAL_MARKER_COLOR_HEX} red portal marker was found ${returnReason}; coordinate=${formatGuardianCoordinateLocation(location)} region=${location?.regionId ?? "unknown"} chunk=${location?.chunkId ?? "unknown"} raw='${location?.matchedLine ?? "unreadable"}'; ${rotated ? `tapped '${GUARDIAN_RETURN_PORTAL_CAMERA_ROTATE_KEY}'` : `could not tap '${GUARDIAN_RETURN_PORTAL_CAMERA_ROTATE_KEY}'`} to rotate camera before retry ${missingGuardianReturnRedTicks}. Candidates=${formatColoredMarkerCandidates(portalCandidates)}.`,
       ),
     );
 
@@ -5254,10 +5343,11 @@ function runFindReturnPortalTick(
   const travel = estimateTravelWaitTicks(playerAnchor, returnPortal);
   const clicked = clickScreenPoint(captureBounds.x + returnPortal.centerX, captureBounds.y + returnPortal.centerY, captureBounds);
   const clickedAtMs = Date.now();
+  const cameraReadyAtMs = clickedAtMs + RETURN_PORTAL_CAMERA_NORTH_SETTLE_MS;
   log(
     stepMessage(
       WORKFLOW_STEPS.MOVE_TO_PORTAL,
-      `Clicked ${RETURN_PORTAL_MARKER_COLOR_HEX} red portal marker at (${clicked.x},${clicked.y}) local=(${returnPortal.centerX},${returnPortal.centerY}) bounds=(${returnPortal.minX},${returnPortal.minY})-${returnPortal.maxX},${returnPortal.maxY} pixels=${returnPortal.pixelCount}; waiting to return to region ${GUARDIAN_CRAFTING_REGION_ID} (${formatTravelEstimate(travel)}).`,
+      `Clicked ${RETURN_PORTAL_MARKER_COLOR_HEX} red portal marker at (${clicked.x},${clicked.y}) local=(${returnPortal.centerX},${returnPortal.centerY}) bounds=(${returnPortal.minX},${returnPortal.minY})-${returnPortal.maxX},${returnPortal.maxY} pixels=${returnPortal.pixelCount}; waiting two bot ticks before tapping '${POST_RETURN_CAMERA_NORTH_KEY}' to prepare camera north during return travel; waiting to return to region ${GUARDIAN_CRAFTING_REGION_ID} (${formatTravelEstimate(travel)}).`,
     ),
   );
 
@@ -5267,8 +5357,10 @@ function runFindReturnPortalTick(
     phase: "wait-after-guardian-return-click",
     guardianReturnArrivalDeadlineMs: clickedAtMs + travel.waitTicks * GAME_TICK_MS,
     guardianReturnClickDistancePx: travel.distancePx,
+    returnPortalCameraNorthReadyAtMs: cameraReadyAtMs,
+    returnPortalCameraNorthPreparedThisClick: false,
     missingGuardianReturnRedTicks: 0,
-    actionLockUntilMs: clickedAtMs + GUARDIAN_RETURN_CLICK_LOCK_TICKS * GAME_TICK_MS,
+    actionLockUntilMs: cameraReadyAtMs,
   };
 }
 
@@ -5290,6 +5382,8 @@ function transitionToGreatGuardianState(state: BotState): BotState {
     runeDepositArrivalDeadlineMs: 0,
     runeDepositClickDistancePx: null,
     runeDepositInventoryFreeSlotsBeforeClick: null,
+    runeDepositCameraNorthReadyAtMs: 0,
+    runeDepositCameraNorthPreparedThisClick: false,
     missingGreatGuardianTicks: 0,
     missingChargedCellDepositTicks: 0,
     missingRuneDepositTicks: 0,
@@ -5429,17 +5523,41 @@ async function runWaitAfterGuardianReturnClickTick(
   captureBounds: ScreenCaptureBounds,
   portalOpenIconTemplate: GuardianOfTheRiftPortalOpenIconTemplate,
 ): Promise<BotState> {
-  if (nowMs < state.guardianReturnArrivalDeadlineMs) {
-    return state;
-  }
-
   if (nowMs < state.actionLockUntilMs) {
     return state;
   }
 
+  let stateAfterCamera = state;
+  if (stateAfterCamera.returnPortalCameraNorthReadyAtMs > 0) {
+    if (nowMs < stateAfterCamera.returnPortalCameraNorthReadyAtMs) {
+      return {
+        ...stateAfterCamera,
+        actionLockUntilMs: stateAfterCamera.returnPortalCameraNorthReadyAtMs,
+      };
+    }
+
+    const cameraReset = tapKey(POST_RETURN_CAMERA_NORTH_KEY);
+    log(
+      stepMessage(
+        WORKFLOW_STEPS.TELEPORT_BACK,
+        `${cameraReset ? `Tapped '${POST_RETURN_CAMERA_NORTH_KEY}'` : `Could not tap '${POST_RETURN_CAMERA_NORTH_KEY}'`} to prepare camera north after waiting two bot ticks from the red return portal click.`,
+      ),
+    );
+    stateAfterCamera = {
+      ...stateAfterCamera,
+      returnPortalCameraNorthReadyAtMs: 0,
+      returnPortalCameraNorthPreparedThisClick: cameraReset,
+      actionLockUntilMs: 0,
+    };
+  }
+
+  if (nowMs < stateAfterCamera.guardianReturnArrivalDeadlineMs) {
+    return stateAfterCamera;
+  }
+
   const location = readGuardianCoordinateLocation(tickCapture.bitmap);
   if (!location || location.regionId !== GUARDIAN_CRAFTING_REGION_ID) {
-    const missingGuardianReturnRedTicks = state.missingGuardianReturnRedTicks + 1;
+    const missingGuardianReturnRedTicks = stateAfterCamera.missingGuardianReturnRedTicks + 1;
 
     const playerAnchor = getPlayerAnchor(tickCapture.bitmap);
     const portalCandidates = detectAllReturnPortalRedMarkers(tickCapture.bitmap);
@@ -5448,19 +5566,22 @@ async function runWaitAfterGuardianReturnClickTick(
       const travel = estimateTravelWaitTicks(playerAnchor, returnPortal);
       const clicked = clickScreenPoint(captureBounds.x + returnPortal.centerX, captureBounds.y + returnPortal.centerY, captureBounds);
       const clickedAtMs = Date.now();
+      const cameraReadyAtMs = clickedAtMs + RETURN_PORTAL_CAMERA_NORTH_SETTLE_MS;
       warn(
         stepMessage(
           WORKFLOW_STEPS.TELEPORT_BACK,
-          `Return teleport not confirmed yet; current region=${location?.regionId ?? "unknown"} chunk=${location?.chunkId ?? "unknown"} matched='${location?.matchedLine ?? "null"}'. Re-clicked ${RETURN_PORTAL_MARKER_COLOR_HEX} red portal marker at (${clicked.x},${clicked.y}) local=(${returnPortal.centerX},${returnPortal.centerY}) pixels=${returnPortal.pixelCount}; waiting to return to region ${GUARDIAN_CRAFTING_REGION_ID} (retry=${missingGuardianReturnRedTicks}, ${formatTravelEstimate(travel)}).`,
+          `Return teleport not confirmed yet; current region=${location?.regionId ?? "unknown"} chunk=${location?.chunkId ?? "unknown"} matched='${location?.matchedLine ?? "null"}'. Re-clicked ${RETURN_PORTAL_MARKER_COLOR_HEX} red portal marker at (${clicked.x},${clicked.y}) local=(${returnPortal.centerX},${returnPortal.centerY}) pixels=${returnPortal.pixelCount}; waiting two bot ticks before tapping '${POST_RETURN_CAMERA_NORTH_KEY}' to prepare camera north during return travel; waiting to return to region ${GUARDIAN_CRAFTING_REGION_ID} (retry=${missingGuardianReturnRedTicks}, ${formatTravelEstimate(travel)}).`,
         ),
       );
 
       return {
-        ...state,
+        ...stateAfterCamera,
         missingGuardianReturnRedTicks,
         guardianReturnArrivalDeadlineMs: clickedAtMs + travel.waitTicks * GAME_TICK_MS,
         guardianReturnClickDistancePx: travel.distancePx,
-        actionLockUntilMs: clickedAtMs + GUARDIAN_RETURN_CLICK_LOCK_TICKS * GAME_TICK_MS,
+        returnPortalCameraNorthReadyAtMs: cameraReadyAtMs,
+        returnPortalCameraNorthPreparedThisClick: false,
+        actionLockUntilMs: cameraReadyAtMs,
       };
     }
 
@@ -5474,18 +5595,25 @@ async function runWaitAfterGuardianReturnClickTick(
     }
 
     return {
-      ...state,
+      ...stateAfterCamera,
       missingGuardianReturnRedTicks,
       actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
     };
   }
 
-  const cameraReset = tapKey(POST_RETURN_CAMERA_NORTH_KEY);
+  const cameraReset = stateAfterCamera.returnPortalCameraNorthPreparedThisClick ? null : tapKey(POST_RETURN_CAMERA_NORTH_KEY);
+  const cameraSummary = stateAfterCamera.returnPortalCameraNorthPreparedThisClick
+    ? "Camera north already prepared after the red return portal click"
+    : cameraReset
+      ? "Camera reset to north"
+      : "Camera north reset skipped";
   const returnedState: BotState = {
-    ...state,
+    ...stateAfterCamera,
     returnPortalRecoveryTarget: null,
     guardianReturnArrivalDeadlineMs: 0,
     guardianReturnClickDistancePx: null,
+    returnPortalCameraNorthReadyAtMs: 0,
+    returnPortalCameraNorthPreparedThisClick: false,
     missingGuardianReturnRedTicks: 0,
     actionLockUntilMs: 0,
   };
@@ -5494,7 +5622,7 @@ async function runWaitAfterGuardianReturnClickTick(
     log(
       stepMessage(
         WORKFLOW_STEPS.TELEPORT_BACK,
-        `Return teleport confirmed after salmon recovery: region=${location.regionId} chunk=${location.chunkId} matched='${location.matchedLine}'. ${cameraReset ? "Camera reset to north" : "Camera north reset skipped"} before retrying salmon portal flow.`,
+        `Return teleport confirmed after salmon recovery: region=${location.regionId} chunk=${location.chunkId} matched='${location.matchedLine}'. ${cameraSummary} before retrying salmon portal flow.`,
       ),
     );
     return transitionToFinalPortalWaitState(
@@ -5515,7 +5643,7 @@ async function runWaitAfterGuardianReturnClickTick(
     log(
       stepMessage(
         WORKFLOW_STEPS.TELEPORT_BACK,
-        `Return teleport confirmed after salmon exit recovery: region=${location.regionId} chunk=${location.chunkId} matched='${location.matchedLine}'. ${cameraReset ? "Camera reset to north" : "Camera north reset skipped"} before repeating guardian click flow.`,
+        `Return teleport confirmed after salmon exit recovery: region=${location.regionId} chunk=${location.chunkId} matched='${location.matchedLine}'. ${cameraSummary} before repeating guardian click flow.`,
       ),
     );
     return transitionToPostPortalDepositResumeState({
@@ -5532,7 +5660,7 @@ async function runWaitAfterGuardianReturnClickTick(
   log(
     stepMessage(
       WORKFLOW_STEPS.TELEPORT_BACK,
-      `Return teleport confirmed: region=${location.regionId} chunk=${location.chunkId} matched='${location.matchedLine}'. ${cameraReset ? "Camera reset to north" : "Camera north reset skipped"} before continuing to post-return deposits.`,
+      `Return teleport confirmed: region=${location.regionId} chunk=${location.chunkId} matched='${location.matchedLine}'. ${cameraSummary} before continuing to post-return deposits.`,
     ),
   );
   return transitionToGreatGuardianState(returnedState);
@@ -5632,6 +5760,7 @@ function runWaitAfterGreatGuardianClickTick(
   state: BotState,
   nowMs: number,
   tickCapture: TickCapture,
+  captureBounds: ScreenCaptureBounds,
   portalOpenIconTemplate: GuardianOfTheRiftPortalOpenIconTemplate,
 ): BotState {
   if (nowMs < state.actionLockUntilMs) {
@@ -5813,13 +5942,7 @@ function runWaitAfterGreatGuardianClickTick(
 
   if (verifiedState.postPortalDepositResume === "greatGuardian") {
     setAutomateBotCurrentStep(STEP_CHARGED_CELL_DEPOSIT_ID);
-    log(
-      stepMessage(
-        WORKFLOW_STEPS.FIND_CHARGED_CELL_DEPOSIT,
-        `Post-portal Great Guardian deposit verified: free-space ${currentState.inventoryFreeSlots} -> ${inventoryAfterClick.count}. Depositing charged cell before active guardian travel. Inventory history=${formatInventoryHistory(verifiedState.inventoryHistory)}.`,
-      ),
-    );
-    return {
+    const chargedCellState: BotState = {
       ...verifiedState,
       currentFunction: "findChargedCellDeposit",
       phase: "find-charged-cell-deposit",
@@ -5828,6 +5951,23 @@ function runWaitAfterGreatGuardianClickTick(
       chargedCellDepositPlayerTileFallbackPending: false,
       missingChargedCellDepositTicks: 0,
     };
+    const chainedChargedCellState = clickChargedCellDepositMarkerIfVisible(
+      chargedCellState,
+      tickCapture,
+      captureBounds,
+      `Post-portal Great Guardian deposit verified: free-space ${currentState.inventoryFreeSlots} -> ${inventoryAfterClick.count}.`,
+    );
+    if (chainedChargedCellState) {
+      return chainedChargedCellState;
+    }
+
+    log(
+      stepMessage(
+        WORKFLOW_STEPS.FIND_CHARGED_CELL_DEPOSIT,
+        `Post-portal Great Guardian deposit verified: free-space ${currentState.inventoryFreeSlots} -> ${inventoryAfterClick.count}. Depositing charged cell before active guardian travel. Inventory history=${formatInventoryHistory(verifiedState.inventoryHistory)}.`,
+      ),
+    );
+    return chargedCellState;
   }
 
   if (verifiedState.openPortalAfterCurrentPostReturnAction) {
@@ -5842,13 +5982,7 @@ function runWaitAfterGreatGuardianClickTick(
   }
 
   setAutomateBotCurrentStep(STEP_CHARGED_CELL_DEPOSIT_ID);
-  log(
-    stepMessage(
-      WORKFLOW_STEPS.FIND_CHARGED_CELL_DEPOSIT,
-      `Great guardian inventory verified: free-space ${currentState.inventoryFreeSlots} -> ${inventoryAfterClick.count}. Searching for charged cell deposit marker. Inventory history=${formatInventoryHistory(verifiedState.inventoryHistory)}.`,
-    ),
-  );
-  return {
+  const chargedCellState: BotState = {
     ...verifiedState,
     currentFunction: "findChargedCellDeposit",
     phase: "find-charged-cell-deposit",
@@ -5856,6 +5990,23 @@ function runWaitAfterGreatGuardianClickTick(
     chargedCellDepositPlayerTileFallbackPending: false,
     missingChargedCellDepositTicks: 0,
   };
+  const chainedChargedCellState = clickChargedCellDepositMarkerIfVisible(
+    chargedCellState,
+    tickCapture,
+    captureBounds,
+    `Great guardian inventory verified: free-space ${currentState.inventoryFreeSlots} -> ${inventoryAfterClick.count}.`,
+  );
+  if (chainedChargedCellState) {
+    return chainedChargedCellState;
+  }
+
+  log(
+    stepMessage(
+      WORKFLOW_STEPS.FIND_CHARGED_CELL_DEPOSIT,
+      `Great guardian inventory verified: free-space ${currentState.inventoryFreeSlots} -> ${inventoryAfterClick.count}. Searching for charged cell deposit marker. Inventory history=${formatInventoryHistory(verifiedState.inventoryHistory)}.`,
+    ),
+  );
+  return chargedCellState;
 }
 
 function runFindChargedCellDepositTick(
@@ -5945,6 +6096,15 @@ function runFindChargedCellDepositTick(
     };
   }
 
+  return clickChargedCellDepositMarker(currentState, captureBounds, playerAnchor, chargedCellDeposit);
+}
+
+function clickChargedCellDepositMarker(
+  state: BotState,
+  captureBounds: ScreenCaptureBounds,
+  playerAnchor: { centerX: number; centerY: number },
+  chargedCellDeposit: ColoredMarkerDetection,
+): BotState {
   const chargedCellDepositClickPoint = getBoundsCenterRightPoint(chargedCellDeposit);
   const travel = estimateTravelWaitTicks(playerAnchor, chargedCellDepositClickPoint);
   const clicked = clickScreenPoint(
@@ -5962,7 +6122,7 @@ function runFindChargedCellDepositTick(
   );
 
   return {
-    ...currentState,
+    ...state,
     currentFunction: "waitAfterChargedCellDepositClick",
     phase: "wait-after-charged-cell-deposit-click",
     chargedCellDepositArrivalDeadlineMs: clickedAtMs + travel.waitTicks * GAME_TICK_MS,
@@ -5975,12 +6135,35 @@ function runFindChargedCellDepositTick(
   };
 }
 
-function runWaitAfterChargedCellDepositClickTick(
+function clickChargedCellDepositMarkerIfVisible(
+  state: BotState,
+  tickCapture: TickCapture,
+  captureBounds: ScreenCaptureBounds,
+  reasonPrefix: string,
+): BotState | null {
+  const playerAnchor = getPlayerAnchor(tickCapture.bitmap);
+  const candidates = detectAllChargedCellDepositObjects(tickCapture.bitmap);
+  const chargedCellDeposit = pickNearestColoredMarker(candidates, playerAnchor);
+  if (!chargedCellDeposit) {
+    return null;
+  }
+
+  log(
+    stepMessage(
+      WORKFLOW_STEPS.FIND_CHARGED_CELL_DEPOSIT,
+      `${reasonPrefix} Charged cell deposit marker is already visible; clicking it without waiting for the next bot tick. Candidates=${formatColoredMarkerCandidates(candidates)}.`,
+    ),
+  );
+  return clickChargedCellDepositMarker(state, captureBounds, playerAnchor, chargedCellDeposit);
+}
+
+async function runWaitAfterChargedCellDepositClickTick(
   state: BotState,
   nowMs: number,
   tickCapture: TickCapture,
+  captureBounds: ScreenCaptureBounds,
   portalOpenIconTemplate: GuardianOfTheRiftPortalOpenIconTemplate,
-): BotState {
+): Promise<BotState> {
   if (nowMs < state.actionLockUntilMs) {
     return state;
   }
@@ -6207,16 +6390,22 @@ function runWaitAfterChargedCellDepositClickTick(
   log(
     stepMessage(
       WORKFLOW_STEPS.FIND_RUNE_DEPOSIT,
-      `Charged cell deposit inventory verified: free-space ${currentState.inventoryFreeSlots} -> ${inventoryAfterClick.count}. Searching for rune deposit marker. Inventory history=${formatInventoryHistory(verifiedState.inventoryHistory)}.`,
+      `Charged cell deposit inventory verified: free-space ${currentState.inventoryFreeSlots} -> ${inventoryAfterClick.count}. Searching for rune deposit marker immediately instead of waiting for the next bot tick. Inventory history=${formatInventoryHistory(verifiedState.inventoryHistory)}.`,
     ),
   );
-  return {
-    ...verifiedState,
-    currentFunction: "findRuneDeposit",
-    phase: "find-rune-deposit",
-    actionLockUntilMs: 0,
-    missingRuneDepositTicks: 0,
-  };
+  return runFindRuneDepositTick(
+    {
+      ...verifiedState,
+      currentFunction: "findRuneDeposit",
+      phase: "find-rune-deposit",
+      actionLockUntilMs: 0,
+      missingRuneDepositTicks: 0,
+    },
+    nowMs,
+    tickCapture,
+    captureBounds,
+    portalOpenIconTemplate,
+  );
 }
 
 function transitionAfterRuneDepositVerified(
@@ -6239,6 +6428,8 @@ function transitionAfterRuneDepositVerified(
       runeDepositClickDistancePx: null,
       runeDepositInventoryFreeSlotsBeforeClick: beforeFreeSlots,
       runeDepositMarkerCache: null,
+      runeDepositCameraNorthReadyAtMs: 0,
+      runeDepositCameraNorthPreparedThisClick: false,
       finalPortalArrivalDeadlineMs: 0,
       finalPortalTeleportGraceDeadlineMs: 0,
       finalPortalClickDistancePx: null,
@@ -6263,14 +6454,17 @@ function transitionAfterRuneDepositVerified(
     },
   );
 
-  const cameraReset = tapKey(POST_RUNE_DEPOSIT_CAMERA_NORTH_KEY);
+  const cameraReset = state.runeDepositCameraNorthPreparedThisClick ? null : tapKey(POST_RUNE_DEPOSIT_CAMERA_NORTH_KEY);
+  const cameraSummary = state.runeDepositCameraNorthPreparedThisClick
+    ? "Camera north already prepared after the rune deposit click."
+    : `${cameraReset ? `Tapped '${POST_RUNE_DEPOSIT_CAMERA_NORTH_KEY}'` : `Could not tap '${POST_RUNE_DEPOSIT_CAMERA_NORTH_KEY}'`} to reset camera north.`;
   const endAwarePostRuneDepositState = markEndOfRoundDepositModeIfNeeded(
     postRuneDepositState,
     tickCapture,
     WORKFLOW_STEPS.TRAVEL_TO_RUNE_DEPOSIT,
   );
   const depositSummary =
-    `${reasonPrefix}: inventory free-space increased ${beforeFreeSlots} -> ${afterFreeSlots}. ${cameraReset ? `Tapped '${POST_RUNE_DEPOSIT_CAMERA_NORTH_KEY}'` : `Could not tap '${POST_RUNE_DEPOSIT_CAMERA_NORTH_KEY}'`} to reset camera north. Inventory history=${formatInventoryHistory(endAwarePostRuneDepositState.inventoryHistory)}.`;
+    `${reasonPrefix}: inventory free-space increased ${beforeFreeSlots} -> ${afterFreeSlots}. ${cameraSummary} Inventory history=${formatInventoryHistory(endAwarePostRuneDepositState.inventoryHistory)}.`;
 
   if (endAwarePostRuneDepositState.endOfRoundDepositMode) {
     return transitionToRoundRestartState(endAwarePostRuneDepositState, nowMs, `End-of-round rune deposit complete. ${depositSummary}`);
@@ -6513,10 +6707,11 @@ async function runFindRuneDepositTick(
 
   const clicked = clickScreenPoint(captureBounds.x + runeDepositClickPoint.centerX, captureBounds.y + runeDepositClickPoint.centerY, captureBounds);
   const clickedAtMs = Date.now();
+  const cameraReadyAtMs = clickedAtMs + RUNE_DEPOSIT_CAMERA_NORTH_SETTLE_MS;
   log(
     stepMessage(
       WORKFLOW_STEPS.TRAVEL_TO_RUNE_DEPOSIT,
-      `Clicked lower right-biased point of stable rune deposit marker from just-in-time recapture at (${clicked.x},${clicked.y}) local=(${runeDepositClickPoint.centerX},${runeDepositClickPoint.centerY}) ratioX=${RUNE_DEPOSIT_CLICK_RATIO_X} ratioY=${RUNE_DEPOSIT_CLICK_RATIO_Y} stableFor=${Math.round((freshCaptureMs - markerCache.firstSeenAtMs) / GAME_TICK_MS)} game tick(s) requiredStable=${requiredSettleTicks} bounds=(${freshRuneDeposit.minX},${freshRuneDeposit.minY})-${freshRuneDeposit.maxX},${freshRuneDeposit.maxY} pixels=${freshRuneDeposit.pixelCount}; inventory free-space before deposit=${inventoryBeforeClick.count}; checking inventory until travel deadline (${formatTravelEstimate(travel)}).`,
+      `Clicked lower right-biased point of stable rune deposit marker from just-in-time recapture at (${clicked.x},${clicked.y}) local=(${runeDepositClickPoint.centerX},${runeDepositClickPoint.centerY}) ratioX=${RUNE_DEPOSIT_CLICK_RATIO_X} ratioY=${RUNE_DEPOSIT_CLICK_RATIO_Y} stableFor=${Math.round((freshCaptureMs - markerCache.firstSeenAtMs) / GAME_TICK_MS)} game tick(s) requiredStable=${requiredSettleTicks} bounds=(${freshRuneDeposit.minX},${freshRuneDeposit.minY})-${freshRuneDeposit.maxX},${freshRuneDeposit.maxY} pixels=${freshRuneDeposit.pixelCount}; inventory free-space before deposit=${inventoryBeforeClick.count}; waiting one bot tick before tapping '${POST_RUNE_DEPOSIT_CAMERA_NORTH_KEY}' to prepare camera north; checking inventory until travel deadline (${formatTravelEstimate(travel)}).`,
     ),
   );
 
@@ -6528,9 +6723,11 @@ async function runFindRuneDepositTick(
     runeDepositClickDistancePx: travel.distancePx,
     runeDepositInventoryFreeSlotsBeforeClick: inventoryBeforeClick.count,
     runeDepositMarkerCache: null,
+    runeDepositCameraNorthReadyAtMs: cameraReadyAtMs,
+    runeDepositCameraNorthPreparedThisClick: false,
     missingInventoryCountTicks: 0,
     missingRuneDepositTicks: 0,
-    actionLockUntilMs: 0,
+    actionLockUntilMs: cameraReadyAtMs,
   };
 }
 
@@ -6544,8 +6741,32 @@ function runWaitAfterRuneDepositClickTick(
     return state;
   }
 
+  let stateAfterCamera = state;
+  if (stateAfterCamera.runeDepositCameraNorthReadyAtMs > 0) {
+    if (nowMs < stateAfterCamera.runeDepositCameraNorthReadyAtMs) {
+      return {
+        ...stateAfterCamera,
+        actionLockUntilMs: stateAfterCamera.runeDepositCameraNorthReadyAtMs,
+      };
+    }
+
+    const cameraReset = tapKey(POST_RUNE_DEPOSIT_CAMERA_NORTH_KEY);
+    log(
+      stepMessage(
+        WORKFLOW_STEPS.TRAVEL_TO_RUNE_DEPOSIT,
+        `${cameraReset ? `Tapped '${POST_RUNE_DEPOSIT_CAMERA_NORTH_KEY}'` : `Could not tap '${POST_RUNE_DEPOSIT_CAMERA_NORTH_KEY}'`} to prepare camera north after waiting one bot tick from the rune deposit click.`,
+      ),
+    );
+    stateAfterCamera = {
+      ...stateAfterCamera,
+      runeDepositCameraNorthReadyAtMs: 0,
+      runeDepositCameraNorthPreparedThisClick: cameraReset,
+      actionLockUntilMs: 0,
+    };
+  }
+
   const endAwareState = markEndOfRoundDepositModeIfNeeded(
-    state,
+    stateAfterCamera,
     tickCapture,
     WORKFLOW_STEPS.TRAVEL_TO_RUNE_DEPOSIT,
   );
@@ -6583,6 +6804,8 @@ function runWaitAfterRuneDepositClickTick(
         runeDepositArrivalDeadlineMs: 0,
         runeDepositClickDistancePx: null,
         runeDepositInventoryFreeSlotsBeforeClick: null,
+        runeDepositCameraNorthReadyAtMs: 0,
+        runeDepositCameraNorthPreparedThisClick: false,
         missingRuneDepositTicks: 0,
         actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
       };
@@ -6632,6 +6855,8 @@ function runWaitAfterRuneDepositClickTick(
       inventoryFreeSlots: inventoryAfterClick.count,
       missingInventoryCountTicks: 0,
       runeDepositInventoryFreeSlotsBeforeClick: null,
+      runeDepositCameraNorthReadyAtMs: 0,
+      runeDepositCameraNorthPreparedThisClick: false,
       missingRuneDepositTicks: 0,
       actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
     };
@@ -6665,6 +6890,8 @@ function runWaitAfterRuneDepositClickTick(
           inventoryFreeSlots: inventoryAfterClick.count,
           missingInventoryCountTicks: 0,
           runeDepositInventoryFreeSlotsBeforeClick: null,
+          runeDepositCameraNorthReadyAtMs: 0,
+          runeDepositCameraNorthPreparedThisClick: false,
         },
         nowMs,
         `Rune deposit did not increase inventory free-space before the end-of-round travel deadline expired (${currentState.runeDepositInventoryFreeSlotsBeforeClick} -> ${inventoryAfterClick.count}).`,
@@ -6684,6 +6911,8 @@ function runWaitAfterRuneDepositClickTick(
       inventoryFreeSlots: inventoryAfterClick.count,
       missingInventoryCountTicks: 0,
       runeDepositInventoryFreeSlotsBeforeClick: null,
+      runeDepositCameraNorthReadyAtMs: 0,
+      runeDepositCameraNorthPreparedThisClick: false,
       missingRuneDepositTicks: 0,
       actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
     };
@@ -7413,7 +7642,7 @@ function runPortalMiningTick(
       log(
         stepMessage(
           WORKFLOW_STEPS.FILL_POUCHES_AFTER_PORTAL_MINING_FULL,
-          `Inventory is full after portal mining and ${rememberedPouches.length} remembered pouch(es) are available; filling pouches one per game tick before reclicking the orange mining marker.`,
+          `Inventory is full after portal mining and ${rememberedPouches.length} remembered pouch(es) are available; filling pouches one per bot tick before reclicking the orange mining marker.`,
         ),
       );
 
@@ -7588,12 +7817,13 @@ function runFindPortalExitTick(
 
   const location = readGuardianCoordinateLocation(tickCapture.bitmap);
   if (location && location.regionId !== GUARDIAN_CRAFTING_REGION_ID) {
-    return transitionToReturnPortalRecoveryState(
-      state,
-      nowMs,
-      "portalExit",
-      `While searching for the salmon exit portal, coordinate read outside region ${GUARDIAN_CRAFTING_REGION_ID}: tile=${formatGuardianCoordinateLocation(location)} region=${location.regionId} chunk=${location.chunkId} raw='${location.matchedLine}'. Finding ${RETURN_PORTAL_MARKER_COLOR_HEX} red portal to return.`,
+    warn(
+      stepMessage(
+        WORKFLOW_STEPS.REPEAT_GUARDIAN_CLICK,
+        `While searching for the salmon exit portal, coordinate read outside region ${GUARDIAN_CRAFTING_REGION_ID}: tile=${formatGuardianCoordinateLocation(location)} region=${location.regionId} chunk=${location.chunkId} raw='${location.matchedLine}'. Treating this as already out of portal mining and resuming post-portal flow instead of searching for the red return portal.`,
+      ),
     );
+    return transitionToPostPortalDepositResumeState(state, nowMs);
   }
 
   if (location && !isInPortalMiningZone(location)) {
@@ -7719,11 +7949,20 @@ function runWaitAfterPortalExitClickTick(state: BotState, nowMs: number, tickCap
   }
 
   if (location.regionId !== GUARDIAN_CRAFTING_REGION_ID) {
-    return transitionToReturnPortalRecoveryState(
-      state,
+    warn(
+      stepMessage(
+        WORKFLOW_STEPS.REPEAT_GUARDIAN_CLICK,
+        `Salmon exit portal return read outside region ${GUARDIAN_CRAFTING_REGION_ID}: tile=${formatGuardianCoordinateLocation(location)} region=${location.regionId} chunk=${location.chunkId} raw='${location.matchedLine}'. Resuming post-portal flow instead of searching for the red return portal; red return recovery is only valid while entering salmon mining.`,
+      ),
+    );
+    return transitionToPostPortalDepositResumeState(
+      {
+        ...state,
+        portalExitArrivalDeadlineMs: 0,
+        portalExitClickDistancePx: null,
+        missingPortalExitTicks: 0,
+      },
       nowMs,
-      "portalExit",
-      `Salmon exit portal landed outside region ${GUARDIAN_CRAFTING_REGION_ID}: tile=${formatGuardianCoordinateLocation(location)} region=${location.regionId} chunk=${location.chunkId} raw='${location.matchedLine}'. Finding ${RETURN_PORTAL_MARKER_COLOR_HEX} red portal to return.`,
     );
   }
 
@@ -7988,7 +8227,7 @@ async function runLoop(
           setCurrentLogLoopIndex(state.loopIndex);
           setCurrentLogPhase(state.phase);
           return state.phase === "wait-after-great-guardian-click"
-            ? runWaitAfterGreatGuardianClickTick(state, nowMs, tickCapture, portalOpenIconTemplate)
+            ? runWaitAfterGreatGuardianClickTick(state, nowMs, tickCapture, captureBounds, portalOpenIconTemplate)
             : state;
         },
         findChargedCellDeposit: ({ state, nowMs, tickCapture }) => {
@@ -8002,7 +8241,7 @@ async function runLoop(
           setCurrentLogLoopIndex(state.loopIndex);
           setCurrentLogPhase(state.phase);
           return state.phase === "wait-after-charged-cell-deposit-click"
-            ? runWaitAfterChargedCellDepositClickTick(state, nowMs, tickCapture, portalOpenIconTemplate)
+            ? runWaitAfterChargedCellDepositClickTick(state, nowMs, tickCapture, captureBounds, portalOpenIconTemplate)
             : state;
         },
         findRuneDeposit: ({ state, nowMs, tickCapture }) => {
