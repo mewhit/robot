@@ -193,6 +193,7 @@ function testSyntheticShapeFilters(): { passed: number; failed: number } {
     { name: "valid altar-sized square", width: 135, height: 132, shouldDetect: true },
     { name: "earth altar angled marker", width: 126, height: 102, shouldDetect: true },
     { name: "fire altar near top edge", x: 562, y: 54, width: 127, height: 118, shouldDetect: true },
+    { name: "cosmic altar side perspective", width: 129, height: 92, shouldDetect: true },
     { name: "red marker before inventory is emptied", color: "red", width: 46, height: 46, shouldDetect: false },
     { name: "tiny red text", color: "red", width: 18, height: 18, shouldDetect: false },
     { name: "thin edge sliver", width: 14, height: 54, shouldDetect: false },

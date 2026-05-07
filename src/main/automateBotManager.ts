@@ -53,6 +53,10 @@ function getAutomateBotName(botId: string): string {
   return AUTOMATE_BOTS.find((bot) => bot.id === botId)?.name ?? botId;
 }
 
+function getAutomateBotVersionName(botId: string): string | undefined {
+  return AUTOMATE_BOTS.find((bot) => bot.id === botId)?.versionName;
+}
+
 function logStartupPlayerTileCalibration(botId: string): void {
   const botName = getAutomateBotName(botId);
   AppState.automateBotStartupRawTilePx = null;
@@ -158,7 +162,7 @@ export function startSelectedAutomateBot(source: "f4" | "ui") {
 
   flushOcrDebugDirectory();
 
-  startAutomateBotLogSession(selectedBotId, source);
+  startAutomateBotLogSession(selectedBotId, source, getAutomateBotVersionName(selectedBotId));
   logStartupPlayerTileCalibration(selectedBotId);
   AppState.automateBotRunning = true;
   sendAutomateBotState();
@@ -187,7 +191,7 @@ export function startAutomateBotFromStep(stepId: string) {
 
   flushOcrDebugDirectory();
 
-  startAutomateBotLogSession(matchedBotId, "ui");
+  startAutomateBotLogSession(matchedBotId, "ui", getAutomateBotVersionName(matchedBotId));
   logStartupPlayerTileCalibration(matchedBotId);
   AppState.selectedAutomateBotId = matchedBotId;
   setSavedSelectedAutomateBotId(matchedBotId);

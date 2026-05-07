@@ -23,6 +23,7 @@ export type AutomateBotDefinition = {
   id: AutomateBotId;
   name: string;
   group?: string;
+  versionName?: string;
 };
 
 export const AUTOMATE_BOTS: AutomateBotDefinition[] = [
@@ -69,6 +70,7 @@ export const AUTOMATE_BOTS: AutomateBotDefinition[] = [
     id: RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID,
     name: "Guardian of the Rift",
     group: "Runecrafting",
+    versionName: "stabilization",
   },
 ];
 
