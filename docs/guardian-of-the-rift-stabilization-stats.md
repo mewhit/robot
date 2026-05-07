@@ -3,50 +3,60 @@
 Version name: `stabilization`
 Date: 2026-05-07
 
-Dataset: 13 logged runs, read from each log footer `Run stats:`.
+Dataset: 17 logged runs, read from each log footer `Run stats:`. The `miningEnd=toWorkbench` line was backfilled from existing log timestamps by measuring the first `[mining] ... mining complete` line to the first following `Clicked middle of magenta workbench marker` line.
 
 - `clean_complete`: bot logged `End-of-round rune deposit complete`.
 - `manual_complete`: user confirmed the run completed, but the bot was stopped before final confirmation.
-- `stopped/incomplete`: logged run without a clean or manually confirmed completion; shown in the table but excluded from baseline averages.
+- `stopped/incomplete`: logged run without clean or manually confirmed completion; shown in the table but excluded from baseline averages.
+- `n/a` for mining end -> workbench means the log started after the first mining phase.
 
 ## Run Summary
 
-| Run | Status | Duration | Great Guardian | Workbench fallback | WB outliers | Red misses | Salmon retry | Charged retry | Guardian no-target | Guardian reclick |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `20260507-093046 run-01` | clean | 10:35 | 4/8 | 0 / 0.0s | 2 | 2 | 5 | 1 | 2 | 2 |
-| `20260507-095047 run-01` | clean | 10:10 | 4/5 | 6 / 51.2s | 5 | 0 | 2 | 1 | 1 | 2 |
-| `20260507-102156 run-01` | clean | 9:05 | 4/6 | 5 / 35.1s | 3 | 2 | 2 | 0 | 1 | 3 |
-| `20260507-111954 run-01` | clean | 9:40 | 5/5 | 2 / 4.0s | 1 | 0 | 4 | 0 | 2 | 1 |
-| `20260507-113950 run-01` | clean | 9:32 | 4/5 | 5 / 34.9s | 4 | 7 | 4 | 0 | 1 | 2 |
-| `20260507-114922 run-02` | manual | 9:05 | 5/5 | 0 / 0.0s | 2 | 1 | 4 | 0 | 3 | 2 |
-| `20260507-120908 run-01` | clean | 9:21 | 5/5 | 1 / 2.7s | 1 | 6 | 2 | 0 | 2 | 4 |
-| `20260507-121830 run-02` | clean | 9:41 | 5/5 | 1 / 7.8s | 0 | 0 | 5 | 0 | 0 | 1 |
-| `20260507-122811 run-03` | clean | 9:47 | 5/5 | 3 / 13.6s | 0 | 0 | 3 | 0 | 1 | 3 |
-| `20260507-123904 run-01` | stopped/incomplete | 8:52 | 5/6 | 9 / 21.8s | 0 | 8 | 2 | 1 | 1 | 1 |
-| `20260507-124756 run-02` | clean | 9:40 | 5/5 | 1 / 2.7s | 0 | 4 | 6 | 0 | 4 | 1 |
-| `20260507-125736 run-03` | clean | 9:52 | 4/5 | 1 / 3.5s | 0 | 0 | 5 | 1 | 3 | 1 |
-| `20260507-130727 run-04` | clean | 9:25 | 4/4 | 0 / 0.0s | 0 | 4 | 8 | 0 | 1 | 1 |
+| Run | Status | Duration | Mining end -> WB | Great Guardian | Workbench fallback | WB outliers | Red misses | Salmon retry | Charged retry | Guardian no-target | Guardian reclick |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `20260507-093046 run-01` | clean | 10:35 | n/a | 4/8 | 0 / 0.0s | 2 | 2 | 5 | 1 | 2 | 2 |
+| `20260507-095047 run-01` | clean | 10:10 | 16.1s | 4/5 | 6 / 51.2s | 5 | 0 | 2 | 1 | 1 | 2 |
+| `20260507-102156 run-01` | clean | 9:05 | 16.1s | 4/6 | 5 / 35.1s | 3 | 2 | 2 | 0 | 1 | 3 |
+| `20260507-111954 run-01` | clean | 9:40 | 15.8s | 5/5 | 2 / 4.0s | 1 | 0 | 4 | 0 | 2 | 1 |
+| `20260507-113950 run-01` | clean | 9:32 | 16.3s | 4/5 | 5 / 34.9s | 4 | 7 | 4 | 0 | 1 | 2 |
+| `20260507-114922 run-02` | manual | 9:05 | 12.0s | 5/5 | 0 / 0.0s | 2 | 1 | 4 | 0 | 3 | 2 |
+| `20260507-120908 run-01` | clean | 9:21 | 16.4s | 5/5 | 1 / 2.7s | 1 | 6 | 2 | 0 | 2 | 4 |
+| `20260507-121830 run-02` | clean | 9:41 | 11.8s | 5/5 | 1 / 7.8s | 0 | 0 | 5 | 0 | 0 | 1 |
+| `20260507-122811 run-03` | clean | 9:47 | 15.7s | 5/5 | 3 / 13.6s | 0 | 0 | 3 | 0 | 1 | 3 |
+| `20260507-123904 run-01` | stopped/incomplete | 8:52 | 15.0s | 5/6 | 9 / 21.8s | 0 | 8 | 2 | 1 | 1 | 1 |
+| `20260507-124756 run-02` | clean | 9:40 | 24.5s | 5/5 | 1 / 2.7s | 0 | 4 | 6 | 0 | 4 | 1 |
+| `20260507-125736 run-03` | clean | 9:52 | 13.8s | 4/5 | 1 / 3.5s | 0 | 0 | 5 | 1 | 3 | 1 |
+| `20260507-130727 run-04` | clean | 9:25 | 105.7s | 4/4 | 0 / 0.0s | 0 | 4 | 8 | 0 | 1 | 1 |
+| `20260507-132700 run-01` | clean | 9:55 | 14.4s | 5/6 | 5 / 16.5s | 0 | 1 | 4 | 0 | 2 | 2 |
+| `20260507-133656 run-02` | stopped/incomplete | 9:23 | 13.9s | 5/7 | 9 / 19.3s | 0 | 0 | 4 | 0 | 4 | 1 |
+| `20260507-134619 run-03` | clean | 9:54 | 6.1s | 5/5 | 4 / 20.6s | 1 | 0 | 5 | 0 | 0 | 2 |
+| `20260507-135613 run-04` | clean | 10:08 | 12.1s | 5/6 | 4 / 14.1s | 1 | 2 | 5 | 0 | 4 | 2 |
 
-`WB outliers` counts workbench travel estimates with `distance >= 700px`, which catches the impossible nearby-distance reads that the stable player anchor is meant to remove.
+`WB outliers` counts workbench travel estimates with `distance >= 700px`, which catches impossible nearby-distance reads. `Mining end -> WB` is specifically the first mining phase only, from the end of mining.
 
 ## Baseline
 
-Baseline excludes `20260507-123904 run-01` because it did not record a clean end-of-round rune deposit and was not manually confirmed complete.
+Baseline includes `clean` and the manually accepted run, and excludes stopped/incomplete runs.
 
 | Metric | Value |
 | --- | ---: |
-| Logged runs | 13 |
-| Baseline runs | 12 |
-| Clean complete | 11 |
+| Logged runs | 17 |
+| Baseline runs | 15 |
+| Clean complete | 14 |
 | Manual complete | 1 |
-| Excluded stopped/incomplete | 1 |
-| Average duration | 9:39 |
-| Best duration | 9:05 |
-| Worst duration | 10:35 |
-| Great Guardian success | 54/63 |
+| Excluded stopped/incomplete | 2 |
+| Average duration | 9:43 |
+| Best duration | 9:05 (20260507-102156 run-01) |
+| Worst duration | 10:35 (20260507-093046 run-01) |
+| Great Guardian success | 69/80 |
 | Great Guardian success rate | 86% |
-| Great Guardian success per run | 4.5 |
-| Great Guardian clicks per run | 5.2 |
+| Great Guardian success per run | 4.6 |
+| Great Guardian clicks per run | 5.3 |
+| Mining end -> WB samples | 14/15 |
+| Mining end -> WB average | 21.2s |
+| Mining end -> WB median | 15.8s |
+| Mining end -> WB best | 6.1s (20260507-134619 run-03) |
+| Mining end -> WB worst | 105.7s (20260507-130727 run-04) |
 
 Great Guardian score scale:
 
@@ -58,164 +68,103 @@ Great Guardian score scale:
 | 5 | good |
 | 6 | excellent |
 
-Current `stabilization` average is `4.5`, so the baseline is between `okay` and `good`.
+Current `stabilization` average is `4.6`, so the baseline is between `okay` and `good`.
 
-## Optimization Ranking
+## Mining End To Workbench
 
-### 1. Workbench fallback and pouch threshold (#1 + #8)
+Observed impact in the 15-run baseline:
 
-Observed impact in the 12-run baseline:
+- Samples: 14/15 baseline runs
+- Average: 21.2s
+- Median: 15.8s
+- Best: 6.1s (20260507-134619 run-03)
+- Worst: 105.7s (20260507-130727 run-04)
+- Runs over 20s: 2 (`20260507-124756 run-02`, `20260507-130727 run-04`)
+- Runs over 30s: 1 (`20260507-130727 run-04`)
+- Average without >30s outliers: 14.7s
 
-- Workbench fallback count: 25
-- Runs affected: 9/12
-- Observed fallback wait: 155.5s total
-- Average fallback wait: 6.2s
-- Average cost per baseline run: 13.0s
-- Workbench pouch-fill then reclick cycles: 35
-- Workbench distance outliers >= 700px: 18
-
-This is still the strongest current optimization target. The logs show repeated cases where the bot waits for inventory movement after workbench, times out, and reclicks. The pouch threshold idea may reduce extra workbench cycles if the bot fills pouches earlier when `inventory free space + pouch capacity` says it should.
-
-Related implemented optimization to validate next: stable player anchor at bot startup. The complete baseline still contains many pre-anchor distance outliers. The only backfilled log with `stablePlayerAnchor=startup-player-box` is stopped/incomplete, so it is not enough to judge the optimization yet.
+Normal flow is around 12-16s. The main issue is not the normal path; it is outliers like `20260507-130727 run-04`, where mining end -> workbench took 105.7s.
 
 Suggested stat to compare next version:
 
-- Workbench fallback count per run
-- Total workbench fallback wait
-- Workbench pouch-fill reclick cycles
-- Distance estimate outliers for nearby targets
-- Stable player anchor source
-- Run duration change
+- Mining end -> workbench average
+- Mining end -> workbench median
+- Count of mining end -> workbench >20s
+- Whether the workbench was found on the first scan after agility travel
+
+## Optimization Buckets
+
+### 1. Workbench fallback and pouch threshold (#1 + #8)
+
+Observed impact in the 15-run baseline:
+
+- Workbench fallback count: 38
+- Runs affected: 12/15
+- Observed fallback wait: 206.7s total
+- Average fallback wait per fallback: 5.4s
+- Average fallback cost per baseline run: 13.8s
+- Workbench pouch-fill then reclick cycles: 44
+- Workbench distance outliers >= 700px: 20
+
+This remains the strongest optimization target. It is direct wasted time after the workbench click, and it is easy to observe in logs.
 
 ### 2. Salmon mining validation (#5)
 
 Observed impact:
 
-- Salmon arrival confirmations tracked: 23
-- Salmon retry/not-confirmed signals: 50
-- Portal click to mining-zone confirmation: 180.9s total
-- Average validation time: 7.9s
+- Salmon arrival confirmations tracked: 29
+- Salmon retry/not-confirmed signals: 64
+- Portal click to mining-zone confirmation: 220.2s total
+- Average validation time: 7.6s
 - Worst validation time: 12.1s
 
-This is a large time bucket, but part of it is real travel time. The improvement should focus on reducing false waiting or retry delay after the portal click, not assuming all 180.9s is waste.
-
-Suggested stat to compare next version:
-
-- Salmon retry/not-confirmed count
-- Portal click to mining-zone confirmation average
-- Cases where orange rock was visible before coordinate confirmation
+This is still a large time bucket, but part of it is real travel time.
 
 ### 3. Altar camera return / red portal search (#6)
 
 Observed impact:
 
-- Red portal misses: 26
-- Runs affected: 7/12
-- Red portal search time: 64.6s total
-- Average search time: 1.1s
+- Red portal searches: 76
+- Red portal misses: 29
+- Red portal search time: 77.6s total
+- Average search time: 1.0s
 - Worst search time: 7.8s
 
-This is still a useful target because the user can visually observe it: after the second altar click, count how often the red portal is immediately visible. The camera-return idea is promising only if it reduces red portal misses without breaking altar/pouch clicks.
+This is useful to compare visually, but the previous camera changes were unstable, so any new change here should be isolated.
 
-Suggested stat to compare next version:
-
-- Red portal misses after altar
-- Red portal search average and worst case
-- Any wrong red-marker clicks
-
-### 4. Guardian travel timing / do not click if too late (#3)
+### 4. Guardian travel timing / overlap clicks (#3 + #9)
 
 Observed impact:
 
-- Guardian reclicks: 23
-- Active guardian no-target scans: 21
-- Movement late events for `guardian-to-altar`: 26
+- Guardian initial no-target scans: 27
+- Guardian reclicks: 29
+- Guardian reclick no-target scans: 15
+- Great Guardian late reclicks: 4
+- Great Guardian inventory-not-ready warnings: 170
 
-This matters for correctness and Great Guardian success. The direct time bucket is smaller than workbench and salmon validation, but reducing wasted guardian clicks should improve Great Guardian success stability.
+Great Guardian success is the primary score, but wrong/late clicks still cost time and can reduce points.
 
-Suggested stat to compare next version:
-
-- Guardian reclick count
-- Guardian no-target count
-- Clicks on despawned/wrong guardian
-- Great Guardian success per run
-
-### 5. Charged cell deposit validation vs find rune deposit (#4)
+### 5. Charged cell deposit validation (#4)
 
 Observed impact:
 
-- Charged-cell click/deposit attempts: 57
-- Charged-cell verified deposits: 56
-- Retry/fail signals: 3
-- Click to inventory verification time: 225.4s total
-- Average verification time: 4.0s
+- Charged cell attempts: 74
+- Charged cell verified: 72
+- Charged cell retry signals: 3
+- Charged cell verification time: 282.7s total
+- Average verification time: 3.9s
+- Worst verification time: 6.1s
 
-This is not the top priority in the current logs. It still matters because it can block the rune-deposit transition, but the failure count is low compared with workbench and salmon.
+This is currently smaller than workbench and salmon, but it is still worth watching because it sits late in the run.
 
-Suggested stat to compare next version:
+## Versioning Notes
 
-- Charged-cell retry/fail signals
-- Charged-cell click to inventory verification time
-- Cases where rune deposit was visible before charged-cell validation completed
+Use commit/version names that explain the changed behavior and keep the stat target obvious. Examples:
 
-### 6. Rotate camera west/east after agility course (#2)
-
-Observed impact:
-
-- No strong evidence that this is currently a large time sink.
-
-This should stay lower priority unless new logs show the orange mining marker is often hidden after agility.
-
-Suggested stat to compare next version:
-
-- Agility confirmed to orange mining click time
-- Orange marker missing after agility count
-
-### 7. Two-color active guardian markers (#9)
-
-Observed impact:
-
-- Current logs do not directly prove overlap/wrong-guardian clicks as a major time bucket.
-- This is still a reliability improvement, not mainly a speed optimization.
-
-Suggested stat to compare next version:
-
-- Wrong guardian click count
-- Overlap cases observed manually
-- Active guardian no-target scans
-- Great Guardian success per run
-
-## Current Best Next Change
-
-Best implemented optimization to validate: `stable player anchor for distance estimates`.
-
-Reason: the baseline has `18` workbench distance outliers >= `700px`, and those reads can inflate travel waits and fallback behavior.
-
-Best next unimplemented optimization after that: `#1 + #8 Workbench fallback and pouch threshold`.
-
-Reason: it has the clearest measured loss in the 12-run baseline: `155.5s` total observed fallback wait, affecting `9/12` runs, plus `35` workbench pouch-fill/reclick cycles.
-
-After that, test `#5 Salmon mining validation`, then `#6 Altar camera return for red portal`.
-
-## Comparison Checklist For Next Version
-
-For each future version, record:
-
-| Metric | Why it matters |
+| Pattern | Example |
 | --- | --- |
-| Version name | Compare code changes cleanly |
-| Run count | Avoid judging from 1 lucky/unlucky run |
-| Great Guardian success/run | Main success metric |
-| Great Guardian clicks/run | Measures wasted GG clicks |
-| Average duration | General speed |
-| Workbench fallback count | Main current time sink |
-| Workbench fallback wait total | Direct observed waste |
-| Stable player anchor source | Confirms the bot is not re-detecting a false player position mid-run |
-| Nearby target distance outliers | Catches impossible `700px+` distance estimates for close workbench/rock targets |
-| Salmon retry count | Portal/mining validation reliability |
-| Salmon validation average | Portal travel/confirmation speed |
-| Red portal misses | Altar camera/portal visibility |
-| Charged-cell retry count | Deposit transition reliability |
-| Guardian reclick/no-target count | Travel estimate and target visibility quality |
+| `gotr/<area>-<behavior>-<stat-target>` | `gotr/workbench-nw-camera-first-wb` |
+| `gotr/<area>-stabilize-<risk>` | `gotr/altar-stabilize-cosmic-wait` |
+| `gotr/<area>-measure-<metric>` | `gotr/stats-measure-first-mining-wb` |
 
-Minimum useful sample before judging a change: 5 complete runs. Prefer 8-10 if the change affects random visibility/camera behavior.
+Minimum sample before judging a change: 5 complete runs for a quick smoke comparison, 10-15 complete runs before trusting small differences. If Great Guardian success changes by 1+ per run or a major miss-click appears, stop early and revert or isolate.

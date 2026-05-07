@@ -230,6 +230,8 @@ type BotState = {
   miningTimerLocalStartSecondsRemaining: number | null;
   miningTimerLocalStartedAtMs: number | null;
   miningStatusGreenStartedAtMs: number | null;
+  miningCameraKReadyAtMs: number;
+  miningCameraKPrepared: boolean;
   miningAgilityCourseMarkerCache: CachedMarker<ColoredMarkerDetection> | null;
   inventoryFreeSlots: number | null;
   pouchInventory: GuardianOfTheRiftPouchInventoryMemory;
@@ -245,6 +247,8 @@ type BotState = {
   missingInventoryCountTicks: number;
   craftingInventoryChangeDeadlineMs: number;
   workbenchInventoryNoChangeWarnings: number;
+  workbenchCameraNorthReadyAtMs: number;
+  workbenchCameraNorthPreparedThisClick: boolean;
   guardianArrivalDeadlineMs: number;
   guardianClickDistancePx: number | null;
   guardianCoordinateConfirmed: boolean;
@@ -426,6 +430,7 @@ type GuardianRunStats = {
   workbenchMaxDistancePx: number;
   workbenchDistanceOutliers: number;
   workbenchLastClickedAtMs: number | null;
+  miningEndToWorkbench: RunStatsTravelTimer;
   redPortalSearchStartedAtMs: number | null;
   redPortalSearches: number;
   redPortalMisses: number;
@@ -539,6 +544,8 @@ const WORKBENCH_WEST_CLICK_RATIO_X = 0.34;
 const WORKBENCH_SOUTH_WEST_WEST_DISTANCE_RATIO_X = 0.3;
 const WORKBENCH_SOUTH_WEST_WEST_DISTANCE_RATIO_Y = 0.2;
 const WORKBENCH_SOUTH_WEST_WEST_MAX_SOUTH_OF_WEST_RATIO = 0.65;
+const WORKBENCH_NORTH_WEST_DISTANCE_RATIO_X = 0.3;
+const WORKBENCH_NORTH_WEST_DISTANCE_RATIO_Y = 0.18;
 const WORKBENCH_WEST_CLICK_LOCK_TICKS = 3;
 const FREE_MOVE_MIN_DISTANCE_TILES = 10;
 const FREE_MOVE_TILE_PX_FALLBACK = 48;
@@ -638,6 +645,10 @@ const POST_RUNE_DEPOSIT_CAMERA_NORTH_KEY = "n";
 const RUNE_DEPOSIT_CAMERA_NORTH_SETTLE_MS = BOT_TICK_MS;
 const WORKBENCH_INVENTORY_CHANGE_CHECK_TICKS = 2;
 const WORKBENCH_INVENTORY_NO_CHANGE_MAX_WARNINGS = 3;
+const MINING_CAMERA_WORKBENCH_KEY = "k";
+const MINING_CAMERA_WORKBENCH_DELAY_BOT_TICKS = 2;
+const WORKBENCH_CAMERA_NORTH_KEY = "n";
+const WORKBENCH_CAMERA_NORTH_DELAY_BOT_TICKS = 2;
 const PORTAL_MINING_INVENTORY_CHANGE_CHECK_TICKS = 5;
 const GUARDIAN_CRAFTING_CHUNK_ID = 926881;
 const GUARDIAN_CRAFTING_REGION_ID = 14484;
@@ -743,6 +754,7 @@ function createEmptyGuardianRunStats(startedAtMs: number): GuardianRunStats {
     workbenchMaxDistancePx: 0,
     workbenchDistanceOutliers: 0,
     workbenchLastClickedAtMs: null,
+    miningEndToWorkbench: createRunStatsTravelTimer(),
     redPortalSearchStartedAtMs: null,
     redPortalSearches: 0,
     redPortalMisses: 0,
@@ -793,6 +805,27 @@ function completeRunStatsTimer(timer: RunStatsTravelTimer, nowMs: number): void 
   timer.pendingStartedAtMs = null;
 }
 
+function startRunStatsMiningEndToWorkbench(nowMs: number): void {
+  const stats = currentRunStats;
+  if (!stats) {
+    return;
+  }
+
+  const timer = stats.miningEndToWorkbench;
+  if (timer.completions === 0 && timer.pendingStartedAtMs === null) {
+    timer.pendingStartedAtMs = nowMs;
+  }
+}
+
+function formatMiningEndToWorkbenchStats(stats: GuardianRunStats): string {
+  const timer = stats.miningEndToWorkbench;
+  if (timer.completions > 0) {
+    return formatRunStatsSeconds(timer.totalMs);
+  }
+
+  return timer.pendingStartedAtMs === null ? "not-started" : "pending";
+}
+
 function recordRunStatsWorkbenchTravel(travel: TravelWaitEstimate, nowMs: number): void {
   if (!currentRunStats) {
     return;
@@ -800,6 +833,12 @@ function recordRunStatsWorkbenchTravel(travel: TravelWaitEstimate, nowMs: number
 
   currentRunStats.workbenchClicks += 1;
   currentRunStats.workbenchLastClickedAtMs = nowMs;
+  if (
+    currentRunStats.miningEndToWorkbench.completions === 0 &&
+    currentRunStats.miningEndToWorkbench.pendingStartedAtMs !== null
+  ) {
+    completeRunStatsTimer(currentRunStats.miningEndToWorkbench, nowMs);
+  }
   currentRunStats.workbenchMaxDistancePx = Math.max(currentRunStats.workbenchMaxDistancePx, travel.distancePx);
   if (travel.distancePx >= 700) {
     currentRunStats.workbenchDistanceOutliers += 1;
@@ -972,6 +1011,7 @@ function buildGuardianRunStatsFooter(context: AutomateBotLogFooterContext): stri
     `status=${status} stopSource=${context.stopSource} stopReason=${context.stopReason} duration=${formatRunStatsDuration(durationMs)}`,
     `greatGuardian=${stats.greatGuardianVerified}/${stats.greatGuardianClicks} lateReclick=${stats.greatGuardianLateReclicks} inventoryNotReady=${stats.greatGuardianInventoryNotReady}`,
     `workbench=clicks:${stats.workbenchClicks} fallback:${stats.workbenchFallbackCount} fallbackWait:${formatRunStatsSeconds(stats.workbenchFallbackWaitMs)} pouchReclickCycles:${stats.workbenchPouchReclickCycles} maxDistancePx:${Math.round(stats.workbenchMaxDistancePx)} distanceOutliers700px:${stats.workbenchDistanceOutliers}`,
+    `miningEnd=toWorkbench:${formatMiningEndToWorkbenchStats(stats)}`,
     `redPortal=searches:${stats.redPortalSearches} misses:${stats.redPortalMisses} total:${formatRunStatsSeconds(stats.redPortalSearchTotalMs)} avg:${formatRunStatsAverage(stats.redPortalSearchTotalMs, stats.redPortalSearches)} max:${formatRunStatsSeconds(stats.redPortalSearchMaxMs)}`,
     `salmon=portalClicks:${stats.salmonPortalClicks} confirmations:${stats.salmonValidation.completions} retrySignals:${stats.salmonRetrySignals} total:${formatRunStatsSeconds(stats.salmonValidation.totalMs)} avg:${formatRunStatsAverage(stats.salmonValidation.totalMs, stats.salmonValidation.completions)} max:${formatRunStatsSeconds(stats.salmonValidation.maxMs)}`,
     `chargedCell=attempts:${stats.chargedCellAttempts} verified:${stats.chargedCellVerification.completions} retrySignals:${stats.chargedCellRetrySignals} total:${formatRunStatsSeconds(stats.chargedCellVerification.totalMs)} avg:${formatRunStatsAverage(stats.chargedCellVerification.totalMs, stats.chargedCellVerification.completions)} max:${formatRunStatsSeconds(stats.chargedCellVerification.maxMs)}`,
@@ -1395,6 +1435,8 @@ function createInitialState(): BotState {
     miningTimerLocalStartSecondsRemaining: null,
     miningTimerLocalStartedAtMs: null,
     miningStatusGreenStartedAtMs: null,
+    miningCameraKReadyAtMs: 0,
+    miningCameraKPrepared: false,
     miningAgilityCourseMarkerCache: null,
     inventoryFreeSlots: null,
     pouchInventory: createEmptyPouchInventoryMemory(),
@@ -1410,6 +1452,8 @@ function createInitialState(): BotState {
     missingInventoryCountTicks: 0,
     craftingInventoryChangeDeadlineMs: 0,
     workbenchInventoryNoChangeWarnings: 0,
+    workbenchCameraNorthReadyAtMs: 0,
+    workbenchCameraNorthPreparedThisClick: false,
     guardianArrivalDeadlineMs: 0,
     guardianClickDistancePx: null,
     guardianCoordinateConfirmed: false,
@@ -2943,6 +2987,8 @@ function transitionToMiningState(state: BotState): BotState {
     miningTimerLocalStartSecondsRemaining: null,
     miningTimerLocalStartedAtMs: null,
     miningStatusGreenStartedAtMs: null,
+    miningCameraKReadyAtMs: 0,
+    miningCameraKPrepared: false,
     miningAgilityCourseMarkerCache: null,
     portalMiningExitPortalMarkerCache: null,
   };
@@ -2967,6 +3013,8 @@ function startMiningMonitorState(state: BotState, secondsRemaining: number | nul
     miningTimerLocalStartSecondsRemaining: null,
     miningTimerLocalStartedAtMs: null,
     miningStatusGreenStartedAtMs: null,
+    miningCameraKReadyAtMs: 0,
+    miningCameraKPrepared: false,
     miningAgilityCourseMarkerCache: null,
     portalMiningExitPortalMarkerCache: null,
   };
@@ -3694,6 +3742,31 @@ function getSouthWestWestMovePoint(bitmap: RobotBitmap, playerAnchor: { centerX:
   };
 }
 
+function getNorthWestMovePoint(bitmap: RobotBitmap, playerAnchor: { centerX: number; centerY: number }): { x: number; y: number } {
+  const tilePx = getFreeMoveTilePx(playerAnchor);
+  const westDistancePx = Math.max(
+    Math.round(tilePx * FREE_MOVE_MIN_DISTANCE_TILES),
+    Math.round(bitmap.width * WORKBENCH_NORTH_WEST_DISTANCE_RATIO_X),
+  );
+  const northDistancePx = Math.max(
+    Math.round(tilePx * 2),
+    Math.round(bitmap.height * WORKBENCH_NORTH_WEST_DISTANCE_RATIO_Y),
+  );
+
+  return {
+    x: clamp(
+      Math.round(playerAnchor.centerX - westDistancePx),
+      CLICK_SAFE_EDGE_MARGIN_PX,
+      bitmap.width - 1 - CLICK_SAFE_EDGE_MARGIN_PX,
+    ),
+    y: clamp(
+      Math.round(playerAnchor.centerY - northDistancePx),
+      CLICK_SAFE_EDGE_MARGIN_PX,
+      bitmap.height - 1 - CLICK_SAFE_EDGE_MARGIN_PX,
+    ),
+  };
+}
+
 function getSouthMovePoint(bitmap: RobotBitmap, playerAnchor: { centerX: number; centerY: number }): { x: number; y: number } {
   const minSceneX = clamp(Math.round(bitmap.width * RUNE_DEPOSIT_SOUTH_CLICK_MIN_RATIO_X), CLICK_SAFE_EDGE_MARGIN_PX, bitmap.width - 1);
   const maxSceneX = clamp(
@@ -3865,6 +3938,8 @@ function runFindOrangeTick(
       ...state,
       missingOrangeTicks,
       miningStatusGreenStartedAtMs: null,
+      miningCameraKReadyAtMs: 0,
+      miningCameraKPrepared: false,
       miningAgilityCourseMarkerCache: null,
       actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
     };
@@ -3993,7 +4068,11 @@ function transitionToWorkbenchState(
     miningTimerLocalStartSecondsRemaining: null,
     miningTimerLocalStartedAtMs: null,
     miningStatusGreenStartedAtMs: null,
+    miningCameraKReadyAtMs: 0,
+    miningCameraKPrepared: false,
     miningAgilityCourseMarkerCache: null,
+    workbenchCameraNorthReadyAtMs: 0,
+    workbenchCameraNorthPreparedThisClick: false,
   };
 }
 
@@ -4170,7 +4249,7 @@ function transitionToCraftingState(
   log(
     stepMessage(
       WORKFLOW_STEPS.CRAFT_UNTIL_FULL,
-      `Workbench clicked; checking inventory movement after travel (start free-space=${startingInventoryFreeSlots ?? "unknown"}, ${formatTravelEstimate(travel)}).`,
+      `Workbench clicked; checking inventory movement after travel (start free-space=${startingInventoryFreeSlots ?? "unknown"}, ${formatTravelEstimate(travel)}); tapping '${WORKBENCH_CAMERA_NORTH_KEY}' after ${WORKBENCH_CAMERA_NORTH_DELAY_BOT_TICKS} bot tick(s).`,
     ),
   );
   return {
@@ -4181,6 +4260,8 @@ function transitionToCraftingState(
     inventoryFreeSlots: startingInventoryFreeSlots,
     missingInventoryCountTicks: 0,
     craftingInventoryChangeDeadlineMs: nowMs + travel.waitTicks * GAME_TICK_MS,
+    workbenchCameraNorthReadyAtMs: nowMs + WORKBENCH_CAMERA_NORTH_DELAY_BOT_TICKS * BOT_TICK_MS,
+    workbenchCameraNorthPreparedThisClick: false,
     missingYellowTicks: 0,
   };
 }
@@ -4557,6 +4638,8 @@ function reclickMiningNodeFromMiningStatus(
       ...state,
       missingOrangeTicks,
       miningStatusGreenStartedAtMs: null,
+      miningCameraKReadyAtMs: 0,
+      miningCameraKPrepared: false,
       actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
     };
   }
@@ -4577,6 +4660,8 @@ function reclickMiningNodeFromMiningStatus(
     miningOrangeReclicked: true,
     missingOrangeTicks: 0,
     miningStatusGreenStartedAtMs: null,
+    miningCameraKReadyAtMs: 0,
+    miningCameraKPrepared: false,
     miningAgilityCourseMarkerCache: null,
     actionLockUntilMs: clickedAtMs + reclickDelayMs,
   };
@@ -4615,6 +4700,8 @@ function runMiningTick(
       ...state,
       missingMiningTimerTicks,
       miningStatusGreenStartedAtMs: null,
+      miningCameraKReadyAtMs: 0,
+      miningCameraKPrepared: false,
       actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
     };
   }
@@ -4630,9 +4717,14 @@ function runMiningTick(
     Math.ceil((MINING_STATUS_GREEN_MAX_DURATION_MS - miningStatusGreenElapsedMs) / 1000),
   );
   const miningStatusJustTurnedGreen = state.miningStatusGreenStartedAtMs === null;
+  const miningCameraKReadyAtMs = miningStatusJustTurnedGreen
+    ? nowMs + MINING_CAMERA_WORKBENCH_DELAY_BOT_TICKS * BOT_TICK_MS
+    : state.miningCameraKReadyAtMs;
   let currentState: BotState = {
     ...state,
     miningStatusGreenStartedAtMs,
+    miningCameraKReadyAtMs,
+    miningCameraKPrepared: miningStatusJustTurnedGreen ? false : state.miningCameraKPrepared,
     missingMiningTimerTicks: 0,
   };
 
@@ -4647,6 +4739,24 @@ function runMiningTick(
         `Mining status turned green (${formatMiningStatus(miningStatus)}); starting local ${Math.round(MINING_STATUS_GREEN_MAX_DURATION_MS / 1000)}s mining timer and watching time-since-portal (${formatTimeSincePortal(timeSincePortal)}).`,
       ),
     );
+  }
+
+  if (
+    !currentState.miningCameraKPrepared &&
+    currentState.miningCameraKReadyAtMs > 0 &&
+    nowMs >= currentState.miningCameraKReadyAtMs
+  ) {
+    const tapped = tapKey(MINING_CAMERA_WORKBENCH_KEY);
+    log(
+      stepMessage(
+        WORKFLOW_STEPS.START_MINING,
+        `${tapped ? `Tapped '${MINING_CAMERA_WORKBENCH_KEY}'` : `Could not tap '${MINING_CAMERA_WORKBENCH_KEY}'`} to angle camera toward the workbench after ${MINING_CAMERA_WORKBENCH_DELAY_BOT_TICKS} bot tick(s) of confirmed mining.`,
+      ),
+    );
+    currentState = {
+      ...currentState,
+      miningCameraKPrepared: true,
+    };
   }
 
   if (timeSincePortal.rawText === null) {
@@ -4688,6 +4798,7 @@ function runMiningTick(
     timeSincePortal.secondsElapsed >= MINING_TIME_SINCE_PORTAL_THRESHOLD_SECONDS
   ) {
     const elapsedSeconds = Math.round(miningStatusGreenElapsedMs / 1000);
+    startRunStatsMiningEndToWorkbench(nowMs);
     if (config.useAgilityCourse) {
       return clickAgilityCourseYellowBeforeWorkbench(
         {
@@ -4710,6 +4821,7 @@ function runMiningTick(
 
   if (miningStatusGreenElapsedMs >= MINING_STATUS_GREEN_MAX_DURATION_MS) {
     const elapsedSeconds = Math.round(miningStatusGreenElapsedMs / 1000);
+    startRunStatsMiningEndToWorkbench(nowMs);
     if (config.useAgilityCourse) {
       return clickAgilityCourseYellowBeforeWorkbench(
         {
@@ -4773,6 +4885,8 @@ function runWorkbenchFindYellowTick(
   config: GuardianOfTheRiftConfig,
   portalOpenIconTemplate: GuardianOfTheRiftPortalOpenIconTemplate,
 ): BotState {
+  void config;
+
   if (nowMs < state.actionLockUntilMs) {
     return state;
   }
@@ -4796,11 +4910,8 @@ function runWorkbenchFindYellowTick(
   );
   if (!nearestWorkbenchMarker) {
     const missingYellowTicks = currentState.missingYellowTicks + 1;
-    const moveDirection = config.useAgilityCourse ? "south-west-west" : "west";
-    const movePoint =
-      moveDirection === "south-west-west"
-        ? getSouthWestWestMovePoint(tickCapture.bitmap, playerAnchor)
-        : getWestMovePoint(tickCapture.bitmap, playerAnchor);
+    const moveDirection = "north-west";
+    const movePoint = getNorthWestMovePoint(tickCapture.bitmap, playerAnchor);
     const clicked = clickScreenPoint(captureBounds.x + movePoint.x, captureBounds.y + movePoint.y, captureBounds);
     const nextWestMoveClickCount = currentState.westMoveClickCount + 1;
     if (nextWestMoveClickCount === 1 || nextWestMoveClickCount % 3 === 0) {
@@ -4851,6 +4962,8 @@ function transitionToGuardianTravelState(
     actionLockUntilMs: 0,
     craftingInventoryChangeDeadlineMs: 0,
     workbenchInventoryNoChangeWarnings: 0,
+    workbenchCameraNorthReadyAtMs: 0,
+    workbenchCameraNorthPreparedThisClick: false,
     guardianArrivalDeadlineMs: 0,
     guardianClickDistancePx: null,
     guardianCoordinateConfirmed: false,
@@ -5053,12 +5166,31 @@ function runCraftingTick(
   captureBounds: ScreenCaptureBounds,
   portalOpenIconTemplate: GuardianOfTheRiftPortalOpenIconTemplate,
 ): BotState {
-  if (nowMs < state.actionLockUntilMs) {
-    return state;
+  let currentState = state;
+  if (
+    !currentState.workbenchCameraNorthPreparedThisClick &&
+    currentState.workbenchCameraNorthReadyAtMs > 0 &&
+    nowMs >= currentState.workbenchCameraNorthReadyAtMs
+  ) {
+    const tapped = tapKey(WORKBENCH_CAMERA_NORTH_KEY);
+    log(
+      stepMessage(
+        WORKFLOW_STEPS.CRAFT_UNTIL_FULL,
+        `${tapped ? `Tapped '${WORKBENCH_CAMERA_NORTH_KEY}'` : `Could not tap '${WORKBENCH_CAMERA_NORTH_KEY}'`} to prepare camera north after waiting ${WORKBENCH_CAMERA_NORTH_DELAY_BOT_TICKS} bot tick(s) from the workbench click.`,
+      ),
+    );
+    currentState = {
+      ...currentState,
+      workbenchCameraNorthPreparedThisClick: true,
+    };
+  }
+
+  if (nowMs < currentState.actionLockUntilMs) {
+    return currentState;
   }
 
   const portalCheck = checkWorkbenchOpenPortal(
-    state,
+    currentState,
     nowMs,
     tickCapture,
     portalOpenIconTemplate,
@@ -5067,7 +5199,7 @@ function runCraftingTick(
   if (portalCheck.transitioned) {
     return portalCheck.state;
   }
-  const currentState = portalCheck.state;
+  currentState = portalCheck.state;
 
   const inventory = detectInventoryCount(tickCapture.bitmap);
   log(
