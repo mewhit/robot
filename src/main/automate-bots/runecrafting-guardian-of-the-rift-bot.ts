@@ -62,6 +62,7 @@ import {
   detectGuardianOfTheRiftActiveRunes,
   loadGuardianOfTheRiftRuneTemplatesFromDirectory,
   type GuardianOfTheRiftActiveRuneDetection,
+  type GuardianOfTheRiftRune,
   type GuardianOfTheRiftRuneMatch,
   type GuardianOfTheRiftRuneTemplate,
   type GuardianOfTheRiftSlot,
@@ -114,6 +115,16 @@ type BotPhase =
   | "find-portal-exit"
   | "wait-after-portal-exit-click"
   | "complete";
+type CameraFacing =
+  | "north"
+  | "north-east"
+  | "east"
+  | "south-east"
+  | "south"
+  | "south-west"
+  | "west"
+  | "north-west"
+  | "unknown";
 type EngineFunctionKey =
   | "pickUnchargedCell"
   | "waitAfterPickup"
@@ -284,6 +295,7 @@ type BotState = {
   guardianClickDistancePx: number | null;
   guardianCoordinateConfirmed: boolean;
   guardianAltarStartLocation: GuardianCoordinateLocation | null;
+  guardianAltarRune: GuardianOfTheRiftRune | null;
   guardianYellowArrivalDeadlineMs: number;
   guardianYellowTravelEstimate: TravelWaitEstimate | null;
   guardianYellowCorrectionRecordedDeadlineMs: number | null;
@@ -302,6 +314,7 @@ type BotState = {
   postPortalDepositResume: PostPortalDepositResume | null;
   greatGuardianArrivalDeadlineMs: number;
   greatGuardianClickDistancePx: number | null;
+  greatGuardianAttemptCount: number;
   chargedCellDepositArrivalDeadlineMs: number;
   chargedCellDepositClickDistancePx: number | null;
   chargedCellToRuneCameraReadyAtMs: number;
@@ -391,6 +404,29 @@ type GuardianTravelTarget = {
   colorHex: string;
 };
 
+type GuardianInteriorColor = {
+  label: string;
+  hex: string;
+};
+
+type GuardianCameraPresetAction = {
+  key: string;
+  count: number;
+};
+
+type GuardianCameraPreset = {
+  label: string;
+  actions: GuardianCameraPresetAction[];
+};
+
+type TeleportDarkScreenDetection = {
+  isTeleporting: boolean;
+  darkRatio: number;
+  averageLuminance: number;
+  sampledPixels: number;
+  bounds: SearchBounds;
+};
+
 type GuardianTravelTargetSelection = {
   target: GuardianTravelTarget | null;
   elementalRune: GuardianOfTheRiftRuneMatch | null;
@@ -424,6 +460,14 @@ type TravelWaitEstimate = {
   movementModelVersion: number;
   movementExtraWaitTicks: number;
   movementReasons: string[];
+};
+
+type GuardianRuneTravelTimingDecision = {
+  canClick: boolean;
+  trusted: boolean;
+  remainingMs: number | null;
+  requiredMs: number;
+  reason: string;
 };
 
 type PendingMovementObservation = {
@@ -489,8 +533,10 @@ type GuardianRunStats = {
   chargedCellRetrySignals: number;
   chargedCellVerification: RunStatsTravelTimer;
   guardianNoTargetScans: number;
+  guardianTimerRefusals: number;
   guardianReclicks: number;
   guardianReclickNoTargetScans: number;
+  guardianReclickTimerRefusals: number;
   movementLateByKind: Record<string, number>;
 };
 
@@ -515,6 +561,7 @@ const BOT_TICK_MS = 200;
 const ACTIVE_GUARDIAN_RUNE_TIMER_MS = 19_000;
 const ACTIVE_GUARDIAN_RUNE_TIMER_LATE_TOLERANCE_MS = BOT_TICK_MS;
 const ACTIVE_GUARDIAN_RUNE_TIMER_OVERDUE_GRACE_MS = BOT_TICK_MS;
+const GUARDIAN_RUNE_EXPIRY_TRAVEL_BUFFER_TICKS = 1;
 const FAST_ACTION_RETRY_MS = 200;
 const PRE_DECISION_CAPTURE_SETTLE_MS = 80;
 const STARTUP_SETTLE_MS = 180;
@@ -590,7 +637,7 @@ const PORTAL_MINING_ZONE_TILE_RADIUS_X = 8;
 const PORTAL_MINING_ZONE_TILE_RADIUS_Y = 8;
 const FINAL_PORTAL_TELEPORT_CONFIRM_GRACE_TICKS = 3;
 const SALMON_PORTAL_PRE_CLICK_SETTLE_TICKS = 1;
-const SALMON_PORTAL_TO_MINING_VALIDATION_BUFFER_TICKS = 3;
+const SALMON_PORTAL_TO_MINING_VALIDATION_BUFFER_TICKS = 0;
 const SALMON_PORTAL_STALLED_ARRIVAL_RECOVERY_TICKS = 10;
 const SALMON_PORTAL_CLICK_RATIO_X = 0.5;
 const AGILITY_EAST_CLICK_RATIO_X = 0.68;
@@ -631,8 +678,6 @@ const CHARGED_CELL_DEPOSIT_CLICK_RANDOM_SPAN_RATIO_Y = 0.24;
 const RUNE_DEPOSIT_CLICK_RANDOM_SPAN_RATIO_X = 0.18;
 const RUNE_DEPOSIT_CLICK_RANDOM_SPAN_RATIO_Y = 0.14;
 const RUNE_DEPOSIT_MARKER_STABLE_DISTANCE_PX = 12;
-const RUNE_DEPOSIT_MEDIUM_DISTANCE_TILES = 3;
-const RUNE_DEPOSIT_LONG_DISTANCE_TILES = 7;
 const CHARGED_CELL_DEPOSIT_CLICK_RATIO_X = 0.64;
 const CHARGED_CELL_DEPOSIT_PLAYER_TILE_VERIFY_TICKS = 2;
 const OBJECT_PRE_CLICK_MOUSE_SETTLE_MS = 50;
@@ -663,8 +708,12 @@ const MINING_ORANGE_RECLICK_MAX_DELAY_MS = 3_000;
 const OPTIMIZER_MINING_ORANGE_RECLICK_DELAY_MS = GAME_TICK_MS;
 const WORKBENCH_CRAFT_CLICK_LOCK_TICKS = 3;
 const GUARDIAN_CLICK_LOCK_TICKS = 2;
-const GUARDIAN_RECLICK_GRACE_TICKS = 2;
+const GUARDIAN_RECLICK_GRACE_TICKS = 0;
 const GUARDIAN_TELEPORT_VALIDATION_EXTRA_BOT_TICKS = 2;
+const GUARDIAN_TELEPORT_DARK_SCREEN_SAMPLE_STEP_PX = 8;
+const GUARDIAN_TELEPORT_DARK_SCREEN_LUMINANCE_MAX = 40;
+const GUARDIAN_TELEPORT_DARK_SCREEN_AVERAGE_LUMINANCE_MAX = 55;
+const GUARDIAN_TELEPORT_DARK_SCREEN_DARK_RATIO_MIN = 0.72;
 const GUARDIAN_YELLOW_CLICK_LOCK_TICKS = 2;
 const GUARDIAN_RETURN_CLICK_LOCK_TICKS = 2;
 const GUARDIAN_POST_RETURN_CLICK_LOCK_TICKS = 2;
@@ -686,6 +735,7 @@ const GUARDIAN_ALTAR_CAMERA_UNWIND_KEY = "d";
 const GUARDIAN_ALTAR_CAMERA_ROTATE_MAX_ATTEMPTS = 12;
 const GUARDIAN_ALTAR_CAMERA_ROTATE_SETTLE_BOT_TICKS = 3;
 const GUARDIAN_ALTAR_CAMERA_UNWIND_DELAY_TICKS = 1;
+const MAX_GREAT_GUARDIAN_CLICK_ATTEMPTS = 5;
 const GUARDIAN_RETURN_PORTAL_CAMERA_ROTATE_KEY = "a";
 const GUARDIAN_RETURN_PORTAL_CAMERA_ROTATE_LOCK_TICKS = 1;
 const RETURN_PORTAL_OCR_LOOP_GUARD_MIN_RETRIES = 3;
@@ -709,6 +759,45 @@ const MINING_CAMERA_WORKBENCH_KEY = "k";
 const MINING_CAMERA_WORKBENCH_DELAY_BOT_TICKS = 2;
 const WORKBENCH_CAMERA_NORTH_KEY = "n";
 const WORKBENCH_CAMERA_NORTH_DELAY_BOT_TICKS = 2;
+const GUARDIAN_RUNE_INTERIOR_COLORS: Record<GuardianOfTheRiftRune, GuardianInteriorColor> = {
+  air: { label: "light-black", hex: "FF181818" },
+  cosmic: { label: "black", hex: "FF000000" },
+  water: { label: "gray-2", hex: "FF424242" },
+  earth: { label: "light-black", hex: "FF181818" },
+  nature: { label: "black", hex: "FF000000" },
+  fire: { label: "gray-2", hex: "FF424242" },
+  blood: { label: "black", hex: "FF000000" },
+  law: { label: "gray-1", hex: "FF303030" },
+  death: { label: "black", hex: "FF000000" },
+  chaos: { label: "gray-1", hex: "FF303030" },
+  body: { label: "black", hex: "FF000000" },
+  mind: { label: "gray-1", hex: "FF303030" },
+};
+const GUARDIAN_RUNE_ALTAR_ENTRY_CAMERA_PRESETS: Partial<Record<GuardianOfTheRiftRune, GuardianCameraPreset>> = {
+  air: { label: "air altar north", actions: [{ key: STARTUP_CAMERA_NORTH_KEY, count: 1 }] },
+  water: {
+    label: "water altar north then right",
+    actions: [
+      { key: STARTUP_CAMERA_NORTH_KEY, count: 1 },
+      { key: GUARDIAN_ALTAR_CAMERA_UNWIND_KEY, count: 1 },
+    ],
+  },
+  earth: { label: "earth altar north", actions: [{ key: STARTUP_CAMERA_NORTH_KEY, count: 1 }] },
+  nature: { label: "nature altar north", actions: [{ key: STARTUP_CAMERA_NORTH_KEY, count: 1 }] },
+  chaos: { label: "chaos altar north", actions: [{ key: STARTUP_CAMERA_NORTH_KEY, count: 1 }] },
+  body: { label: "body altar north", actions: [{ key: STARTUP_CAMERA_NORTH_KEY, count: 1 }] },
+  mind: { label: "mind altar north", actions: [{ key: STARTUP_CAMERA_NORTH_KEY, count: 1 }] },
+  cosmic: {
+    label: "cosmic altar prep",
+    actions: [
+      { key: GUARDIAN_ALTAR_CAMERA_ROTATE_KEY, count: 2 },
+    ],
+  },
+};
+const GUARDIAN_RUNE_RETURN_PORTAL_CAMERA_PRESETS: Partial<Record<GuardianOfTheRiftRune, GuardianCameraPreset>> = {
+  earth: { label: "earth return portal south", actions: [{ key: CHARGED_CELL_TO_RUNE_CAMERA_KEY, count: 1 }] },
+  mind: { label: "mind return portal south", actions: [{ key: CHARGED_CELL_TO_RUNE_CAMERA_KEY, count: 1 }] },
+};
 const PORTAL_MINING_INVENTORY_CHANGE_CHECK_TICKS = 5;
 const GUARDIAN_CRAFTING_CHUNK_ID = 926881;
 const GUARDIAN_CRAFTING_REGION_ID = 14484;
@@ -787,6 +876,7 @@ let currentMovementModel: GuardianOfTheRiftMovementModelSelection | null = null;
 let pendingMovementObservation: PendingMovementObservation | null = null;
 let stablePlayerAnchor: StablePlayerAnchor | null = null;
 let currentRunStats: GuardianRunStats | null = null;
+let currentCameraFacing: CameraFacing = "unknown";
 const syncSleepBuffer = new Int32Array(new SharedArrayBuffer(4));
 
 function createRunStatsTravelTimer(): RunStatsTravelTimer {
@@ -840,8 +930,10 @@ function createEmptyGuardianRunStats(startedAtMs: number): GuardianRunStats {
     chargedCellRetrySignals: 0,
     chargedCellVerification: createRunStatsTravelTimer(),
     guardianNoTargetScans: 0,
+    guardianTimerRefusals: 0,
     guardianReclicks: 0,
     guardianReclickNoTargetScans: 0,
+    guardianReclickTimerRefusals: 0,
     movementLateByKind: {},
   };
 }
@@ -899,6 +991,19 @@ function recordActiveGuardianRuneTimerOverdueWarning(): void {
   currentRunStats.activeGuardianRuneTimerOverdueWarnings += 1;
 }
 
+function recordGuardianRuneTimerClickRefusal(isReclick: boolean): void {
+  if (!currentRunStats) {
+    return;
+  }
+
+  if (isReclick) {
+    currentRunStats.guardianReclickTimerRefusals += 1;
+    return;
+  }
+
+  currentRunStats.guardianTimerRefusals += 1;
+}
+
 function formatActiveGuardianRuneTimerStats(stats: GuardianRunStats): string {
   const samples = stats.activeGuardianRuneTimerSamples;
   const min = stats.activeGuardianRuneTimerMinElapsedMs === null ? "n/a" : formatRunStatsSeconds(stats.activeGuardianRuneTimerMinElapsedMs);
@@ -908,6 +1013,64 @@ function formatActiveGuardianRuneTimerStats(stats: GuardianRunStats): string {
 
 function formatCurrentActiveGuardianRuneTimerStats(): string {
   return currentRunStats ? formatActiveGuardianRuneTimerStats(currentRunStats) : "unavailable";
+}
+
+function formatGuardianRuneTravelTimingDuration(ms: number | null): string {
+  if (ms === null) {
+    return "unknown";
+  }
+
+  return ms >= 0 ? formatRunStatsSeconds(ms) : formatSignedRunStatsSeconds(ms);
+}
+
+function getGuardianRuneTravelTimingDecision(
+  state: BotState,
+  nowMs: number,
+  travel: TravelWaitEstimate,
+): GuardianRuneTravelTimingDecision {
+  const requiredMs = (travel.waitTicks + GUARDIAN_RUNE_EXPIRY_TRAVEL_BUFFER_TICKS) * GAME_TICK_MS;
+  if (state.activeGuardianRuneDeadlineMs === null) {
+    return {
+      canClick: true,
+      trusted: false,
+      remainingMs: null,
+      requiredMs,
+      reason: "active rune timer deadline is unknown",
+    };
+  }
+
+  const remainingMs = state.activeGuardianRuneDeadlineMs - nowMs;
+  if (!state.activeGuardianRuneTimerStartedFromObservedChange) {
+    return {
+      canClick: true,
+      trusted: false,
+      remainingMs,
+      requiredMs,
+      reason: "active rune timer is initialized but not validated by an observed rune change yet",
+    };
+  }
+
+  if (remainingMs <= requiredMs) {
+    return {
+      canClick: false,
+      trusted: true,
+      remainingMs,
+      requiredMs,
+      reason: "travel estimate plus safety buffer reaches the active rune deadline",
+    };
+  }
+
+  return {
+    canClick: true,
+    trusted: true,
+    remainingMs,
+    requiredMs,
+    reason: "enough active rune time remains for guardian travel",
+  };
+}
+
+function formatGuardianRuneTravelTimingDecision(decision: GuardianRuneTravelTimingDecision): string {
+  return `remaining=${formatGuardianRuneTravelTimingDuration(decision.remainingMs)} required=${formatRunStatsSeconds(decision.requiredMs)} buffer=${GUARDIAN_RUNE_EXPIRY_TRAVEL_BUFFER_TICKS} game tick(s) trusted=${decision.trusted ? "yes" : "no"} reason=${decision.reason}`;
 }
 
 function formatRuneEstimateRange(lowerBound: number, upperBound: number): string {
@@ -1178,7 +1341,7 @@ function buildGuardianRunStatsFooter(context: AutomateBotLogFooterContext): stri
     `salmon=portalClicks:${stats.salmonPortalClicks} confirmations:${stats.salmonValidation.completions} retrySignals:${stats.salmonRetrySignals} total:${formatRunStatsSeconds(stats.salmonValidation.totalMs)} avg:${formatRunStatsAverage(stats.salmonValidation.totalMs, stats.salmonValidation.completions)} max:${formatRunStatsSeconds(stats.salmonValidation.maxMs)}`,
     `chargedCell=attempts:${stats.chargedCellAttempts} verified:${stats.chargedCellVerification.completions} retrySignals:${stats.chargedCellRetrySignals} total:${formatRunStatsSeconds(stats.chargedCellVerification.totalMs)} avg:${formatRunStatsAverage(stats.chargedCellVerification.totalMs, stats.chargedCellVerification.completions)} max:${formatRunStatsSeconds(stats.chargedCellVerification.maxMs)}`,
     `activeRuneTimer=${formatActiveGuardianRuneTimerStats(stats)}`,
-    `guardian=initialNoTarget:${stats.guardianNoTargetScans} reclicks:${stats.guardianReclicks} reclickNoTarget:${stats.guardianReclickNoTargetScans} movementLate:${formatMovementLateStats(stats)}`,
+    `guardian=initialNoTarget:${stats.guardianNoTargetScans} timerRefusals:${stats.guardianTimerRefusals} reclicks:${stats.guardianReclicks} reclickNoTarget:${stats.guardianReclickNoTargetScans} reclickTimerRefusals:${stats.guardianReclickTimerRefusals} movementLate:${formatMovementLateStats(stats)}`,
     `stablePlayerAnchor=${formatStablePlayerAnchorStats(stats.stablePlayerAnchor)}`,
   ];
 }
@@ -1433,6 +1596,10 @@ function isBetterAltarPouchBatchSelectionScore(
     return candidate.batchCount < currentBest.batchCount;
   }
 
+  if (candidate.currentPouchClicks !== currentBest.currentPouchClicks) {
+    return candidate.currentPouchClicks > currentBest.currentPouchClicks;
+  }
+
   if (candidate.maxPouchClicksPerBatch !== currentBest.maxPouchClicksPerBatch) {
     return candidate.maxPouchClicksPerBatch < currentBest.maxPouchClicksPerBatch;
   }
@@ -1445,7 +1612,7 @@ function isBetterAltarPouchBatchSelectionScore(
     return candidate.clickSpanPx < currentBest.clickSpanPx;
   }
 
-  return candidate.currentPouchClicks < currentBest.currentPouchClicks;
+  return false;
 }
 
 function selectBestAltarPouchEmptyBatch(
@@ -1651,6 +1818,69 @@ function clickNextPouchForInventoryDelta(
       pouch: location.pouch,
       beforeFreeSlots,
     },
+    actionLockUntilMs: nowMs + POUCH_CLICK_LOCK_MS,
+  };
+}
+
+function clickRemainingAltarPouchBatchWithoutPerPouchInventoryReads(
+  state: BotState,
+  captureBounds: ScreenCaptureBounds,
+  nowMs: number,
+): BotState {
+  const clickIndex = clamp(state.pouchClickIndex, 0, state.pouchClickQueue.length);
+  const locations = state.pouchClickQueue.slice(clickIndex);
+  if (locations.length === 0) {
+    return state;
+  }
+
+  const beforeFreeSlots = state.inventoryFreeSlots;
+  if (beforeFreeSlots === null) {
+    warn(
+      stepMessage(
+        WORKFLOW_STEPS.EMPTY_POUCHES_AT_ALTAR,
+        `Skipping altar pouch batch because inventory free-space is unknown. Pouch memory=${formatPouchEssenceSummary(state)}.`,
+      ),
+    );
+    return {
+      ...state,
+      actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
+    };
+  }
+
+  const pouchEssence = { ...state.pouchEssence };
+  const clickedPouches: string[] = [];
+  let expectedMovedEssence = 0;
+  for (let index = 0; index < locations.length; index += 1) {
+    const location = locations[index];
+    const storedEssence = getPouchStoredEssence(state, location.pouch) ?? getPouchCapacity(location.pouch);
+    expectedMovedEssence += storedEssence;
+    const clicked = clickScreenPointImmediate(location.screenCenterX, location.screenCenterY, captureBounds);
+    clickedPouches.push(`${location.pouch}@(${clicked.x},${clicked.y}) stored=${storedEssence}`);
+    pouchEssence[location.pouch] = 0;
+
+    if (index < locations.length - 1) {
+      sleepSyncMs(OBJECT_PRE_CLICK_MOUSE_SETTLE_MS);
+    }
+  }
+
+  log(
+    stepMessage(
+      WORKFLOW_STEPS.EMPTY_POUCHES_AT_ALTAR,
+      `Clicked altar pouch batch ${clickedPouches.join(", ")} in one bot tick with ${OBJECT_PRE_CLICK_MOUSE_SETTLE_MS}ms click gaps; before free-space=${beforeFreeSlots}; expectedMoved=${expectedMovedEssence}; skipped per-pouch inventory reads and will verify once next tick.`,
+    ),
+  );
+
+  return {
+    ...state,
+    pouchEssence,
+    pouchClickIndex: state.pouchClickQueue.length,
+    pouchClickIntent: "empty",
+    pouchClickPending: {
+      intent: "empty",
+      pouch: locations[locations.length - 1].pouch,
+      beforeFreeSlots,
+    },
+    pouchClickBatchMovedEssence: expectedMovedEssence,
     actionLockUntilMs: nowMs + POUCH_CLICK_LOCK_MS,
   };
 }
@@ -2162,6 +2392,7 @@ function createInitialState(): BotState {
     guardianClickDistancePx: null,
     guardianCoordinateConfirmed: false,
     guardianAltarStartLocation: null,
+    guardianAltarRune: null,
     guardianYellowArrivalDeadlineMs: 0,
     guardianYellowTravelEstimate: null,
     guardianYellowCorrectionRecordedDeadlineMs: null,
@@ -2180,6 +2411,7 @@ function createInitialState(): BotState {
     postPortalDepositResume: null,
     greatGuardianArrivalDeadlineMs: 0,
     greatGuardianClickDistancePx: null,
+    greatGuardianAttemptCount: 0,
     chargedCellDepositArrivalDeadlineMs: 0,
     chargedCellDepositClickDistancePx: null,
     chargedCellToRuneCameraReadyAtMs: 0,
@@ -2266,6 +2498,55 @@ function isRuneDepositPinkPixel(r: number, g: number, b: number): boolean {
 
 function isBrightTimerTextPixel(r: number, g: number, b: number): boolean {
   return r >= 190 && g >= 190 && b >= 190 && Math.max(r, g, b) - Math.min(r, g, b) <= 80;
+}
+
+function resolveGuardianTeleportDarkScreenBounds(bitmap: RobotBitmap): SearchBounds {
+  return {
+    minX: clamp(Math.round(bitmap.width * 0.12), 0, bitmap.width - 1),
+    minY: clamp(Math.round(bitmap.height * 0.12), 0, bitmap.height - 1),
+    maxX: clamp(Math.round(bitmap.width * 0.88), 0, bitmap.width - 1),
+    maxY: clamp(Math.round(bitmap.height * 0.72), 0, bitmap.height - 1),
+  };
+}
+
+function detectGuardianTeleportDarkScreen(bitmap: RobotBitmap): TeleportDarkScreenDetection {
+  const bounds = resolveGuardianTeleportDarkScreenBounds(bitmap);
+  let sampledPixels = 0;
+  let darkPixels = 0;
+  let luminanceTotal = 0;
+
+  for (let y = bounds.minY; y <= bounds.maxY; y += GUARDIAN_TELEPORT_DARK_SCREEN_SAMPLE_STEP_PX) {
+    for (let x = bounds.minX; x <= bounds.maxX; x += GUARDIAN_TELEPORT_DARK_SCREEN_SAMPLE_STEP_PX) {
+      const offset = y * bitmap.byteWidth + x * bitmap.bytesPerPixel;
+      const b = bitmap.image[offset];
+      const g = bitmap.image[offset + 1];
+      const r = bitmap.image[offset + 2];
+      const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+
+      sampledPixels += 1;
+      luminanceTotal += luminance;
+      if (luminance <= GUARDIAN_TELEPORT_DARK_SCREEN_LUMINANCE_MAX) {
+        darkPixels += 1;
+      }
+    }
+  }
+
+  const darkRatio = sampledPixels > 0 ? darkPixels / sampledPixels : 0;
+  const averageLuminance = sampledPixels > 0 ? luminanceTotal / sampledPixels : 255;
+  return {
+    isTeleporting:
+      sampledPixels > 0 &&
+      darkRatio >= GUARDIAN_TELEPORT_DARK_SCREEN_DARK_RATIO_MIN &&
+      averageLuminance <= GUARDIAN_TELEPORT_DARK_SCREEN_AVERAGE_LUMINANCE_MAX,
+    darkRatio,
+    averageLuminance,
+    sampledPixels,
+    bounds,
+  };
+}
+
+function formatGuardianTeleportDarkScreenDetection(detection: TeleportDarkScreenDetection): string {
+  return `darkRatio=${(detection.darkRatio * 100).toFixed(1)}% avgLum=${detection.averageLuminance.toFixed(1)} samples=${detection.sampledPixels} bounds=(${detection.bounds.minX},${detection.bounds.minY})-(${detection.bounds.maxX},${detection.bounds.maxY})`;
 }
 
 function resolveRedPickupSearchBounds(bitmap: RobotBitmap): SearchBounds {
@@ -3028,6 +3309,184 @@ function tapKey(key: string): boolean {
   return true;
 }
 
+const CAMERA_FACING_CLOCKWISE: Exclude<CameraFacing, "unknown">[] = [
+  "north",
+  "north-east",
+  "east",
+  "south-east",
+  "south",
+  "south-west",
+  "west",
+  "north-west",
+];
+
+function getAbsoluteCameraFacingForKey(key: string): CameraFacing | null {
+  switch (key) {
+    case STARTUP_CAMERA_NORTH_KEY:
+      return "north";
+    case CHARGED_CELL_TO_RUNE_CAMERA_KEY:
+      return "south";
+    case MINING_CAMERA_WORKBENCH_KEY:
+      return "west";
+    case "j":
+      return "east";
+    default:
+      return null;
+  }
+}
+
+function rotateKnownCameraFacing(facing: CameraFacing, direction: "left" | "right"): CameraFacing {
+  if (facing === "unknown") {
+    return "unknown";
+  }
+
+  const index = CAMERA_FACING_CLOCKWISE.indexOf(facing);
+  if (index < 0) {
+    return "unknown";
+  }
+
+  const delta = direction === "left" ? -1 : 1;
+  const nextIndex = (index + delta + CAMERA_FACING_CLOCKWISE.length) % CAMERA_FACING_CLOCKWISE.length;
+  return CAMERA_FACING_CLOCKWISE[nextIndex];
+}
+
+function updateTrackedCameraFacingForKey(key: string): void {
+  const absoluteFacing = getAbsoluteCameraFacingForKey(key);
+  if (absoluteFacing) {
+    currentCameraFacing = absoluteFacing;
+    return;
+  }
+
+  if (key === "a") {
+    currentCameraFacing = rotateKnownCameraFacing(currentCameraFacing, "left");
+    return;
+  }
+
+  if (key === "d") {
+    currentCameraFacing = rotateKnownCameraFacing(currentCameraFacing, "right");
+  }
+}
+
+function tapCameraKey(key: string): boolean {
+  const previousFacing = currentCameraFacing;
+  const tapped = tapKey(key);
+  if (tapped) {
+    updateTrackedCameraFacingForKey(key);
+    if (previousFacing !== currentCameraFacing) {
+      log(`Camera facing tracked: key='${key}' previous=${previousFacing} current=${currentCameraFacing}.`);
+    }
+  }
+
+  return tapped;
+}
+
+function formatCurrentCameraFacing(): string {
+  return currentCameraFacing;
+}
+
+function formatGuardianInteriorColorForRune(rune: GuardianOfTheRiftRune): string {
+  const color = GUARDIAN_RUNE_INTERIOR_COLORS[rune];
+  return `${color.hex}/${color.label}`;
+}
+
+function applyGuardianCameraPreset(
+  rune: GuardianOfTheRiftRune,
+  preset: GuardianCameraPreset | null | undefined,
+  context: string,
+  logStep: (typeof WORKFLOW_STEPS)[keyof typeof WORKFLOW_STEPS],
+): string {
+  const expectedInteriorColor = formatGuardianInteriorColorForRune(rune);
+  if (!preset) {
+    return `expectedInterior=${expectedInteriorColor}; cameraPreset=none; cameraFacing=${formatCurrentCameraFacing()}`;
+  }
+
+  const actionResults: string[] = [];
+  for (const action of preset.actions) {
+    let successCount = 0;
+    for (let index = 0; index < action.count; index += 1) {
+      if (index > 0) {
+        sleepSyncMs(OBJECT_PRE_CLICK_MOUSE_SETTLE_MS);
+      }
+
+      if (tapCameraKey(action.key)) {
+        successCount += 1;
+      }
+    }
+
+    actionResults.push(`${action.key}=${successCount}/${action.count}`);
+  }
+
+  const summary = `expectedInterior=${expectedInteriorColor}; cameraPreset=${preset.label}; actions=${actionResults.join(",")}; cameraFacing=${formatCurrentCameraFacing()}`;
+  log(stepMessage(logStep, `${context}; ${summary}.`));
+  return summary;
+}
+
+function applyGuardianAltarEntryCameraPresetForTarget(target: GuardianTravelTarget, context: string): string {
+  return applyGuardianCameraPreset(
+    target.runeMatch.rune,
+    GUARDIAN_RUNE_ALTAR_ENTRY_CAMERA_PRESETS[target.runeMatch.rune],
+    context,
+    WORKFLOW_STEPS.MOVE_TO_GUARDIAN,
+  );
+}
+
+function applyGuardianReturnPortalCameraPreset(state: BotState, context: string): BotState {
+  const rune = state.guardianAltarRune;
+  if (!rune) {
+    return state;
+  }
+
+  const summary = applyGuardianCameraPreset(
+    rune,
+    GUARDIAN_RUNE_RETURN_PORTAL_CAMERA_PRESETS[rune],
+    context,
+    WORKFLOW_STEPS.FIND_PORTAL,
+  );
+  if (summary.includes("cameraPreset=none")) {
+    return state;
+  }
+
+  return {
+    ...state,
+    guardianAltarCameraLeftRotations: 0,
+  };
+}
+
+function hasStaticGuardianAltarEntryCameraPreset(rune: GuardianOfTheRiftRune | null): boolean {
+  return Boolean(rune && rune !== "cosmic" && GUARDIAN_RUNE_ALTAR_ENTRY_CAMERA_PRESETS[rune]);
+}
+
+function rotateCameraForAltarSearch(state: BotState): { rotated: boolean; rotationCount: number; rotationLabel: string; skipped: boolean } {
+  const rune = state.guardianAltarRune;
+  if (hasStaticGuardianAltarEntryCameraPreset(rune)) {
+    return {
+      rotated: false,
+      rotationCount: 0,
+      rotationLabel: `static ${rune} camera preset; retrying scan without camera rotation`,
+      skipped: true,
+    };
+  }
+
+  const rotationCount = rune === "cosmic" ? 2 : 1;
+  let successfulRotations = 0;
+  for (let index = 0; index < rotationCount; index += 1) {
+    if (index > 0) {
+      sleepSyncMs(OBJECT_PRE_CLICK_MOUSE_SETTLE_MS);
+    }
+
+    if (tapCameraKey(GUARDIAN_ALTAR_CAMERA_ROTATE_KEY)) {
+      successfulRotations += 1;
+    }
+  }
+
+  return {
+    rotated: successfulRotations > 0,
+    rotationCount: successfulRotations,
+    rotationLabel: rune === "cosmic" ? "double-a cosmic rotation" : "single-a rotation",
+    skipped: false,
+  };
+}
+
 async function holdKey(key: string, durationMs: number): Promise<boolean> {
   if (typeof keyToggle !== "function") {
     return tapKey(key);
@@ -3069,10 +3528,10 @@ async function prepareStartupCameraPitch(): Promise<void> {
 }
 
 async function prepareStartupUiForPouchCheck(): Promise<void> {
-  const cameraNorthTapped = tapKey(STARTUP_CAMERA_NORTH_KEY);
+  const cameraNorthTapped = tapCameraKey(STARTUP_CAMERA_NORTH_KEY);
   const inventoryTapped = tapKey(STARTUP_INVENTORY_KEY);
   log(
-    `Startup UI prep before pouch check: ${cameraNorthTapped ? `tapped '${STARTUP_CAMERA_NORTH_KEY}'` : `could not tap '${STARTUP_CAMERA_NORTH_KEY}'`}; ${inventoryTapped ? `tapped '${STARTUP_INVENTORY_KEY}'` : `could not tap '${STARTUP_INVENTORY_KEY}'`} to open inventory.`,
+    `Startup UI prep before pouch check: ${cameraNorthTapped ? `tapped '${STARTUP_CAMERA_NORTH_KEY}'` : `could not tap '${STARTUP_CAMERA_NORTH_KEY}'`} cameraFacing=${formatCurrentCameraFacing()}; ${inventoryTapped ? `tapped '${STARTUP_INVENTORY_KEY}'` : `could not tap '${STARTUP_INVENTORY_KEY}'`} to open inventory.`,
   );
 
   if (STARTUP_UI_PREP_SETTLE_MS <= 0) {
@@ -3274,14 +3733,6 @@ function getRuneDepositClickPoint(marker: Pick<OrangeObjectDetection, "minX" | "
     RUNE_DEPOSIT_CLICK_RANDOM_SPAN_RATIO_X,
     RUNE_DEPOSIT_CLICK_RANDOM_SPAN_RATIO_Y,
   );
-}
-
-function getRuneDepositMarkerSettleTicks(travel: TravelWaitEstimate): number {
-  if (travel.distanceTiles >= RUNE_DEPOSIT_MEDIUM_DISTANCE_TILES) {
-    return 2;
-  }
-
-  return 1;
 }
 
 function getMiningOrangeReclickDelayMs(): number {
@@ -3683,7 +4134,7 @@ function runPickUnchargedCellTick(
   const target = detectBestRedPickupTarget(tickCapture.bitmap);
   if (!target) {
     const missingTargetTicks = state.missingTargetTicks + 1;
-    const rotated = tapKey(UNCHARGED_CELL_CAMERA_ROTATE_KEY);
+    const rotated = tapCameraKey(UNCHARGED_CELL_CAMERA_ROTATE_KEY);
     if (missingTargetTicks === 1 || missingTargetTicks % 5 === 0) {
       warn(
         stepMessage(
@@ -3777,7 +4228,7 @@ function runWaitAfterPickupTick(state: BotState, nowMs: number, config: Guardian
 
   if (config.useAgilityCourse) {
     setAutomateBotCurrentStep(STEP_AGILITY_COURSE_ID);
-    const cameraNorthTapped = tapKey(AGILITY_CAMERA_NORTH_KEY);
+    const cameraNorthTapped = tapCameraKey(AGILITY_CAMERA_NORTH_KEY);
     log(
       stepMessage(
         WORKFLOW_STEPS.FIND_AGILITY_COURSE,
@@ -4737,7 +5188,7 @@ function runWaitAfterAgilityCourseYellowClickTick(
   }
 
   const missingAgilityCourseTicks = state.missingAgilityCourseTicks + 1;
-  const cameraNorthTapped = tapKey(AGILITY_CAMERA_NORTH_KEY);
+  const cameraNorthTapped = tapCameraKey(AGILITY_CAMERA_NORTH_KEY);
   if (missingAgilityCourseTicks === 1 || missingAgilityCourseTicks % 3 === 0) {
     warn(
       stepMessage(
@@ -5254,7 +5705,7 @@ function unwindAltarCamera(
 
   let successfulTaps = 0;
   for (let i = 0; i < state.guardianAltarCameraLeftRotations; i += 1) {
-    if (tapKey(GUARDIAN_ALTAR_CAMERA_UNWIND_KEY)) {
+    if (tapCameraKey(GUARDIAN_ALTAR_CAMERA_UNWIND_KEY)) {
       successfulTaps += 1;
     }
   }
@@ -5354,6 +5805,7 @@ function transitionToEndOfRoundChargedCellDepositState(state: BotState, nowMs: n
     openPortalAfterCurrentPostReturnAction: false,
     greatGuardianArrivalDeadlineMs: 0,
     greatGuardianClickDistancePx: null,
+    greatGuardianAttemptCount: 0,
     chargedCellDepositArrivalDeadlineMs: 0,
     chargedCellDepositClickDistancePx: null,
     chargedCellToRuneCameraReadyAtMs: 0,
@@ -5394,7 +5846,7 @@ function transitionToEndOfRoundRuneDepositState(state: BotState, nowMs: number, 
 
 function transitionToRoundRestartState(state: BotState, nowMs: number, reason: string): BotState {
   setAutomateBotCurrentStep(STEP_PICK_UNCHARGED_CELL_ID);
-  const cameraReset = tapKey(POST_RETURN_CAMERA_NORTH_KEY);
+  const cameraReset = tapCameraKey(POST_RETURN_CAMERA_NORTH_KEY);
   log(
     stepMessage(
       WORKFLOW_STEPS.TAKE_UNCHARGED_CELL,
@@ -5621,7 +6073,7 @@ function runMiningTick(
     currentState.miningCameraKReadyAtMs > 0 &&
     nowMs >= currentState.miningCameraKReadyAtMs
   ) {
-    const tapped = tapKey(MINING_CAMERA_WORKBENCH_KEY);
+    const tapped = tapCameraKey(MINING_CAMERA_WORKBENCH_KEY);
     log(
       stepMessage(
         WORKFLOW_STEPS.START_MINING,
@@ -5854,6 +6306,7 @@ function transitionToGuardianTravelState(
     guardianClickDistancePx: null,
     guardianCoordinateConfirmed: false,
     guardianAltarStartLocation: null,
+    guardianAltarRune: null,
     guardianYellowArrivalDeadlineMs: 0,
     guardianYellowTravelEstimate: null,
     guardianYellowCorrectionRecordedDeadlineMs: null,
@@ -6060,7 +6513,7 @@ function runCraftingTick(
     currentState.workbenchCameraNorthReadyAtMs > 0 &&
     nowMs >= currentState.workbenchCameraNorthReadyAtMs
   ) {
-    const tapped = tapKey(WORKBENCH_CAMERA_NORTH_KEY);
+    const tapped = tapCameraKey(WORKBENCH_CAMERA_NORTH_KEY);
     log(
       stepMessage(
         WORKFLOW_STEPS.CRAFT_UNTIL_FULL,
@@ -6407,7 +6860,7 @@ function runTravelToGuardianTick(
   if (!guardianTargetSelection.target) {
     const missingGuardianGreenTicks = state.missingGuardianGreenTicks + 1;
     const shouldRotateCamera = shouldRotateCameraForMissingGuardianTarget(guardianTargetSelection, config);
-    const rotated = shouldRotateCamera ? tapKey(GUARDIAN_GREEN_OUTLINE_CAMERA_ROTATE_KEY) : false;
+    const rotated = shouldRotateCamera ? tapCameraKey(GUARDIAN_GREEN_OUTLINE_CAMERA_ROTATE_KEY) : false;
     if (missingGuardianGreenTicks === 1 || missingGuardianGreenTicks % 5 === 0) {
       warn(
         stepMessage(
@@ -6434,7 +6887,7 @@ function runTravelToGuardianTick(
   const target = guardianTargetSelection.target;
   if (!isGuardianClickPointSafelyOnScreen(tickCapture.bitmap, target.clickPoint)) {
     const missingGuardianGreenTicks = state.missingGuardianGreenTicks + 1;
-    const rotated = tapKey(GUARDIAN_GREEN_OUTLINE_CAMERA_ROTATE_KEY);
+    const rotated = tapCameraKey(GUARDIAN_GREEN_OUTLINE_CAMERA_ROTATE_KEY);
     warn(
       stepMessage(
         WORKFLOW_STEPS.FIND_GUARDIAN,
@@ -6451,10 +6904,30 @@ function runTravelToGuardianTick(
 
   const playerAnchor = getPlayerAnchor(tickCapture.bitmap);
   const travel = estimateTravelWaitTicks(playerAnchor, target.clickPoint);
+  const runeTiming = getGuardianRuneTravelTimingDecision(state, nowMs, travel);
+  if (!runeTiming.canClick) {
+    const missingGuardianGreenTicks = state.missingGuardianGreenTicks + 1;
+    recordGuardianRuneTimerClickRefusal(false);
+    if (missingGuardianGreenTicks === 1 || missingGuardianGreenTicks % 5 === 0) {
+      warn(
+        stepMessage(
+          WORKFLOW_STEPS.FIND_GUARDIAN,
+          `Guardian decision: ${formatGuardianDecision(guardianTargetSelection)}. Refusing guardian click because active rune timer is too close to despawn (${formatGuardianRuneTravelTimingDecision(runeTiming)}, ${formatGuardianTeleportWait(travel)}). Waiting for the next rune change instead of walking to a likely stale guardian.`,
+        ),
+      );
+    }
+
+    return {
+      ...state,
+      missingGuardianGreenTicks,
+      actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
+    };
+  }
+
   log(
     stepMessage(
       WORKFLOW_STEPS.FIND_GUARDIAN,
-      `Guardian decision: ${formatGuardianDecision(guardianTargetSelection)}.`,
+      `Guardian decision: ${formatGuardianDecision(guardianTargetSelection)}. Rune timing=${formatGuardianRuneTravelTimingDecision(runeTiming)}.`,
     ),
   );
   const clicked = clickScreenPoint(
@@ -6463,10 +6936,14 @@ function runTravelToGuardianTick(
     captureBounds,
   );
   const clickedAtMs = Date.now();
+  const guardianPostClickSummary = applyGuardianAltarEntryCameraPresetForTarget(
+    target,
+    `Post-click guardian camera prep for ${target.runeMatch.rune}`,
+  );
   log(
     stepMessage(
       WORKFLOW_STEPS.MOVE_TO_GUARDIAN,
-      `Clicked ${target.slot} guardian (${target.runeMatch.rune}, marker=${target.colorHex}/${target.color}) at (${clicked.x},${clicked.y}) local=(${target.clickPoint.centerX},${target.clickPoint.centerY}) bounds=(${target.marker.minX},${target.marker.minY})-${target.marker.maxX},${target.marker.maxY} pixels=${target.marker.pixelCount}; rewardPoints=${formatRewardPoints(guardianTargetSelection.rewardPoints)} preference=${guardianTargetSelection.preferenceOrder.join("->")} nextUnknown=${getOppositeGuardianSlot(target.slot)}; active elemental=${formatActiveGuardianRuneMatch(guardianTargetSelection.elementalRune)}, catalytic=${formatActiveGuardianRuneMatch(guardianTargetSelection.catalyticRune)}; waiting for teleport out of region ${GUARDIAN_CRAFTING_REGION_ID} (${formatGuardianTeleportWait(travel)}).`,
+      `Clicked ${target.slot} guardian (${target.runeMatch.rune}, marker=${target.colorHex}/${target.color}) at (${clicked.x},${clicked.y}) local=(${target.clickPoint.centerX},${target.clickPoint.centerY}) bounds=(${target.marker.minX},${target.marker.minY})-${target.marker.maxX},${target.marker.maxY} pixels=${target.marker.pixelCount}; ${guardianPostClickSummary}; rewardPoints=${formatRewardPoints(guardianTargetSelection.rewardPoints)} preference=${guardianTargetSelection.preferenceOrder.join("->")} nextUnknown=${getOppositeGuardianSlot(target.slot)}; active elemental=${formatActiveGuardianRuneMatch(guardianTargetSelection.elementalRune)}, catalytic=${formatActiveGuardianRuneMatch(guardianTargetSelection.catalyticRune)}; runeTiming=${formatGuardianRuneTravelTimingDecision(runeTiming)}; waiting for teleport out of region ${GUARDIAN_CRAFTING_REGION_ID} (${formatGuardianTeleportWait(travel)}).`,
     ),
   );
   rememberMovementObservation("guardian-to-altar", WORKFLOW_STEPS.MOVE_TO_GUARDIAN, clickedAtMs, travel);
@@ -6479,6 +6956,7 @@ function runTravelToGuardianTick(
     guardianClickDistancePx: travel.distancePx,
     guardianCoordinateConfirmed: false,
     guardianAltarStartLocation: null,
+    guardianAltarRune: target.runeMatch.rune,
     guardianAltarCameraLeftRotations: 0,
     unknownRewardNextGuardianSlot: getOppositeGuardianSlot(target.slot),
     missingGuardianGreenTicks: 0,
@@ -6543,6 +7021,7 @@ async function runWaitAfterGuardianClickTick(
           ...state,
           guardianCoordinateConfirmed: false,
           guardianAltarStartLocation: null,
+          guardianAltarRune: null,
         }
       : state;
 
@@ -6555,6 +7034,25 @@ async function runWaitAfterGuardianClickTick(
       );
     }
 
+    const teleportDarkScreen = detectGuardianTeleportDarkScreen(tickCapture.bitmap);
+    if (teleportDarkScreen.isTeleporting) {
+      const missingGuardianYellowTicks = state.missingGuardianYellowTicks + 1;
+      if (missingGuardianYellowTicks === 1 || missingGuardianYellowTicks % 5 === 0) {
+        warn(
+          stepMessage(
+            WORKFLOW_STEPS.TELEPORT_TO_ALTAR,
+            `Teleport transition dark screen detected while region is still unconfirmed; current chunk=${guardianLocation.chunkId ?? "unknown"} region=${guardianLocation.regionId ?? "unknown"} matched='${guardianLocation.matchedLine ?? "null"}'. Waiting without guardian re-click search or camera rotation. ${formatGuardianTeleportDarkScreenDetection(teleportDarkScreen)}.`,
+          ),
+        );
+      }
+
+      return {
+        ...unconfirmedState,
+        missingGuardianYellowTicks,
+        actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
+      };
+    }
+
     const guardianTargetSelection = selectGuardianTravelTarget(
       tickCapture.bitmap,
       config,
@@ -6565,7 +7063,7 @@ async function runWaitAfterGuardianClickTick(
       const target = guardianTargetSelection.target;
       if (!isGuardianClickPointSafelyOnScreen(tickCapture.bitmap, target.clickPoint)) {
         const missingGuardianYellowTicks = state.missingGuardianYellowTicks + 1;
-        const rotated = tapKey(GUARDIAN_GREEN_OUTLINE_CAMERA_ROTATE_KEY);
+        const rotated = tapCameraKey(GUARDIAN_GREEN_OUTLINE_CAMERA_ROTATE_KEY);
         warn(
           stepMessage(
             WORKFLOW_STEPS.TELEPORT_TO_ALTAR,
@@ -6581,10 +7079,30 @@ async function runWaitAfterGuardianClickTick(
       }
 
       const travel = estimateTravelWaitTicks(playerAnchor, target.clickPoint);
+      const runeTiming = getGuardianRuneTravelTimingDecision(unconfirmedState, nowMs, travel);
+      if (!runeTiming.canClick) {
+        const missingGuardianYellowTicks = state.missingGuardianYellowTicks + 1;
+        recordGuardianRuneTimerClickRefusal(true);
+        if (missingGuardianYellowTicks === 1 || missingGuardianYellowTicks % 5 === 0) {
+          warn(
+            stepMessage(
+              WORKFLOW_STEPS.TELEPORT_TO_ALTAR,
+              `Guardian re-click decision: ${formatGuardianDecision(guardianTargetSelection)}. Refusing guardian re-click because active rune timer is too close to despawn (${formatGuardianRuneTravelTimingDecision(runeTiming)}, ${formatGuardianTeleportWait(travel)}). Waiting for the next rune change instead of re-clicking a likely stale guardian.`,
+            ),
+          );
+        }
+
+        return {
+          ...unconfirmedState,
+          missingGuardianYellowTicks,
+          actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
+        };
+      }
+
       log(
         stepMessage(
           WORKFLOW_STEPS.TELEPORT_TO_ALTAR,
-          `Guardian re-click decision: ${formatGuardianDecision(guardianTargetSelection)}.`,
+          `Guardian re-click decision: ${formatGuardianDecision(guardianTargetSelection)}. Rune timing=${formatGuardianRuneTravelTimingDecision(runeTiming)}.`,
         ),
       );
       const clicked = clickScreenPoint(
@@ -6593,10 +7111,14 @@ async function runWaitAfterGuardianClickTick(
         captureBounds,
       );
       const clickedAtMs = Date.now();
+      const guardianPostClickSummary = applyGuardianAltarEntryCameraPresetForTarget(
+        target,
+        `Post-reclick guardian camera prep for ${target.runeMatch.rune}`,
+      );
       log(
         stepMessage(
           WORKFLOW_STEPS.MOVE_TO_GUARDIAN,
-          `Still in crafting region after guardian travel deadline: chunk=${guardianLocation.chunkId ?? "unknown"} region=${guardianLocation.regionId ?? "unknown"} matched='${guardianLocation.matchedLine ?? "null"}'; re-clicked ${target.slot} guardian (${target.runeMatch.rune}, marker=${target.colorHex}/${target.color}) at (${clicked.x},${clicked.y}) local=(${target.clickPoint.centerX},${target.clickPoint.centerY}) bounds=(${target.marker.minX},${target.marker.minY})-${target.marker.maxX},${target.marker.maxY} pixels=${target.marker.pixelCount}; rewardPoints=${formatRewardPoints(guardianTargetSelection.rewardPoints)} preference=${guardianTargetSelection.preferenceOrder.join("->")} nextUnknown=${getOppositeGuardianSlot(target.slot)}; ${formatGuardianTeleportWait(travel)}.`,
+          `Still in crafting region after guardian travel deadline: chunk=${guardianLocation.chunkId ?? "unknown"} region=${guardianLocation.regionId ?? "unknown"} matched='${guardianLocation.matchedLine ?? "null"}'; re-clicked ${target.slot} guardian (${target.runeMatch.rune}, marker=${target.colorHex}/${target.color}) at (${clicked.x},${clicked.y}) local=(${target.clickPoint.centerX},${target.clickPoint.centerY}) bounds=(${target.marker.minX},${target.marker.minY})-${target.marker.maxX},${target.marker.maxY} pixels=${target.marker.pixelCount}; ${guardianPostClickSummary}; rewardPoints=${formatRewardPoints(guardianTargetSelection.rewardPoints)} preference=${guardianTargetSelection.preferenceOrder.join("->")} nextUnknown=${getOppositeGuardianSlot(target.slot)}; runeTiming=${formatGuardianRuneTravelTimingDecision(runeTiming)}; ${formatGuardianTeleportWait(travel)}.`,
         ),
       );
       rememberMovementObservation("guardian-to-altar", WORKFLOW_STEPS.MOVE_TO_GUARDIAN, clickedAtMs, travel);
@@ -6607,6 +7129,7 @@ async function runWaitAfterGuardianClickTick(
         guardianClickDistancePx: travel.distancePx,
         guardianCoordinateConfirmed: false,
         guardianAltarStartLocation: null,
+        guardianAltarRune: target.runeMatch.rune,
         guardianAltarCameraLeftRotations: 0,
         unknownRewardNextGuardianSlot: getOppositeGuardianSlot(target.slot),
         actionLockUntilMs: clickedAtMs + GUARDIAN_CLICK_LOCK_TICKS * GAME_TICK_MS,
@@ -6615,7 +7138,7 @@ async function runWaitAfterGuardianClickTick(
 
     const missingGuardianYellowTicks = state.missingGuardianYellowTicks + 1;
     const shouldRotateCamera = shouldRotateCameraForMissingGuardianTarget(guardianTargetSelection, config);
-    const rotated = shouldRotateCamera ? tapKey(GUARDIAN_GREEN_OUTLINE_CAMERA_ROTATE_KEY) : false;
+    const rotated = shouldRotateCamera ? tapCameraKey(GUARDIAN_GREEN_OUTLINE_CAMERA_ROTATE_KEY) : false;
     if (missingGuardianYellowTicks === 1 || missingGuardianYellowTicks % 5 === 0) {
       warn(
         stepMessage(
@@ -6664,19 +7187,19 @@ async function runWaitAfterGuardianClickTick(
     const shouldRotateCamera = missingGuardianYellowTicks <= GUARDIAN_ALTAR_CAMERA_ROTATE_MAX_ATTEMPTS;
 
     if (shouldRotateCamera) {
-      const rotated = tapKey(GUARDIAN_ALTAR_CAMERA_ROTATE_KEY);
+      const rotation = rotateCameraForAltarSearch(confirmedState);
       warn(
         stepMessage(
           WORKFLOW_STEPS.FIND_ALTAR,
-          `Altar marker not visible in region ${guardianLocation.regionId ?? "unknown"}; ${rotated ? `tapped '${GUARDIAN_ALTAR_CAMERA_ROTATE_KEY}' and waiting ${GUARDIAN_ALTAR_CAMERA_ROTATE_SETTLE_BOT_TICKS} bot tick(s) for the camera to settle` : `could not tap '${GUARDIAN_ALTAR_CAMERA_ROTATE_KEY}'`} before retry ${missingGuardianYellowTicks}/${GUARDIAN_ALTAR_CAMERA_ROTATE_MAX_ATTEMPTS}. ${formatAltarMarkerSearchDiagnostics(tickCapture.bitmap, altarCandidates)}.`,
+          `Altar marker not visible in region ${guardianLocation.regionId ?? "unknown"}; ${rotation.rotated ? `${rotation.rotationLabel} tapped '${GUARDIAN_ALTAR_CAMERA_ROTATE_KEY}' ${rotation.rotationCount} time(s) and waiting ${GUARDIAN_ALTAR_CAMERA_ROTATE_SETTLE_BOT_TICKS} bot tick(s) for the camera to settle` : rotation.skipped ? rotation.rotationLabel : `could not tap '${GUARDIAN_ALTAR_CAMERA_ROTATE_KEY}'`} before retry ${missingGuardianYellowTicks}/${GUARDIAN_ALTAR_CAMERA_ROTATE_MAX_ATTEMPTS}. ${formatAltarMarkerSearchDiagnostics(tickCapture.bitmap, altarCandidates)}.`,
         ),
       );
 
       return {
         ...confirmedState,
         missingGuardianYellowTicks,
-        guardianAltarCameraLeftRotations: confirmedState.guardianAltarCameraLeftRotations + (rotated ? 1 : 0),
-        actionLockUntilMs: rotated
+        guardianAltarCameraLeftRotations: confirmedState.guardianAltarCameraLeftRotations + rotation.rotationCount,
+        actionLockUntilMs: rotation.rotated
           ? nowMs + GUARDIAN_ALTAR_CAMERA_ROTATE_SETTLE_BOT_TICKS * BOT_TICK_MS
           : nowMs + FAST_ACTION_RETRY_MS,
       };
@@ -6816,11 +7339,11 @@ function runWaitAfterGuardianYellowClickTick(
       const cameraRotateRetryLimit = GUARDIAN_ALTAR_SEARCH_RETRY_TICKS + GUARDIAN_ALTAR_CAMERA_ROTATE_MAX_ATTEMPTS;
       if (missingGuardianYellowTicks <= cameraRotateRetryLimit) {
         const rotationAttempt = missingGuardianYellowTicks - GUARDIAN_ALTAR_SEARCH_RETRY_TICKS;
-        const rotated = tapKey(GUARDIAN_ALTAR_CAMERA_ROTATE_KEY);
+        const rotation = rotateCameraForAltarSearch(correctedState);
         warn(
           stepMessage(
             WORKFLOW_STEPS.MOVE_TO_ALTAR,
-            `Inventory free-space is still 0 and no altar marker was accepted after ${GUARDIAN_ALTAR_SEARCH_RETRY_TICKS} retry tick(s); ${rotated ? `tapped '${GUARDIAN_ALTAR_CAMERA_ROTATE_KEY}' and waiting ${GUARDIAN_ALTAR_CAMERA_ROTATE_SETTLE_BOT_TICKS} bot tick(s) for the camera to settle` : `could not tap '${GUARDIAN_ALTAR_CAMERA_ROTATE_KEY}'`} before altar retry rotation ${rotationAttempt}/${GUARDIAN_ALTAR_CAMERA_ROTATE_MAX_ATTEMPTS}. ${formatAltarMarkerSearchDiagnostics(tickCapture.bitmap, altarCandidates)}.`,
+            `Inventory free-space is still 0 and no altar marker was accepted after ${GUARDIAN_ALTAR_SEARCH_RETRY_TICKS} retry tick(s); ${rotation.rotated ? `${rotation.rotationLabel} tapped '${GUARDIAN_ALTAR_CAMERA_ROTATE_KEY}' ${rotation.rotationCount} time(s) and waiting ${GUARDIAN_ALTAR_CAMERA_ROTATE_SETTLE_BOT_TICKS} bot tick(s) for the camera to settle` : rotation.skipped ? rotation.rotationLabel : `could not tap '${GUARDIAN_ALTAR_CAMERA_ROTATE_KEY}'`} before altar retry rotation ${rotationAttempt}/${GUARDIAN_ALTAR_CAMERA_ROTATE_MAX_ATTEMPTS}. ${formatAltarMarkerSearchDiagnostics(tickCapture.bitmap, altarCandidates)}.`,
           ),
         );
 
@@ -6828,8 +7351,8 @@ function runWaitAfterGuardianYellowClickTick(
           ...correctedState,
           inventoryFreeSlots: inventory.count,
           missingGuardianYellowTicks,
-          guardianAltarCameraLeftRotations: correctedState.guardianAltarCameraLeftRotations + (rotated ? 1 : 0),
-          actionLockUntilMs: rotated
+          guardianAltarCameraLeftRotations: correctedState.guardianAltarCameraLeftRotations + rotation.rotationCount,
+          actionLockUntilMs: rotation.rotated
             ? nowMs + GUARDIAN_ALTAR_CAMERA_ROTATE_SETTLE_BOT_TICKS * BOT_TICK_MS
             : nowMs + FAST_ACTION_RETRY_MS,
         };
@@ -6954,15 +7477,18 @@ function runWaitAfterGuardianYellowClickTick(
 
     const pouchBatch = selectAltarPouchEmptyBatch(altarCraftState, inventory.count);
     if (pouchBatch.length === 0) {
-      const baselineState = unwindAltarCamera(
-        withPostAltarInventoryBaseline(
-          {
-            ...altarCraftState,
-            altarPouchesEmptiedThisCycle: true,
-          },
-          inventory.count,
+      const baselineState = applyGuardianReturnPortalCameraPreset(
+        unwindAltarCamera(
+          withPostAltarInventoryBaseline(
+            {
+              ...altarCraftState,
+              altarPouchesEmptiedThisCycle: true,
+            },
+            inventory.count,
+          ),
+          WORKFLOW_STEPS.FIND_PORTAL,
         ),
-        WORKFLOW_STEPS.FIND_PORTAL,
+        `Preparing return portal camera after ${altarCraftState.guardianAltarRune ?? "unknown"} altar`,
       );
 
       log(
@@ -7013,9 +7539,12 @@ function runWaitAfterGuardianYellowClickTick(
     };
   }
 
-  const baselineState = unwindAltarCamera(
-    withPostAltarInventoryBaseline(altarCraftState, inventory.count),
-    WORKFLOW_STEPS.FIND_PORTAL,
+  const baselineState = applyGuardianReturnPortalCameraPreset(
+    unwindAltarCamera(
+      withPostAltarInventoryBaseline(altarCraftState, inventory.count),
+      WORKFLOW_STEPS.FIND_PORTAL,
+    ),
+    `Preparing return portal camera after ${altarCraftState.guardianAltarRune ?? "unknown"} altar`,
   );
 
   log(
@@ -7074,24 +7603,29 @@ function runEmptyPouchesAtAltarTick(
     }
 
     const pendingClick = currentState.pouchClickPending;
-    const result = updatePouchEssenceAfterInventoryDelta(currentState, pendingClick, inventory.count);
-    currentState = result.state;
-    log(
-      stepMessage(
-        WORKFLOW_STEPS.EMPTY_POUCHES_AT_ALTAR,
-        `Pouch empty verification for ${pendingClick.pouch}: free-space ${pendingClick.beforeFreeSlots} -> ${inventory.count}, observedMoved=${result.delta}; marked ${pendingClick.pouch} empty deterministically; pouch memory=${formatPouchEssenceSummary(currentState)}.`,
-      ),
+    const observedMovedEssence = Math.max(0, pendingClick.beforeFreeSlots - inventory.count);
+    const expectedMovedEssence = currentState.pouchClickBatchMovedEssence;
+    currentState = {
+      ...currentState,
+      pouchClickPending: null,
+      pouchClickBatchMovedEssence: observedMovedEssence,
+      inventoryFreeSlots: inventory.count,
+      missingInventoryCountTicks: 0,
+    };
+
+    const verificationMessage = stepMessage(
+      WORKFLOW_STEPS.EMPTY_POUCHES_AT_ALTAR,
+      `Altar pouch batch verification: free-space ${pendingClick.beforeFreeSlots} -> ${inventory.count}, observedMoved=${observedMovedEssence}, expectedMoved=${expectedMovedEssence}; clicked=${formatPouchClickList(currentState.pouchClickQueue)}; pouch memory=${formatPouchEssenceSummary(currentState)}.`,
     );
+    if (observedMovedEssence !== expectedMovedEssence) {
+      warn(verificationMessage);
+    } else {
+      log(verificationMessage);
+    }
   }
 
   if (currentState.pouchClickIndex < currentState.pouchClickQueue.length) {
-    return clickNextPouchForInventoryDelta(
-      currentState,
-      captureBounds,
-      nowMs,
-      WORKFLOW_STEPS.EMPTY_POUCHES_AT_ALTAR,
-      "empty",
-    );
+    return clickRemainingAltarPouchBatchWithoutPerPouchInventoryReads(currentState, captureBounds, nowMs);
   }
 
   const playerAnchor = getPlayerAnchor(tickCapture.bitmap);
@@ -7240,7 +7774,7 @@ function runFindReturnPortalTick(
       );
     }
 
-    const rotated = tapKey(GUARDIAN_RETURN_PORTAL_CAMERA_ROTATE_KEY);
+    const rotated = tapCameraKey(GUARDIAN_RETURN_PORTAL_CAMERA_ROTATE_KEY);
     const returnReason = state.returnPortalRecoveryTarget ? "after salmon portal recovery" : "after inventory emptied";
 
     warn(
@@ -7302,6 +7836,7 @@ function transitionToGreatGuardianState(state: BotState): BotState {
     greatGuardianClickDistancePx: null,
     chargedCellDepositArrivalDeadlineMs: 0,
     chargedCellDepositClickDistancePx: null,
+    greatGuardianAttemptCount: 0,
     runeDepositArrivalDeadlineMs: 0,
     runeDepositClickDistancePx: null,
     runeDepositInventoryFreeSlotsBeforeClick: null,
@@ -7313,12 +7848,64 @@ function transitionToGreatGuardianState(state: BotState): BotState {
   };
 }
 
+function transitionToGreatGuardianFallbackAfterAttempts(
+  state: BotState,
+  nowMs: number,
+  reason: string,
+): BotState {
+  if (state.openPortalAfterCurrentPostReturnAction) {
+    return transitionToFinalPortalSearchState(
+      {
+        ...state,
+        greatGuardianAttemptCount: 0,
+        postPortalDepositResume: "chargedCell",
+      },
+      nowMs,
+      reason,
+    );
+  }
+
+  if (state.endOfRoundDepositMode) {
+    return transitionToEndOfRoundChargedCellDepositState(
+      {
+        ...state,
+        greatGuardianAttemptCount: 0,
+      },
+      nowMs,
+      `${reason} End-of-round fallback: trying charged cell deposit next.`,
+    );
+  }
+
+  setAutomateBotCurrentStep(STEP_CHARGED_CELL_DEPOSIT_ID);
+  warn(
+    stepMessage(
+      WORKFLOW_STEPS.FIND_CHARGED_CELL_DEPOSIT,
+      `${reason} Maximum Great Guardian click attempts reached; falling back to charged cell deposit.`,
+    ),
+  );
+  return {
+    ...state,
+    greatGuardianArrivalDeadlineMs: 0,
+    greatGuardianClickDistancePx: null,
+    greatGuardianAttemptCount: 0,
+    currentFunction: "findChargedCellDeposit",
+    phase: "find-charged-cell-deposit",
+    chargedCellDepositArrivalDeadlineMs: 0,
+    chargedCellDepositClickDistancePx: null,
+    chargedCellDepositPlayerTileFallbackPending: false,
+    missingInventoryCountTicks: 0,
+    missingChargedCellDepositTicks: 0,
+    actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
+  };
+}
+
 function transitionToPendingPostReturnDepositState(state: BotState, nowMs: number, reason: string): BotState {
   const pendingResume = state.postPortalDepositResume;
   const baseState: BotState = {
     ...state,
     postPortalDepositResume: null,
     openPortalAfterCurrentPostReturnAction: false,
+    greatGuardianAttemptCount: 0,
     finalPortalArrivalDeadlineMs: 0,
     finalPortalTeleportGraceDeadlineMs: 0,
     finalPortalClickDistancePx: null,
@@ -7385,6 +7972,7 @@ function transitionToPostPortalDepositResumeState(state: BotState, nowMs: number
   const baseState: BotState = {
     ...state,
     inventoryFreeSlots: 0,
+    greatGuardianAttemptCount: 0,
     portalMiningArrivalDeadlineMs: 0,
     portalMiningExitPortalMarkerCache: null,
     portalExitArrivalDeadlineMs: 0,
@@ -7477,7 +8065,7 @@ function transitionAfterReturnPortalOcrLoopGuard(
   reason: string,
 ): BotState {
   const recoveryTarget = state.returnPortalRecoveryTarget;
-  const cameraReset = state.returnPortalCameraNorthPreparedThisClick ? null : tapKey(POST_RETURN_CAMERA_NORTH_KEY);
+  const cameraReset = state.returnPortalCameraNorthPreparedThisClick ? null : tapCameraKey(POST_RETURN_CAMERA_NORTH_KEY);
   const cameraSummary = state.returnPortalCameraNorthPreparedThisClick
     ? "Camera north already prepared after the red return portal click."
     : `${cameraReset ? "Camera reset to north." : "Camera north reset skipped."}`;
@@ -7550,7 +8138,7 @@ async function runWaitAfterGuardianReturnClickTick(
       };
     }
 
-    const cameraReset = tapKey(POST_RETURN_CAMERA_NORTH_KEY);
+    const cameraReset = tapCameraKey(POST_RETURN_CAMERA_NORTH_KEY);
     log(
       stepMessage(
         WORKFLOW_STEPS.TELEPORT_BACK,
@@ -7640,7 +8228,7 @@ async function runWaitAfterGuardianReturnClickTick(
     };
   }
 
-  const cameraReset = stateAfterCamera.returnPortalCameraNorthPreparedThisClick ? null : tapKey(POST_RETURN_CAMERA_NORTH_KEY);
+  const cameraReset = stateAfterCamera.returnPortalCameraNorthPreparedThisClick ? null : tapCameraKey(POST_RETURN_CAMERA_NORTH_KEY);
   const cameraSummary = stateAfterCamera.returnPortalCameraNorthPreparedThisClick
     ? "Camera north already prepared after the red return portal click"
     : cameraReset
@@ -7759,7 +8347,7 @@ function runFindGreatGuardianTick(
       );
     }
 
-    const rotated = tapKey(GREAT_GUARDIAN_CAMERA_ROTATE_KEY);
+    const rotated = tapCameraKey(GREAT_GUARDIAN_CAMERA_ROTATE_KEY);
     if (missingGreatGuardianTicks === 1 || missingGreatGuardianTicks % 5 === 0) {
       warn(
         stepMessage(
@@ -7778,18 +8366,20 @@ function runFindGreatGuardianTick(
 
   const clickPoint = pickColoredOutlineClickPoint(tickCapture.bitmap, greatGuardian, isGreatGuardianBluePixel);
   const travel = estimateTravelWaitTicks(playerAnchor, clickPoint);
+  const nextGreatGuardianAttemptCount = currentState.greatGuardianAttemptCount + 1;
   const clicked = clickScreenPoint(captureBounds.x + clickPoint.centerX, captureBounds.y + clickPoint.centerY, captureBounds);
   const clickedAtMs = Date.now();
   log(
     stepMessage(
       WORKFLOW_STEPS.TRAVEL_TO_GREAT_GUARDIAN,
-      `Clicked interior of blue great guardian outline at (${clicked.x},${clicked.y}) local=(${clickPoint.centerX},${clickPoint.centerY}) bounds=(${greatGuardian.minX},${greatGuardian.minY})-${greatGuardian.maxX},${greatGuardian.maxY} pixels=${greatGuardian.pixelCount}; checking inventory until travel deadline (${formatTravelEstimate(travel)}).`,
+      `Clicked interior of blue great guardian outline at (${clicked.x},${clicked.y}) local=(${clickPoint.centerX},${clickPoint.centerY}) bounds=(${greatGuardian.minX},${greatGuardian.minY})-${greatGuardian.maxX},${greatGuardian.maxY} pixels=${greatGuardian.pixelCount}; attempt ${nextGreatGuardianAttemptCount}/${MAX_GREAT_GUARDIAN_CLICK_ATTEMPTS}, checking inventory until travel deadline (${formatTravelEstimate(travel)}).`,
     ),
   );
   rememberMovementObservation("great-guardian-deposit", WORKFLOW_STEPS.TRAVEL_TO_GREAT_GUARDIAN, clickedAtMs, travel);
 
   return {
     ...currentState,
+    greatGuardianAttemptCount: nextGreatGuardianAttemptCount,
     currentFunction: "waitAfterGreatGuardianClick",
     phase: "wait-after-great-guardian-click",
     greatGuardianArrivalDeadlineMs: clickedAtMs + travel.waitTicks * GAME_TICK_MS,
@@ -7835,15 +8425,28 @@ async function runWaitAfterGreatGuardianClickTick(
         );
       }
 
+      const nextGreatGuardianAttemptCount = currentState.greatGuardianAttemptCount + 1;
+      if (nextGreatGuardianAttemptCount >= MAX_GREAT_GUARDIAN_CLICK_ATTEMPTS) {
+        return transitionToGreatGuardianFallbackAfterAttempts(
+          {
+            ...currentState,
+            greatGuardianAttemptCount: nextGreatGuardianAttemptCount,
+          },
+          nowMs,
+          "Great guardian inventory was unreadable before travel deadline expired.",
+        );
+      }
+
       warn(
         stepMessage(
           WORKFLOW_STEPS.TRAVEL_TO_GREAT_GUARDIAN,
-          `Great guardian inventory was unreadable before travel deadline expired. Re-clicking great guardian.`,
+          `Great guardian inventory was unreadable before travel deadline expired. Re-clicking great guardian (attempt ${nextGreatGuardianAttemptCount}/${MAX_GREAT_GUARDIAN_CLICK_ATTEMPTS}).`,
         ),
       );
       resolvePendingMovementObservation("late", "great guardian inventory unreadable after travel deadline", nowMs, tickCapture.bitmap);
       return {
         ...currentState,
+        greatGuardianAttemptCount: nextGreatGuardianAttemptCount,
         currentFunction: "findGreatGuardian",
         phase: "find-great-guardian",
         greatGuardianArrivalDeadlineMs: 0,
@@ -7921,15 +8524,28 @@ async function runWaitAfterGreatGuardianClickTick(
         );
       }
 
+      const nextGreatGuardianAttemptCount = currentState.greatGuardianAttemptCount + 1;
+      if (nextGreatGuardianAttemptCount >= MAX_GREAT_GUARDIAN_CLICK_ATTEMPTS) {
+        return transitionToGreatGuardianFallbackAfterAttempts(
+          {
+            ...currentState,
+            greatGuardianAttemptCount: nextGreatGuardianAttemptCount,
+          },
+          nowMs,
+          `Great guardian inventory did not reach expected free-space ${expectedInventoryFreeSlots} before travel deadline expired; got ${inventoryAfterClick.count} from altar baseline ${currentState.inventoryFreeSlots}.`,
+        );
+      }
+
       warn(
         stepMessage(
           WORKFLOW_STEPS.TRAVEL_TO_GREAT_GUARDIAN,
-          `Great guardian inventory did not reach expected free-space ${expectedInventoryFreeSlots} before travel deadline expired; got ${inventoryAfterClick.count} from altar baseline ${currentState.inventoryFreeSlots}. Re-clicking great guardian. Inventory history=${formatInventoryHistory(currentState.inventoryHistory)}.`,
+          `Great guardian inventory did not reach expected free-space ${expectedInventoryFreeSlots} before travel deadline expired; got ${inventoryAfterClick.count} from altar baseline ${currentState.inventoryFreeSlots}. Re-clicking great guardian (attempt ${nextGreatGuardianAttemptCount}/${MAX_GREAT_GUARDIAN_CLICK_ATTEMPTS}). Inventory history=${formatInventoryHistory(currentState.inventoryHistory)}.`,
         ),
       );
       resolvePendingMovementObservation("late", "great guardian inventory did not change by deadline", nowMs, tickCapture.bitmap);
       return {
         ...currentState,
+        greatGuardianAttemptCount: nextGreatGuardianAttemptCount,
         currentFunction: "findGreatGuardian",
         phase: "find-great-guardian",
         greatGuardianArrivalDeadlineMs: 0,
@@ -8140,7 +8756,7 @@ async function runFindChargedCellDepositTick(
       }
     }
 
-    const rotated = tapKey(CHARGED_CELL_DEPOSIT_CAMERA_ROTATE_KEY);
+    const rotated = tapCameraKey(CHARGED_CELL_DEPOSIT_CAMERA_ROTATE_KEY);
     if (missingChargedCellDepositTicks === 1 || missingChargedCellDepositTicks % 5 === 0) {
       warn(
         stepMessage(
@@ -8241,7 +8857,7 @@ async function runWaitAfterChargedCellDepositClickTick(
       };
     }
 
-    const cameraPrepared = tapKey(CHARGED_CELL_TO_RUNE_CAMERA_KEY);
+    const cameraPrepared = tapCameraKey(CHARGED_CELL_TO_RUNE_CAMERA_KEY);
     log(
       stepMessage(
         WORKFLOW_STEPS.TRAVEL_TO_CHARGED_CELL_DEPOSIT,
@@ -8523,7 +9139,7 @@ function transitionAfterRuneDepositVerified(
     },
   );
 
-  const cameraReset = state.runeDepositCameraNorthPreparedThisClick ? null : tapKey(POST_RUNE_DEPOSIT_CAMERA_NORTH_KEY);
+  const cameraReset = state.runeDepositCameraNorthPreparedThisClick ? null : tapCameraKey(POST_RUNE_DEPOSIT_CAMERA_NORTH_KEY);
   const cameraSummary = state.runeDepositCameraNorthPreparedThisClick
     ? "Camera north already prepared after the rune deposit click."
     : `${cameraReset ? `Tapped '${POST_RUNE_DEPOSIT_CAMERA_NORTH_KEY}'` : `Could not tap '${POST_RUNE_DEPOSIT_CAMERA_NORTH_KEY}'`} to reset camera north.`;
@@ -8711,7 +9327,7 @@ async function runFindRuneDepositTick(
     currentState.loopIndex,
     RUNE_DEPOSIT_MARKER_STABLE_DISTANCE_PX,
   );
-  const requiredSettleTicks = getRuneDepositMarkerSettleTicks(travel);
+  const requiredSettleTicks = 0;
   if (!isCachedMarkerSettled(markerCache, freshCaptureMs, requiredSettleTicks)) {
     const readyAtMs = markerCache.firstSeenAtMs + requiredSettleTicks * GAME_TICK_MS;
     const waitTicks = Math.max(1, Math.ceil((readyAtMs - freshCaptureMs) / GAME_TICK_MS));
@@ -8827,7 +9443,7 @@ function runWaitAfterRuneDepositClickTick(
       };
     }
 
-    const cameraReset = tapKey(POST_RUNE_DEPOSIT_CAMERA_NORTH_KEY);
+    const cameraReset = tapCameraKey(POST_RUNE_DEPOSIT_CAMERA_NORTH_KEY);
     log(
       stepMessage(
         WORKFLOW_STEPS.TRAVEL_TO_RUNE_DEPOSIT,
@@ -9110,7 +9726,7 @@ function runFindFinalPortalTick(
     }
 
     const missingFinalPortalTicks = state.missingFinalPortalTicks + 1;
-    const rotated = tapKey(GUARDIAN_SALMON_PORTAL_CAMERA_ROTATE_KEY);
+    const rotated = tapCameraKey(GUARDIAN_SALMON_PORTAL_CAMERA_ROTATE_KEY);
     if (missingFinalPortalTicks === 1 || missingFinalPortalTicks % 5 === 0) {
       warn(
         stepMessage(
@@ -9661,7 +10277,7 @@ function runRecoverFinalPortalArrivalTick(
   }
 
   const missingPortalMiningOrangeTicks = state.missingPortalMiningOrangeTicks + 1;
-  const rotated = tapKey(GUARDIAN_SALMON_PORTAL_CAMERA_ROTATE_KEY);
+  const rotated = tapCameraKey(GUARDIAN_SALMON_PORTAL_CAMERA_ROTATE_KEY);
   if (missingPortalMiningOrangeTicks === 1 || missingPortalMiningOrangeTicks % 5 === 0) {
     warn(
       stepMessage(
@@ -10046,7 +10662,7 @@ function runFindPortalExitTick(
   const exitPortal = pickNearestGuardianOfTheRiftPortalMarker(portalCandidates, playerAnchor);
   if (!exitPortal) {
     const missingPortalExitTicks = state.missingPortalExitTicks + 1;
-    const rotated = tapKey(GUARDIAN_SALMON_PORTAL_CAMERA_ROTATE_KEY);
+    const rotated = tapCameraKey(GUARDIAN_SALMON_PORTAL_CAMERA_ROTATE_KEY);
     warn(
       stepMessage(
         WORKFLOW_STEPS.FIND_PORTAL_EXIT,
@@ -10550,6 +11166,7 @@ async function runLoop(
     pendingMovementObservation = null;
     stablePlayerAnchor = null;
     currentRunStats = null;
+    currentCameraFacing = "unknown";
     setCurrentLogLoopIndex(0);
     setCurrentLogPhase(null);
     setAutomateBotCurrentStep(null);
@@ -10561,6 +11178,7 @@ export function onRunecraftingGuardianOfTheRiftBotStart(): void {
   setCurrentLogPhase("startup");
   setAutomateBotLogFooterProvider(buildGuardianRunStatsFooter);
   resetGuardianRunStats(Date.now());
+  currentCameraFacing = "unknown";
 
   if (!isLoopRunning) {
     startedAtMs = Date.now();
