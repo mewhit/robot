@@ -253,6 +253,8 @@ type BotState = {
   pouchClickPending: PendingPouchClick | null;
   pouchClickBatchMovedEssence: number;
   pouchFillAvailableEssenceSlots: number | null;
+  cachedWorkbenchMarker: WorkbenchMarkerDetection | null;
+  cachedPortalMiningMarker: ColoredMarkerDetection | null;
   craftingPouchesFilledThisCycle: boolean;
   portalMiningPouchesFilledThisCycle: boolean;
   altarPouchesEmptiedThisCycle: boolean;
@@ -1308,6 +1310,86 @@ function clickNextPouchForInventoryDelta(
   };
 }
 
+function clickCachedWorkbenchAfterPouchFill(
+  state: BotState,
+  tickCapture: TickCapture,
+  captureBounds: ScreenCaptureBounds,
+): BotState | null {
+  const workbenchMarker = state.cachedWorkbenchMarker;
+  if (!workbenchMarker) {
+    return null;
+  }
+
+  const playerAnchor = getPlayerAnchor(tickCapture.bitmap);
+  const workbenchClickPoint = getBoundsCenterPoint(workbenchMarker);
+  const clicked = clickScreenPointImmediate(captureBounds.x + workbenchClickPoint.centerX, captureBounds.y + workbenchClickPoint.centerY, captureBounds);
+  const clickedAtMs = Date.now();
+  const travel = estimateTravelWaitTicks(playerAnchor, workbenchClickPoint);
+  setAutomateBotCurrentStep(STEP_WORKBENCH_ID);
+  log(
+    stepMessage(
+      WORKFLOW_STEPS.MOVE_TO_WORKBENCH,
+      `Clicked cached magenta workbench marker after final pouch fill validation at (${clicked.x},${clicked.y}) local=(${workbenchClickPoint.centerX},${workbenchClickPoint.centerY}) bounds=(${workbenchMarker.minX},${workbenchMarker.minY})-(${workbenchMarker.maxX},${workbenchMarker.maxY}) pixels=${workbenchMarker.pixelCount}; continuing crafting without re-scanning (${formatTravelEstimate(travel)}).`,
+    ),
+  );
+
+  return transitionToCraftingState(
+    {
+      ...state,
+      ...resetPouchClickQueue(),
+      craftingPouchesFilledThisCycle: true,
+      inventoryFreeSlots: null,
+      missingInventoryCountTicks: 0,
+      craftingInventoryChangeDeadlineMs: 0,
+      workbenchInventoryNoChangeWarnings: 0,
+      missingYellowTicks: 0,
+    },
+    clickedAtMs,
+    travel,
+    null,
+  );
+}
+
+function clickCachedPortalMiningAfterPouchFill(
+  state: BotState,
+  tickCapture: TickCapture,
+  captureBounds: ScreenCaptureBounds,
+): BotState | null {
+  const miningTarget = state.cachedPortalMiningMarker;
+  if (!miningTarget) {
+    return null;
+  }
+
+  const playerAnchor = getPlayerAnchor(tickCapture.bitmap);
+  const miningClickPoint = getBoundsCenterPoint(miningTarget);
+  const clicked = clickScreenPointImmediate(captureBounds.x + miningClickPoint.centerX, captureBounds.y + miningClickPoint.centerY, captureBounds);
+  const clickedAtMs = Date.now();
+  const travel = estimateTravelWaitTicks(playerAnchor, miningClickPoint);
+  log(
+    stepMessage(
+      WORKFLOW_STEPS.TRAVEL_TO_PORTAL_MINING,
+      `Clicked cached ${PORTAL_MINING_MARKER_COLOR_HEX} orange mining marker after final pouch fill validation at (${clicked.x},${clicked.y}) local=(${miningClickPoint.centerX},${miningClickPoint.centerY}) bounds=(${miningTarget.minX},${miningTarget.minY})-(${miningTarget.maxX},${miningTarget.maxY}) pixels=${miningTarget.pixelCount}; continuing portal mining without re-scanning (${formatTravelEstimate(travel)}).`,
+    ),
+  );
+
+  return {
+    ...state,
+    ...resetPouchClickQueue(),
+    currentFunction: "portalMining",
+    phase: "portal-mining",
+    finalPortalArrivalDeadlineMs: 0,
+    finalPortalTeleportGraceDeadlineMs: 0,
+    finalPortalClickDistancePx: null,
+    portalMiningArrivalDeadlineMs: clickedAtMs + travel.waitTicks * GAME_TICK_MS,
+    missingPortalMiningOrangeTicks: 0,
+    missingInventoryCountTicks: 0,
+    inventoryFreeSlots: null,
+    craftingInventoryChangeDeadlineMs: 0,
+    portalMiningPouchesFilledThisCycle: true,
+    actionLockUntilMs: clickedAtMs + GUARDIAN_POST_RETURN_CLICK_LOCK_TICKS * GAME_TICK_MS,
+  };
+}
+
 function resetPouchClickQueue(): Pick<
   BotState,
   "pouchClickQueue" | "pouchClickIndex" | "pouchClickIntent" | "pouchClickPending" | "pouchClickBatchMovedEssence"
@@ -1642,6 +1724,8 @@ function createInitialState(): BotState {
     pouchClickPending: null,
     pouchClickBatchMovedEssence: 0,
     pouchFillAvailableEssenceSlots: null,
+    cachedWorkbenchMarker: null,
+    cachedPortalMiningMarker: null,
     craftingPouchesFilledThisCycle: false,
     portalMiningPouchesFilledThisCycle: false,
     altarPouchesEmptiedThisCycle: false,
@@ -5189,7 +5273,15 @@ function runWorkbenchFindYellowTick(
   );
 
   const travel = estimateTravelWaitTicks(playerAnchor, workbenchClickPoint);
-  return transitionToCraftingState(currentState, nowMs, travel, inventoryBeforeClick.count);
+  return transitionToCraftingState(
+    {
+      ...currentState,
+      cachedWorkbenchMarker: nearestWorkbenchMarker,
+    },
+    nowMs,
+    travel,
+    inventoryBeforeClick.count,
+  );
 }
 
 function transitionToGuardianTravelState(
@@ -5472,16 +5564,27 @@ function runCraftingTick(
   if (inventory.count === 0) {
     const pouchesToFill = selectPouchesNeedingFill(currentState);
     if (!currentState.craftingPouchesFilledThisCycle && pouchesToFill.length > 0) {
+      const playerAnchor = getPlayerAnchor(tickCapture.bitmap);
+      const refreshedWorkbenchMarker = pickNearestWorkbenchMarker(
+        detectAllWorkbenchMagentaObjects(tickCapture.bitmap, WORKBENCH_MAGENTA_MIN_PIXELS),
+        playerAnchor,
+      );
+      const fillState = refreshedWorkbenchMarker
+        ? {
+            ...currentState,
+            cachedWorkbenchMarker: refreshedWorkbenchMarker,
+          }
+        : currentState;
       setAutomateBotCurrentStep(STEP_FILL_POUCHES_ID);
       log(
         stepMessage(
           WORKFLOW_STEPS.FILL_POUCHES_AFTER_WORKBENCH_FULL,
-          `Inventory is full after workbench and ${pouchesToFill.length} pouch(es) still need essence; filling pouch batch ${formatPouchClickList(pouchesToFill)} small-to-large before reclicking workbench. Fill budget=${currentState.pouchFillAvailableEssenceSlots ?? "unknown"} essence slot(s). Pouch memory=${formatPouchEssenceSummary(currentState)}.`,
+          `Inventory is full after workbench and ${pouchesToFill.length} pouch(es) still need essence; filling pouch batch ${formatPouchClickList(pouchesToFill)} small-to-large before reclicking workbench. Fill budget=${fillState.pouchFillAvailableEssenceSlots ?? "unknown"} essence slot(s). cachedWorkbench=${refreshedWorkbenchMarker ? `refreshed (${refreshedWorkbenchMarker.centerX},${refreshedWorkbenchMarker.centerY})` : fillState.cachedWorkbenchMarker ? "previous" : "none"}; Pouch memory=${formatPouchEssenceSummary(fillState)}.`,
         ),
       );
 
       return {
-        ...currentState,
+        ...fillState,
         currentFunction: "fillPouchesAfterWorkbenchFull",
         phase: "fill-pouches-after-workbench-full",
         pouchClickQueue: pouchesToFill,
@@ -5645,9 +5748,14 @@ function runFillPouchesAfterWorkbenchFullTick(
   log(
     stepMessage(
       WORKFLOW_STEPS.FILL_POUCHES_AFTER_WORKBENCH_FULL,
-      `Finished filling ${filledPouchCount} pouch click(s), moved=${movedEssence}; keeping phase fill budget=${currentState.pouchFillAvailableEssenceSlots ?? "unknown"}; ${allRememberedPouchesFull ? "all remembered pouches are now full" : "some pouches still need essence"} (${formatPouchEssenceSummary(currentState)}). Waiting one game tick before returning to workbench marker search.`,
+      `Finished filling ${filledPouchCount} pouch click(s), moved=${movedEssence}; keeping phase fill budget=${currentState.pouchFillAvailableEssenceSlots ?? "unknown"}; ${allRememberedPouchesFull ? "all remembered pouches are now full" : "some pouches still need essence"} (${formatPouchEssenceSummary(currentState)}). ${currentState.cachedWorkbenchMarker ? "Clicking cached workbench marker after final pouch validation." : "No cached workbench marker is available; waiting one game tick before returning to workbench marker search."}`,
     ),
   );
+
+  const reclickedWorkbench = clickCachedWorkbenchAfterPouchFill(currentState, tickCapture, captureBounds);
+  if (reclickedWorkbench) {
+    return reclickedWorkbench;
+  }
 
   return {
     ...currentState,
@@ -8471,6 +8579,7 @@ function clickPortalMiningMarker(
     finalPortalTeleportGraceDeadlineMs: 0,
     finalPortalClickDistancePx: null,
     portalMiningArrivalDeadlineMs: clickedAtMs + travel.waitTicks * GAME_TICK_MS,
+    cachedPortalMiningMarker: miningTarget,
     portalMiningExitPortalMarkerCache: null,
     missingPortalMiningOrangeTicks: 0,
     missingInventoryCountTicks: 0,
@@ -8848,6 +8957,7 @@ function runFindPortalMiningTick(
     currentFunction: "portalMining",
     phase: "portal-mining",
     portalMiningArrivalDeadlineMs: clickedAtMs + travel.waitTicks * GAME_TICK_MS,
+    cachedPortalMiningMarker: miningTarget,
     missingPortalMiningOrangeTicks: 0,
     missingInventoryCountTicks: 0,
     inventoryFreeSlots: null,
@@ -8896,16 +9006,27 @@ function runPortalMiningTick(
   if (inventory.count === 0) {
     const pouchesToFill = selectPouchesNeedingFill(currentState);
     if (!currentState.portalMiningPouchesFilledThisCycle && pouchesToFill.length > 0) {
+      const playerAnchor = getPlayerAnchor(tickCapture.bitmap);
+      const refreshedMiningMarker = pickNearestColoredMarker(
+        detectAllPortalMiningOrangeObjects(tickCapture.bitmap, PORTAL_MINING_ORANGE_MIN_PIXELS),
+        playerAnchor,
+      );
+      const fillState = refreshedMiningMarker
+        ? {
+            ...currentState,
+            cachedPortalMiningMarker: refreshedMiningMarker,
+          }
+        : currentState;
       setAutomateBotCurrentStep(STEP_FILL_POUCHES_ID);
       log(
         stepMessage(
           WORKFLOW_STEPS.FILL_POUCHES_AFTER_PORTAL_MINING_FULL,
-          `Inventory is full after portal mining and ${pouchesToFill.length} pouch(es) still need essence; filling pouch batch ${formatPouchClickList(pouchesToFill)} small-to-large before reclicking the orange mining marker. Fill budget=${currentState.pouchFillAvailableEssenceSlots ?? "unknown"} essence slot(s). Pouch memory=${formatPouchEssenceSummary(currentState)}.`,
+          `Inventory is full after portal mining and ${pouchesToFill.length} pouch(es) still need essence; filling pouch batch ${formatPouchClickList(pouchesToFill)} small-to-large before reclicking the orange mining marker. Fill budget=${fillState.pouchFillAvailableEssenceSlots ?? "unknown"} essence slot(s). cachedMining=${refreshedMiningMarker ? `refreshed (${refreshedMiningMarker.centerX},${refreshedMiningMarker.centerY})` : fillState.cachedPortalMiningMarker ? "previous" : "none"}; Pouch memory=${formatPouchEssenceSummary(fillState)}.`,
         ),
       );
 
       return {
-        ...currentState,
+        ...fillState,
         currentFunction: "fillPouchesAfterPortalMiningFull",
         phase: "fill-pouches-after-portal-mining-full",
         pouchClickQueue: pouchesToFill,
@@ -9041,9 +9162,14 @@ function runFillPouchesAfterPortalMiningFullTick(
   log(
     stepMessage(
       WORKFLOW_STEPS.FILL_POUCHES_AFTER_PORTAL_MINING_FULL,
-      `Finished filling ${filledPouchCount} pouch click(s), moved=${movedEssence}; keeping phase fill budget=${currentState.pouchFillAvailableEssenceSlots ?? "unknown"}; ${allRememberedPouchesFull ? "all remembered pouches are now full" : "some pouches still need essence"} (${formatPouchEssenceSummary(currentState)}). Waiting one game tick before returning to orange mining marker search.`,
+      `Finished filling ${filledPouchCount} pouch click(s), moved=${movedEssence}; keeping phase fill budget=${currentState.pouchFillAvailableEssenceSlots ?? "unknown"}; ${allRememberedPouchesFull ? "all remembered pouches are now full" : "some pouches still need essence"} (${formatPouchEssenceSummary(currentState)}). ${currentState.cachedPortalMiningMarker ? "Clicking cached orange mining marker after final pouch validation." : "No cached orange mining marker is available; waiting one game tick before returning to orange mining marker search."}`,
     ),
   );
+
+  const reclickedMining = clickCachedPortalMiningAfterPouchFill(currentState, tickCapture, captureBounds);
+  if (reclickedMining) {
+    return reclickedMining;
+  }
 
   return {
     ...currentState,
