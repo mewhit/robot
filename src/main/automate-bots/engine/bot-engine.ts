@@ -18,7 +18,7 @@ export type RunBotEngineOptions<State extends BotEngineLoopState<FunctionKey>, F
   isRunning: () => boolean;
   createInitialState: () => State;
   captureTick?: (params: { state: State; nowMs: number }) => Promise<TickCapture> | TickCapture;
-  observeTick?: (params: { state: State; nowMs: number; tickCapture: TickCapture }) => Promise<void> | void;
+  observeTick?: (params: { state: State; nowMs: number; tickCapture: TickCapture }) => Promise<void> | State | void;
   functions: BotEngineFunctionMap<State, FunctionKey, TickCapture>;
   onTickError?: (error: unknown, state: State) => void;
 };
@@ -120,6 +120,8 @@ export async function runBotEngine<State extends BotEngineLoopState<FunctionKey>
             void observationTask.catch((error) => {
               options.onTickError?.(error, state);
             });
+          } else if (observationTask) {
+            state = observationTask;
           }
         } catch (error) {
           options.onTickError?.(error, state);

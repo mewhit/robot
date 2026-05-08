@@ -74,6 +74,7 @@ type PreparedGuardianOfTheRiftRuneTemplate = GuardianOfTheRiftRuneTemplate & {
 
 const MIN_MATCH_SCORE = 0.82;
 const TEMPLATE_SAMPLE_STRIDE = 2;
+const preparedTemplateCache = new WeakMap<GuardianOfTheRiftRuneTemplate, PreparedGuardianOfTheRiftRuneTemplate>();
 
 const DEFAULT_SLOT_SEARCH_ROIS: SlotSearchRois = {
   elemental: {
@@ -182,6 +183,17 @@ function prepareTemplate(template: GuardianOfTheRiftRuneTemplate): PreparedGuard
   };
 }
 
+function getPreparedTemplate(template: GuardianOfTheRiftRuneTemplate): PreparedGuardianOfTheRiftRuneTemplate {
+  const cached = preparedTemplateCache.get(template);
+  if (cached) {
+    return cached;
+  }
+
+  const prepared = prepareTemplate(template);
+  preparedTemplateCache.set(template, prepared);
+  return prepared;
+}
+
 function scoreTemplateAt(
   template: PreparedGuardianOfTheRiftRuneTemplate,
   screenshotBitmap: RobotBitmap,
@@ -270,7 +282,7 @@ export function detectGuardianOfTheRiftActiveRunes(
 ): GuardianOfTheRiftActiveRuneDetection {
   const elementalRoi = clampRoi(screenshotBitmap, slotSearchRois.elemental ?? DEFAULT_SLOT_SEARCH_ROIS.elemental);
   const catalyticRoi = clampRoi(screenshotBitmap, slotSearchRois.catalytic ?? DEFAULT_SLOT_SEARCH_ROIS.catalytic);
-  const preparedTemplates = templates.map(prepareTemplate);
+  const preparedTemplates = templates.map(getPreparedTemplate);
   const matches: GuardianOfTheRiftRuneMatch[] = [];
 
   for (const template of preparedTemplates) {

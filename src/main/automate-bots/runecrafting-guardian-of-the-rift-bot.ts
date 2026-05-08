@@ -24,6 +24,7 @@ import {
   recordGuardianOfTheRiftDistanceTileStartupObservation,
 } from "./guardian-of-the-rift-distance-tile-history";
 import {
+  isGuardianOfTheRiftMovementModelTrainingKind,
   recordGuardianOfTheRiftMovementObservation,
   selectGuardianOfTheRiftMovementModel,
   type GuardianOfTheRiftMovementModelSelection,
@@ -60,6 +61,7 @@ import {
 import {
   detectGuardianOfTheRiftActiveRunes,
   loadGuardianOfTheRiftRuneTemplatesFromDirectory,
+  type GuardianOfTheRiftActiveRuneDetection,
   type GuardianOfTheRiftRuneMatch,
   type GuardianOfTheRiftRuneTemplate,
   type GuardianOfTheRiftSlot,
@@ -240,6 +242,16 @@ type BotState = {
   miningTimerReliableReadCount: number;
   miningTimerLocalStartSecondsRemaining: number | null;
   miningTimerLocalStartedAtMs: number | null;
+  activeGuardianRuneSignature: string | null;
+  activeGuardianRuneTimerStartedAtMs: number | null;
+  activeGuardianRuneDeadlineMs: number | null;
+  activeGuardianRuneLastObservedAtMs: number | null;
+  activeGuardianRuneOverdueWarned: boolean;
+  activeGuardianRuneTimerStartedFromObservedChange: boolean;
+  altarCraftedRunesPendingLowerBound: number;
+  altarCraftedRunesPendingUpperBound: number;
+  altarCraftedRunesPendingSlotsFreed: number;
+  altarCraftedRunesPendingAltarClicks: number;
   miningStatusGreenStartedAtMs: number | null;
   miningCameraKReadyAtMs: number;
   miningCameraKPrepared: boolean;
@@ -281,6 +293,8 @@ type BotState = {
   guardianReturnClickDistancePx: number | null;
   returnPortalCameraNorthReadyAtMs: number;
   returnPortalCameraNorthPreparedThisClick: boolean;
+  returnPortalLastBadCoordinateKey: string | null;
+  returnPortalRepeatedBadCoordinateReads: number;
   unknownRewardNextGuardianSlot: GuardianOfTheRiftSlot;
   returnPortalRecoveryTarget: ReturnPortalRecoveryTarget | null;
   openPortalAfterCurrentPostReturnAction: boolean;
@@ -437,6 +451,19 @@ type GuardianRunStats = {
   startedAtMs: number;
   cleanComplete: boolean;
   stablePlayerAnchor: StablePlayerAnchor | null;
+  activeGuardianRuneTimerSamples: number;
+  activeGuardianRuneTimerTotalElapsedMs: number;
+  activeGuardianRuneTimerMinElapsedMs: number | null;
+  activeGuardianRuneTimerMaxElapsedMs: number;
+  activeGuardianRuneTimerLateSamples: number;
+  activeGuardianRuneTimerOverdueWarnings: number;
+  altarRunesConfirmedCycles: number;
+  altarRunesConfirmedLowerBound: number;
+  altarRunesConfirmedUpperBound: number;
+  altarRunesConfirmedMaxUpperBound: number;
+  altarRunesPendingLowerBound: number;
+  altarRunesPendingUpperBound: number;
+  altarRunesPendingAltarClicks: number;
   greatGuardianClicks: number;
   greatGuardianVerified: number;
   greatGuardianLateReclicks: number;
@@ -484,6 +511,9 @@ const STEP_RUNE_DEPOSIT_ID = `${RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}-step-r
 const STEP_FINAL_PORTAL_ID = `${RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}-step-final-portal`;
 const GAME_TICK_MS = 600;
 const BOT_TICK_MS = 200;
+const ACTIVE_GUARDIAN_RUNE_TIMER_MS = 19_000;
+const ACTIVE_GUARDIAN_RUNE_TIMER_LATE_TOLERANCE_MS = BOT_TICK_MS;
+const ACTIVE_GUARDIAN_RUNE_TIMER_OVERDUE_GRACE_MS = BOT_TICK_MS;
 const FAST_ACTION_RETRY_MS = 200;
 const PRE_DECISION_CAPTURE_SETTLE_MS = 80;
 const STARTUP_SETTLE_MS = 180;
@@ -656,6 +686,8 @@ const GUARDIAN_ALTAR_CAMERA_ROTATE_SETTLE_BOT_TICKS = 3;
 const GUARDIAN_ALTAR_CAMERA_UNWIND_DELAY_TICKS = 1;
 const GUARDIAN_RETURN_PORTAL_CAMERA_ROTATE_KEY = "a";
 const GUARDIAN_RETURN_PORTAL_CAMERA_ROTATE_LOCK_TICKS = 1;
+const RETURN_PORTAL_OCR_LOOP_GUARD_MIN_RETRIES = 3;
+const RETURN_PORTAL_OCR_LOOP_GUARD_MIN_REPEATED_READS = 2;
 const GUARDIAN_SALMON_PORTAL_CAMERA_ROTATE_KEY = "a";
 const GUARDIAN_SALMON_PORTAL_CAMERA_ROTATE_LOCK_TICKS = 1;
 const CHARGED_CELL_DEPOSIT_CAMERA_ROTATE_KEY = "a";
@@ -768,6 +800,19 @@ function createEmptyGuardianRunStats(startedAtMs: number): GuardianRunStats {
     startedAtMs,
     cleanComplete: false,
     stablePlayerAnchor,
+    activeGuardianRuneTimerSamples: 0,
+    activeGuardianRuneTimerTotalElapsedMs: 0,
+    activeGuardianRuneTimerMinElapsedMs: null,
+    activeGuardianRuneTimerMaxElapsedMs: 0,
+    activeGuardianRuneTimerLateSamples: 0,
+    activeGuardianRuneTimerOverdueWarnings: 0,
+    altarRunesConfirmedCycles: 0,
+    altarRunesConfirmedLowerBound: 0,
+    altarRunesConfirmedUpperBound: 0,
+    altarRunesConfirmedMaxUpperBound: 0,
+    altarRunesPendingLowerBound: 0,
+    altarRunesPendingUpperBound: 0,
+    altarRunesPendingAltarClicks: 0,
     greatGuardianClicks: 0,
     greatGuardianVerified: 0,
     greatGuardianLateReclicks: 0,
@@ -814,8 +859,96 @@ function formatRunStatsSeconds(ms: number): string {
   return `${(Math.max(0, ms) / 1000).toFixed(1)}s`;
 }
 
+function formatSignedRunStatsSeconds(ms: number): string {
+  const sign = ms >= 0 ? "+" : "-";
+  return `${sign}${(Math.abs(ms) / 1000).toFixed(1)}s`;
+}
+
 function formatRunStatsAverage(totalMs: number, count: number): string {
   return count > 0 ? formatRunStatsSeconds(totalMs / count) : "0.0s";
+}
+
+function recordActiveGuardianRuneTimerSample(elapsedMs: number): void {
+  const stats = currentRunStats;
+  if (!stats) {
+    return;
+  }
+
+  const safeElapsedMs = Math.max(0, elapsedMs);
+  stats.activeGuardianRuneTimerSamples += 1;
+  stats.activeGuardianRuneTimerTotalElapsedMs += safeElapsedMs;
+  stats.activeGuardianRuneTimerMinElapsedMs =
+    stats.activeGuardianRuneTimerMinElapsedMs === null
+      ? safeElapsedMs
+      : Math.min(stats.activeGuardianRuneTimerMinElapsedMs, safeElapsedMs);
+  stats.activeGuardianRuneTimerMaxElapsedMs = Math.max(stats.activeGuardianRuneTimerMaxElapsedMs, safeElapsedMs);
+
+  if (safeElapsedMs - ACTIVE_GUARDIAN_RUNE_TIMER_MS > ACTIVE_GUARDIAN_RUNE_TIMER_LATE_TOLERANCE_MS) {
+    stats.activeGuardianRuneTimerLateSamples += 1;
+  }
+}
+
+function recordActiveGuardianRuneTimerOverdueWarning(): void {
+  if (!currentRunStats) {
+    return;
+  }
+
+  currentRunStats.activeGuardianRuneTimerOverdueWarnings += 1;
+}
+
+function formatActiveGuardianRuneTimerStats(stats: GuardianRunStats): string {
+  const samples = stats.activeGuardianRuneTimerSamples;
+  const min = stats.activeGuardianRuneTimerMinElapsedMs === null ? "n/a" : formatRunStatsSeconds(stats.activeGuardianRuneTimerMinElapsedMs);
+  const max = samples === 0 ? "n/a" : formatRunStatsSeconds(stats.activeGuardianRuneTimerMaxElapsedMs);
+  return `target:${formatRunStatsSeconds(ACTIVE_GUARDIAN_RUNE_TIMER_MS)} samples:${samples} avg:${formatRunStatsAverage(stats.activeGuardianRuneTimerTotalElapsedMs, samples)} min:${min} max:${max} late>${formatRunStatsSeconds(ACTIVE_GUARDIAN_RUNE_TIMER_LATE_TOLERANCE_MS)}:${stats.activeGuardianRuneTimerLateSamples} overdue:${stats.activeGuardianRuneTimerOverdueWarnings}`;
+}
+
+function formatCurrentActiveGuardianRuneTimerStats(): string {
+  return currentRunStats ? formatActiveGuardianRuneTimerStats(currentRunStats) : "unavailable";
+}
+
+function formatRuneEstimateRange(lowerBound: number, upperBound: number): string {
+  const safeLower = Math.max(0, Math.round(lowerBound));
+  const safeUpper = Math.max(safeLower, Math.round(upperBound));
+  return safeLower === safeUpper ? `${safeLower}` : `${safeLower}-${safeUpper}`;
+}
+
+function syncRunStatsPendingAltarRunes(state: BotState): void {
+  if (!currentRunStats) {
+    return;
+  }
+
+  currentRunStats.altarRunesPendingLowerBound = state.altarCraftedRunesPendingLowerBound;
+  currentRunStats.altarRunesPendingUpperBound = state.altarCraftedRunesPendingUpperBound;
+  currentRunStats.altarRunesPendingAltarClicks = state.altarCraftedRunesPendingAltarClicks;
+}
+
+function recordRunStatsConfirmedAltarRunes(state: BotState): void {
+  if (!currentRunStats || state.altarCraftedRunesPendingUpperBound <= 0) {
+    return;
+  }
+
+  currentRunStats.altarRunesConfirmedCycles += 1;
+  currentRunStats.altarRunesConfirmedLowerBound += state.altarCraftedRunesPendingLowerBound;
+  currentRunStats.altarRunesConfirmedUpperBound += state.altarCraftedRunesPendingUpperBound;
+  currentRunStats.altarRunesConfirmedMaxUpperBound = Math.max(
+    currentRunStats.altarRunesConfirmedMaxUpperBound,
+    state.altarCraftedRunesPendingUpperBound,
+  );
+}
+
+function formatAltarRuneStats(stats: GuardianRunStats): string {
+  const cycles = stats.altarRunesConfirmedCycles;
+  const averageLower = cycles > 0 ? stats.altarRunesConfirmedLowerBound / cycles : 0;
+  const averageUpper = cycles > 0 ? stats.altarRunesConfirmedUpperBound / cycles : 0;
+  const average =
+    cycles === 0
+      ? "0.0"
+      : averageLower === averageUpper
+        ? averageLower.toFixed(1)
+        : `${averageLower.toFixed(1)}-${averageUpper.toFixed(1)}`;
+
+  return `confirmed:${formatRuneEstimateRange(stats.altarRunesConfirmedLowerBound, stats.altarRunesConfirmedUpperBound)} cycles:${cycles} avg:${average} max:${cycles === 0 ? 0 : stats.altarRunesConfirmedMaxUpperBound} pending:${formatRuneEstimateRange(stats.altarRunesPendingLowerBound, stats.altarRunesPendingUpperBound)} pendingClicks:${stats.altarRunesPendingAltarClicks}`;
 }
 
 function completeRunStatsTimer(timer: RunStatsTravelTimer, nowMs: number): void {
@@ -1035,11 +1168,13 @@ function buildGuardianRunStatsFooter(context: AutomateBotLogFooterContext): stri
     "Run stats:",
     `status=${status} stopSource=${context.stopSource} stopReason=${context.stopReason} duration=${formatRunStatsDuration(durationMs)}`,
     `greatGuardian=${stats.greatGuardianVerified}/${stats.greatGuardianClicks} lateReclick=${stats.greatGuardianLateReclicks} inventoryNotReady=${stats.greatGuardianInventoryNotReady}`,
+    `altarRunes=${formatAltarRuneStats(stats)}`,
     `workbench=clicks:${stats.workbenchClicks} fallback:${stats.workbenchFallbackCount} fallbackWait:${formatRunStatsSeconds(stats.workbenchFallbackWaitMs)} pouchReclickCycles:${stats.workbenchPouchReclickCycles} maxDistancePx:${Math.round(stats.workbenchMaxDistancePx)} distanceOutliers700px:${stats.workbenchDistanceOutliers}`,
     `miningEnd=toWorkbench:${formatMiningEndToWorkbenchStats(stats)}`,
     `redPortal=searches:${stats.redPortalSearches} misses:${stats.redPortalMisses} total:${formatRunStatsSeconds(stats.redPortalSearchTotalMs)} avg:${formatRunStatsAverage(stats.redPortalSearchTotalMs, stats.redPortalSearches)} max:${formatRunStatsSeconds(stats.redPortalSearchMaxMs)}`,
     `salmon=portalClicks:${stats.salmonPortalClicks} confirmations:${stats.salmonValidation.completions} retrySignals:${stats.salmonRetrySignals} total:${formatRunStatsSeconds(stats.salmonValidation.totalMs)} avg:${formatRunStatsAverage(stats.salmonValidation.totalMs, stats.salmonValidation.completions)} max:${formatRunStatsSeconds(stats.salmonValidation.maxMs)}`,
     `chargedCell=attempts:${stats.chargedCellAttempts} verified:${stats.chargedCellVerification.completions} retrySignals:${stats.chargedCellRetrySignals} total:${formatRunStatsSeconds(stats.chargedCellVerification.totalMs)} avg:${formatRunStatsAverage(stats.chargedCellVerification.totalMs, stats.chargedCellVerification.completions)} max:${formatRunStatsSeconds(stats.chargedCellVerification.maxMs)}`,
+    `activeRuneTimer=${formatActiveGuardianRuneTimerStats(stats)}`,
     `guardian=initialNoTarget:${stats.guardianNoTargetScans} reclicks:${stats.guardianReclicks} reclickNoTarget:${stats.guardianReclickNoTargetScans} movementLate:${formatMovementLateStats(stats)}`,
     `stablePlayerAnchor=${formatStablePlayerAnchorStats(stats.stablePlayerAnchor)}`,
   ];
@@ -1322,14 +1457,14 @@ function clickCachedWorkbenchAfterPouchFill(
 
   const playerAnchor = getPlayerAnchor(tickCapture.bitmap);
   const workbenchClickPoint = getBoundsCenterPoint(workbenchMarker);
-  const clicked = clickScreenPointImmediate(captureBounds.x + workbenchClickPoint.centerX, captureBounds.y + workbenchClickPoint.centerY, captureBounds);
+  const clicked = clickScreenPoint(captureBounds.x + workbenchClickPoint.centerX, captureBounds.y + workbenchClickPoint.centerY, captureBounds);
   const clickedAtMs = Date.now();
   const travel = estimateTravelWaitTicks(playerAnchor, workbenchClickPoint);
   setAutomateBotCurrentStep(STEP_WORKBENCH_ID);
   log(
     stepMessage(
       WORKFLOW_STEPS.MOVE_TO_WORKBENCH,
-      `Clicked cached magenta workbench marker after final pouch fill validation at (${clicked.x},${clicked.y}) local=(${workbenchClickPoint.centerX},${workbenchClickPoint.centerY}) bounds=(${workbenchMarker.minX},${workbenchMarker.minY})-(${workbenchMarker.maxX},${workbenchMarker.maxY}) pixels=${workbenchMarker.pixelCount}; continuing crafting without re-scanning (${formatTravelEstimate(travel)}).`,
+      `Moved mouse and waited ${OBJECT_PRE_CLICK_MOUSE_SETTLE_MS}ms, then clicked cached magenta workbench marker after final pouch fill validation at (${clicked.x},${clicked.y}) local=(${workbenchClickPoint.centerX},${workbenchClickPoint.centerY}) bounds=(${workbenchMarker.minX},${workbenchMarker.minY})-(${workbenchMarker.maxX},${workbenchMarker.maxY}) pixels=${workbenchMarker.pixelCount}; continuing crafting without re-scanning (${formatTravelEstimate(travel)}).`,
     ),
   );
 
@@ -1362,13 +1497,13 @@ function clickCachedPortalMiningAfterPouchFill(
 
   const playerAnchor = getPlayerAnchor(tickCapture.bitmap);
   const miningClickPoint = getBoundsCenterPoint(miningTarget);
-  const clicked = clickScreenPointImmediate(captureBounds.x + miningClickPoint.centerX, captureBounds.y + miningClickPoint.centerY, captureBounds);
+  const clicked = clickScreenPoint(captureBounds.x + miningClickPoint.centerX, captureBounds.y + miningClickPoint.centerY, captureBounds);
   const clickedAtMs = Date.now();
   const travel = estimateTravelWaitTicks(playerAnchor, miningClickPoint);
   log(
     stepMessage(
       WORKFLOW_STEPS.TRAVEL_TO_PORTAL_MINING,
-      `Clicked cached ${PORTAL_MINING_MARKER_COLOR_HEX} orange mining marker after final pouch fill validation at (${clicked.x},${clicked.y}) local=(${miningClickPoint.centerX},${miningClickPoint.centerY}) bounds=(${miningTarget.minX},${miningTarget.minY})-(${miningTarget.maxX},${miningTarget.maxY}) pixels=${miningTarget.pixelCount}; continuing portal mining without re-scanning (${formatTravelEstimate(travel)}).`,
+      `Moved mouse and waited ${OBJECT_PRE_CLICK_MOUSE_SETTLE_MS}ms, then clicked cached ${PORTAL_MINING_MARKER_COLOR_HEX} orange mining marker after final pouch fill validation at (${clicked.x},${clicked.y}) local=(${miningClickPoint.centerX},${miningClickPoint.centerY}) bounds=(${miningTarget.minX},${miningTarget.minY})-(${miningTarget.maxX},${miningTarget.maxY}) pixels=${miningTarget.pixelCount}; continuing portal mining without re-scanning (${formatTravelEstimate(travel)}).`,
     ),
   );
 
@@ -1682,6 +1817,70 @@ function withPostAltarInventoryBaseline(state: BotState, freeSlots: number): Bot
   );
 }
 
+function withObservedAltarCraftedRunes(state: BotState, beforeFreeSlots: number | null, afterFreeSlots: number): BotState {
+  if (beforeFreeSlots === null) {
+    return state;
+  }
+
+  const slotsFreed = Math.max(0, afterFreeSlots - beforeFreeSlots);
+  if (slotsFreed <= 0) {
+    return state;
+  }
+
+  const isFirstAltarClickInCycle = state.altarCraftedRunesPendingAltarClicks === 0;
+  const lowerBound = slotsFreed;
+  const upperBound = slotsFreed + (isFirstAltarClickInCycle ? 1 : 0);
+  const nextState = {
+    ...state,
+    altarCraftedRunesPendingLowerBound: state.altarCraftedRunesPendingLowerBound + lowerBound,
+    altarCraftedRunesPendingUpperBound: state.altarCraftedRunesPendingUpperBound + upperBound,
+    altarCraftedRunesPendingSlotsFreed: state.altarCraftedRunesPendingSlotsFreed + slotsFreed,
+    altarCraftedRunesPendingAltarClicks: state.altarCraftedRunesPendingAltarClicks + 1,
+  };
+  syncRunStatsPendingAltarRunes(nextState);
+
+  log(
+    stepMessage(
+      WORKFLOW_STEPS.MOVE_TO_ALTAR,
+      `Altar rune craft estimate observed: beforeFreeSlots=${beforeFreeSlots} afterFreeSlots=${afterFreeSlots} slotsFreed=${slotsFreed} estimate=${formatRuneEstimateRange(lowerBound, upperBound)} pending=${formatRuneEstimateRange(nextState.altarCraftedRunesPendingLowerBound, nextState.altarCraftedRunesPendingUpperBound)} altarClicks=${nextState.altarCraftedRunesPendingAltarClicks}${isFirstAltarClickInCycle ? "; first altar click may have consumed one inventory slot for a new rune stack" : "; exact pouch refill craft delta"}.`,
+    ),
+  );
+
+  return nextState;
+}
+
+function resetPendingAltarCraftedRunes(state: BotState): BotState {
+  const nextState = {
+    ...state,
+    altarCraftedRunesPendingLowerBound: 0,
+    altarCraftedRunesPendingUpperBound: 0,
+    altarCraftedRunesPendingSlotsFreed: 0,
+    altarCraftedRunesPendingAltarClicks: 0,
+  };
+  syncRunStatsPendingAltarRunes(nextState);
+  return nextState;
+}
+
+function withGreatGuardianConfirmedAltarRunes(
+  state: BotState,
+  beforeFreeSlots: number,
+  afterFreeSlots: number,
+): BotState {
+  if (state.altarCraftedRunesPendingUpperBound <= 0) {
+    return state;
+  }
+
+  recordRunStatsConfirmedAltarRunes(state);
+  log(
+    stepMessage(
+      WORKFLOW_STEPS.TRAVEL_TO_GREAT_GUARDIAN,
+      `Great Guardian confirmed altar rune craft estimate: crafted=${formatRuneEstimateRange(state.altarCraftedRunesPendingLowerBound, state.altarCraftedRunesPendingUpperBound)} altarClicks=${state.altarCraftedRunesPendingAltarClicks} slotsFreed=${state.altarCraftedRunesPendingSlotsFreed} inventoryFreeSpace=${beforeFreeSlots}->${afterFreeSlots}.`,
+    ),
+  );
+
+  return resetPendingAltarCraftedRunes(state);
+}
+
 function createInitialState(): BotState {
   return {
     loopIndex: 0,
@@ -1711,6 +1910,16 @@ function createInitialState(): BotState {
     miningTimerReliableReadCount: 0,
     miningTimerLocalStartSecondsRemaining: null,
     miningTimerLocalStartedAtMs: null,
+    activeGuardianRuneSignature: null,
+    activeGuardianRuneTimerStartedAtMs: null,
+    activeGuardianRuneDeadlineMs: null,
+    activeGuardianRuneLastObservedAtMs: null,
+    activeGuardianRuneOverdueWarned: false,
+    activeGuardianRuneTimerStartedFromObservedChange: false,
+    altarCraftedRunesPendingLowerBound: 0,
+    altarCraftedRunesPendingUpperBound: 0,
+    altarCraftedRunesPendingSlotsFreed: 0,
+    altarCraftedRunesPendingAltarClicks: 0,
     miningStatusGreenStartedAtMs: null,
     miningCameraKReadyAtMs: 0,
     miningCameraKPrepared: false,
@@ -1752,6 +1961,8 @@ function createInitialState(): BotState {
     guardianReturnClickDistancePx: null,
     returnPortalCameraNorthReadyAtMs: 0,
     returnPortalCameraNorthPreparedThisClick: false,
+    returnPortalLastBadCoordinateKey: null,
+    returnPortalRepeatedBadCoordinateReads: 0,
     unknownRewardNextGuardianSlot: "elemental",
     returnPortalRecoveryTarget: null,
     openPortalAfterCurrentPostReturnAction: false,
@@ -3091,6 +3302,10 @@ function applyMovementModelSelection(model: GuardianOfTheRiftMovementModelSelect
 }
 
 function rememberMovementObservation(kind: string, step: string, clickedAtMs: number, travel: TravelWaitEstimate): void {
+  if (!isGuardianOfTheRiftMovementModelTrainingKind(kind)) {
+    return;
+  }
+
   pendingMovementObservation = {
     kind,
     step,
@@ -3548,6 +3763,96 @@ function formatActiveGuardianRuneMatch(match: GuardianOfTheRiftRuneMatch | null)
   }
 
   return `${match.rune} score=${match.score.toFixed(3)} local=(${match.centerX},${match.centerY})`;
+}
+
+function getActiveGuardianRuneSignature(detection: GuardianOfTheRiftActiveRuneDetection): string | null {
+  if (!detection.elemental || !detection.catalytic) {
+    return null;
+  }
+
+  return `${detection.elemental.rune}/${detection.catalytic.rune}`;
+}
+
+function warnActiveGuardianRuneTimerOverdueIfNeeded(
+  state: BotState,
+  nowMs: number,
+  activeRunes: GuardianOfTheRiftActiveRuneDetection,
+  signature: string | null,
+): BotState {
+  if (
+    state.activeGuardianRuneTimerStartedAtMs === null ||
+    state.activeGuardianRuneDeadlineMs === null ||
+    state.activeGuardianRuneOverdueWarned ||
+    nowMs < state.activeGuardianRuneDeadlineMs + ACTIVE_GUARDIAN_RUNE_TIMER_OVERDUE_GRACE_MS
+  ) {
+    return state;
+  }
+
+  const elapsedMs = nowMs - state.activeGuardianRuneTimerStartedAtMs;
+  const overdueMs = nowMs - state.activeGuardianRuneDeadlineMs;
+  const lastObservedAgoMs =
+    state.activeGuardianRuneLastObservedAtMs === null ? null : Math.max(0, nowMs - state.activeGuardianRuneLastObservedAtMs);
+  recordActiveGuardianRuneTimerOverdueWarning();
+  setCurrentLogLoopIndex(state.loopIndex);
+  setCurrentLogPhase(state.phase);
+  warn(
+    `Active guardian rune timer overdue: current=${state.activeGuardianRuneSignature ?? "none"} latestRead=${signature ?? "incomplete"} source=${state.activeGuardianRuneTimerStartedFromObservedChange ? "observed-change" : "initial-read"} elapsed=${formatRunStatsSeconds(elapsedMs)} overdue=${formatSignedRunStatsSeconds(overdueMs)} target=${formatRunStatsSeconds(ACTIVE_GUARDIAN_RUNE_TIMER_MS)} grace=${formatRunStatsSeconds(ACTIVE_GUARDIAN_RUNE_TIMER_OVERDUE_GRACE_MS)} lastObservedAgo=${lastObservedAgoMs === null ? "never" : formatRunStatsSeconds(lastObservedAgoMs)} elemental=${formatActiveGuardianRuneMatch(activeRunes.elemental)} catalytic=${formatActiveGuardianRuneMatch(activeRunes.catalytic)} stats=${formatCurrentActiveGuardianRuneTimerStats()}.`,
+  );
+
+  return {
+    ...state,
+    activeGuardianRuneOverdueWarned: true,
+  };
+}
+
+function trackActiveGuardianRuneTimer(
+  state: BotState,
+  nowMs: number,
+  tickCapture: TickCapture,
+  activeRuneTemplates: GuardianOfTheRiftRuneTemplate[],
+): BotState {
+  if (activeRuneTemplates.length === 0) {
+    return state;
+  }
+
+  const activeRunes = detectGuardianOfTheRiftActiveRunes(tickCapture.bitmap, activeRuneTemplates);
+  const signature = getActiveGuardianRuneSignature(activeRunes);
+  if (!signature) {
+    return warnActiveGuardianRuneTimerOverdueIfNeeded(state, nowMs, activeRunes, null);
+  }
+
+  if (signature === state.activeGuardianRuneSignature) {
+    const observedState = {
+      ...state,
+      activeGuardianRuneLastObservedAtMs: nowMs,
+    };
+    return warnActiveGuardianRuneTimerOverdueIfNeeded(observedState, nowMs, activeRunes, signature);
+  }
+
+  const previousSignature = state.activeGuardianRuneSignature ?? "none";
+  const deadlineMs = nowMs + ACTIVE_GUARDIAN_RUNE_TIMER_MS;
+  const elapsedMs = state.activeGuardianRuneTimerStartedAtMs === null ? null : nowMs - state.activeGuardianRuneTimerStartedAtMs;
+  const canValidateElapsed = elapsedMs !== null && state.activeGuardianRuneTimerStartedFromObservedChange;
+  const driftMs = canValidateElapsed ? elapsedMs - ACTIVE_GUARDIAN_RUNE_TIMER_MS : null;
+  if (canValidateElapsed) {
+    recordActiveGuardianRuneTimerSample(elapsedMs);
+  }
+
+  setCurrentLogLoopIndex(state.loopIndex);
+  setCurrentLogPhase(state.phase);
+  log(
+    `Active guardian rune timer ${state.activeGuardianRuneSignature === null ? "initialized" : "changed"}: previous=${previousSignature} current=${signature}; validation=${canValidateElapsed ? "sample" : state.activeGuardianRuneTimerStartedAtMs === null ? "initialized" : "priming"} elapsed=${elapsedMs === null ? "n/a" : formatRunStatsSeconds(elapsedMs)} drift=${driftMs === null ? "n/a" : formatSignedRunStatsSeconds(driftMs)} target=${formatRunStatsSeconds(ACTIVE_GUARDIAN_RUNE_TIMER_MS)} deadlineIn=${formatRunStatsSeconds(deadlineMs - nowMs)} stats=${formatCurrentActiveGuardianRuneTimerStats()} elemental=${formatActiveGuardianRuneMatch(activeRunes.elemental)} catalytic=${formatActiveGuardianRuneMatch(activeRunes.catalytic)}.`,
+  );
+
+  return {
+    ...state,
+    activeGuardianRuneSignature: signature,
+    activeGuardianRuneTimerStartedAtMs: nowMs,
+    activeGuardianRuneDeadlineMs: deadlineMs,
+    activeGuardianRuneLastObservedAtMs: nowMs,
+    activeGuardianRuneOverdueWarned: false,
+    activeGuardianRuneTimerStartedFromObservedChange: state.activeGuardianRuneSignature !== null,
+  };
 }
 
 function formatGuardianDecision(selection: GuardianTravelTargetSelection): string {
@@ -4571,6 +4876,7 @@ function transitionToCraftingState(
 ): BotState {
   setAutomateBotCurrentStep(STEP_CRAFTING_ID);
   recordRunStatsWorkbenchTravel(travel, nowMs);
+  rememberMovementObservation("workbench-click", WORKFLOW_STEPS.MOVE_TO_WORKBENCH, nowMs, travel);
   const pouchFillAvailableEssenceSlots = state.pouchFillAvailableEssenceSlots ?? startingInventoryFreeSlots;
   log(
     stepMessage(
@@ -5226,6 +5532,7 @@ function runWorkbenchFindYellowTick(
     WORKFLOW_STEPS.FIND_WORKBENCH,
   );
   if (portalCheck.transitioned) {
+    discardPendingMovementObservation("workbench-click");
     return portalCheck.state;
   }
   const currentState = portalCheck.state;
@@ -5265,6 +5572,7 @@ function runWorkbenchFindYellowTick(
     captureBounds.y + workbenchClickPoint.centerY,
     captureBounds,
   );
+  const clickedAtMs = Date.now();
   log(
     stepMessage(
       WORKFLOW_STEPS.MOVE_TO_WORKBENCH,
@@ -5278,7 +5586,7 @@ function runWorkbenchFindYellowTick(
       ...currentState,
       cachedWorkbenchMarker: nearestWorkbenchMarker,
     },
-    nowMs,
+    clickedAtMs,
     travel,
     inventoryBeforeClick.count,
   );
@@ -5562,6 +5870,7 @@ function runCraftingTick(
   }
 
   if (inventory.count === 0) {
+    resolvePendingMovementObservation("success", "workbench inventory reached full", nowMs, tickCapture.bitmap);
     const pouchesToFill = selectPouchesNeedingFill(currentState);
     if (!currentState.craftingPouchesFilledThisCycle && pouchesToFill.length > 0) {
       const playerAnchor = getPlayerAnchor(tickCapture.bitmap);
@@ -5625,6 +5934,7 @@ function runCraftingTick(
   }
 
   if (inventory.count !== currentState.inventoryFreeSlots) {
+    resolvePendingMovementObservation("success", "workbench inventory changed after workbench click", nowMs, tickCapture.bitmap);
     log(stepMessage(WORKFLOW_STEPS.CRAFT_UNTIL_FULL, `Inventory free-space changed: ${currentState.inventoryFreeSlots} -> ${inventory.count}.`));
     return {
       ...currentState,
@@ -5638,6 +5948,7 @@ function runCraftingTick(
   }
 
   if (currentState.craftingInventoryChangeDeadlineMs > 0 && nowMs >= currentState.craftingInventoryChangeDeadlineMs) {
+    resolvePendingMovementObservation("late", "workbench inventory did not change by deadline", nowMs, tickCapture.bitmap);
     const workbenchInventoryNoChangeWarnings = currentState.workbenchInventoryNoChangeWarnings + 1;
     const noChangeMessage = `Inventory free-space stayed at ${inventory.count} through the crafting wait deadline (${workbenchInventoryNoChangeWarnings}/${WORKBENCH_INVENTORY_NO_CHANGE_MAX_WARNINGS}).`;
     if (workbenchInventoryNoChangeWarnings >= WORKBENCH_INVENTORY_NO_CHANGE_MAX_WARNINGS) {
@@ -6300,12 +6611,13 @@ function runWaitAfterGuardianYellowClickTick(
   }
 
   resolvePendingMovementObservation("success", "inventory free-space changed after altar click", nowMs, tickCapture.bitmap);
+  const altarCraftState = withObservedAltarCraftedRunes(state, state.inventoryFreeSlots, inventory.count);
 
-  if (shouldEmptyPouchesAtAltar(state)) {
+  if (shouldEmptyPouchesAtAltar(altarCraftState)) {
     const altarCandidates = detectGuardianOfTheRiftAltarMarkersInScreenshot(tickCapture.bitmap);
     const nearestYellow = pickNearestGuardianOfTheRiftAltarMarker(altarCandidates, playerAnchor);
     if (!nearestYellow) {
-      const missingGuardianYellowTicks = state.missingGuardianYellowTicks + 1;
+      const missingGuardianYellowTicks = altarCraftState.missingGuardianYellowTicks + 1;
       if (missingGuardianYellowTicks <= GUARDIAN_ALTAR_SEARCH_RETRY_TICKS) {
         warn(
           stepMessage(
@@ -6315,7 +6627,7 @@ function runWaitAfterGuardianYellowClickTick(
         );
 
         return {
-          ...state,
+          ...altarCraftState,
           inventoryFreeSlots: inventory.count,
           missingInventoryCountTicks: 0,
           missingGuardianYellowTicks,
@@ -6330,7 +6642,7 @@ function runWaitAfterGuardianYellowClickTick(
       warn(message);
       notifyUserAndStop(message);
       return {
-        ...state,
+        ...altarCraftState,
         inventoryFreeSlots: inventory.count,
         missingInventoryCountTicks: 0,
         missingGuardianYellowTicks,
@@ -6338,12 +6650,12 @@ function runWaitAfterGuardianYellowClickTick(
       };
     }
 
-    const pouchBatch = selectAltarPouchEmptyBatch(state, inventory.count);
+    const pouchBatch = selectAltarPouchEmptyBatch(altarCraftState, inventory.count);
     if (pouchBatch.length === 0) {
       const baselineState = unwindAltarCamera(
         withPostAltarInventoryBaseline(
           {
-            ...state,
+            ...altarCraftState,
             altarPouchesEmptiedThisCycle: true,
           },
           inventory.count,
@@ -6354,7 +6666,7 @@ function runWaitAfterGuardianYellowClickTick(
       log(
         stepMessage(
           WORKFLOW_STEPS.FIND_PORTAL,
-          `Inventory free-space changed to ${inventory.count}, but no pouch batch can be safely emptied. Saved altar baseline before return-portal search. Pouch memory=${formatPouchEssenceSummary(baselineState)}.`,
+          `Inventory free-space changed to ${inventory.count}, but no pouch batch can be safely emptied. Saved altar baseline before return-portal search. Pending altar runes=${formatRuneEstimateRange(baselineState.altarCraftedRunesPendingLowerBound, baselineState.altarCraftedRunesPendingUpperBound)}. Pouch memory=${formatPouchEssenceSummary(baselineState)}.`,
         ),
       );
 
@@ -6378,12 +6690,12 @@ function runWaitAfterGuardianYellowClickTick(
     log(
       stepMessage(
         WORKFLOW_STEPS.EMPTY_POUCHES_AT_ALTAR,
-        `Inventory free-space changed to ${inventory.count} after altar click; emptying pouch batch ${formatPouchClickList(pouchBatch)} with capacity sum=${pouchBatch.reduce((sum, location) => sum + (getPouchStoredEssence(state, location.pouch) ?? getPouchCapacity(location.pouch)), 0)} before clicking altar again. Pouch memory=${formatPouchEssenceSummary(state)}.`,
+        `Inventory free-space changed to ${inventory.count} after altar click; emptying pouch batch ${formatPouchClickList(pouchBatch)} with capacity sum=${pouchBatch.reduce((sum, location) => sum + (getPouchStoredEssence(altarCraftState, location.pouch) ?? getPouchCapacity(location.pouch)), 0)} before clicking altar again. Pending altar runes=${formatRuneEstimateRange(altarCraftState.altarCraftedRunesPendingLowerBound, altarCraftState.altarCraftedRunesPendingUpperBound)}. Pouch memory=${formatPouchEssenceSummary(altarCraftState)}.`,
       ),
     );
 
     return {
-      ...state,
+      ...altarCraftState,
       currentFunction: "emptyPouchesAtAltar",
       phase: "empty-pouches-at-altar",
       pouchClickQueue: pouchBatch,
@@ -6400,14 +6712,14 @@ function runWaitAfterGuardianYellowClickTick(
   }
 
   const baselineState = unwindAltarCamera(
-    withPostAltarInventoryBaseline(state, inventory.count),
+    withPostAltarInventoryBaseline(altarCraftState, inventory.count),
     WORKFLOW_STEPS.FIND_PORTAL,
   );
 
   log(
     stepMessage(
       WORKFLOW_STEPS.FIND_PORTAL,
-      `Inventory free-space changed to ${inventory.count}; saved as altar baseline before switching to ${RETURN_PORTAL_MARKER_COLOR_HEX} red portal search. Inventory history=${formatInventoryHistory(baselineState.inventoryHistory)}.`,
+      `Inventory free-space changed to ${inventory.count}; saved as altar baseline before switching to ${RETURN_PORTAL_MARKER_COLOR_HEX} red portal search. Pending altar runes=${formatRuneEstimateRange(baselineState.altarCraftedRunesPendingLowerBound, baselineState.altarCraftedRunesPendingUpperBound)}. Inventory history=${formatInventoryHistory(baselineState.inventoryHistory)}.`,
     ),
   );
 
@@ -6556,6 +6868,8 @@ function transitionToReturnPortalRecoveryState(
     portalExitArrivalDeadlineMs: 0,
     portalExitClickDistancePx: null,
     missingGuardianReturnRedTicks: 0,
+    returnPortalLastBadCoordinateKey: null,
+    returnPortalRepeatedBadCoordinateReads: 0,
     missingFinalPortalTicks: 0,
     missingPortalExitTicks: 0,
     actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
@@ -6646,6 +6960,9 @@ function runFindReturnPortalTick(
   const clicked = clickScreenPoint(captureBounds.x + returnPortalClickPoint.centerX, captureBounds.y + returnPortalClickPoint.centerY, captureBounds);
   const clickedAtMs = Date.now();
   const cameraReadyAtMs = clickedAtMs + RETURN_PORTAL_CAMERA_NORTH_SETTLE_MS;
+  if (state.returnPortalRecoveryTarget === null) {
+    rememberMovementObservation("altar-return-portal", WORKFLOW_STEPS.MOVE_TO_PORTAL, clickedAtMs, travel);
+  }
   log(
       stepMessage(
         WORKFLOW_STEPS.MOVE_TO_PORTAL,
@@ -6677,6 +6994,8 @@ function transitionToGreatGuardianState(state: BotState): BotState {
     guardianReturnArrivalDeadlineMs: 0,
     guardianReturnClickDistancePx: null,
     returnPortalRecoveryTarget: null,
+    returnPortalLastBadCoordinateKey: null,
+    returnPortalRepeatedBadCoordinateReads: 0,
     greatGuardianArrivalDeadlineMs: 0,
     greatGuardianClickDistancePx: null,
     chargedCellDepositArrivalDeadlineMs: 0,
@@ -6818,6 +7137,97 @@ function transitionToPostPortalDepositResumeState(state: BotState, nowMs: number
   );
 }
 
+function getReturnPortalBadCoordinateKey(location: GuardianCoordinateLocation | null): string {
+  if (!location) {
+    return "unreadable";
+  }
+
+  return `region=${location.regionId}|nearCraftingArea=${isNearGuardianCraftingAreaLocation(location)}`;
+}
+
+function detectReturnPortalCraftingRecoverySignals(
+  bitmap: RobotBitmap,
+  location: GuardianCoordinateLocation | null,
+): { confirmed: boolean; summary: string } {
+  const nearCraftingArea = location !== null && isNearGuardianCraftingAreaLocation(location);
+  const playerAnchor = getPlayerAnchor(bitmap);
+  const workbenchMarker = pickNearestWorkbenchMarker(
+    detectAllWorkbenchMagentaObjects(bitmap, WORKBENCH_MAGENTA_MIN_PIXELS),
+    playerAnchor,
+  );
+  const inventory = detectInventoryCount(bitmap);
+  const miningStatus = detectMiningBoxStatusInScreenshot(bitmap);
+
+  return {
+    confirmed: nearCraftingArea || workbenchMarker !== null,
+    summary:
+      `coordinate=${formatGuardianCoordinateDebug(location)} ` +
+      `workbench=${workbenchMarker ? `(${workbenchMarker.centerX},${workbenchMarker.centerY}) ${workbenchMarker.width}x${workbenchMarker.height} px=${workbenchMarker.pixelCount}` : "none"} ` +
+      `inventory=${inventory.count ?? "null"} raw=${inventory.rawText ?? "null"} ` +
+      `mining=${formatMiningStatus(miningStatus)}`,
+  };
+}
+
+function transitionAfterReturnPortalOcrLoopGuard(
+  state: BotState,
+  nowMs: number,
+  tickCapture: TickCapture,
+  reason: string,
+): BotState {
+  const recoveryTarget = state.returnPortalRecoveryTarget;
+  const cameraReset = state.returnPortalCameraNorthPreparedThisClick ? null : tapKey(POST_RETURN_CAMERA_NORTH_KEY);
+  const cameraSummary = state.returnPortalCameraNorthPreparedThisClick
+    ? "Camera north already prepared after the red return portal click."
+    : `${cameraReset ? "Camera reset to north." : "Camera north reset skipped."}`;
+  const returnedState: BotState = {
+    ...state,
+    returnPortalRecoveryTarget: null,
+    guardianReturnArrivalDeadlineMs: 0,
+    guardianReturnClickDistancePx: null,
+    returnPortalCameraNorthReadyAtMs: 0,
+    returnPortalCameraNorthPreparedThisClick: false,
+    missingGuardianReturnRedTicks: 0,
+    returnPortalLastBadCoordinateKey: null,
+    returnPortalRepeatedBadCoordinateReads: 0,
+    actionLockUntilMs: 0,
+  };
+
+  warn(stepMessage(WORKFLOW_STEPS.TELEPORT_BACK, `Return recovery OCR loop guard accepted crafting-area recovery. ${reason} ${cameraSummary}`));
+
+  if (recoveryTarget === "finalPortal") {
+    return transitionToFinalPortalWaitState(
+      {
+        ...returnedState,
+        finalPortalArrivalDeadlineMs: 0,
+        finalPortalTeleportGraceDeadlineMs: 0,
+        finalPortalClickDistancePx: null,
+        missingFinalPortalOpenIconTicks: 0,
+        missingFinalPortalTicks: 0,
+        missingPortalMiningOrangeTicks: 0,
+      },
+      `Return recovery OCR loop guard resumed salmon portal flow. ${reason}`,
+    );
+  }
+
+  if (recoveryTarget === "portalExit") {
+    return transitionToPostPortalDepositResumeState(
+      {
+        ...returnedState,
+        inventoryFreeSlots: 0,
+        portalMiningArrivalDeadlineMs: 0,
+        portalExitArrivalDeadlineMs: 0,
+        portalExitClickDistancePx: null,
+        missingPortalMiningOrangeTicks: 0,
+        missingPortalExitTicks: 0,
+      },
+      nowMs,
+    );
+  }
+
+  resolvePendingMovementObservation("success", "return recovery OCR loop guard confirmed crafting area", nowMs, tickCapture.bitmap);
+  return transitionToGreatGuardianState(returnedState);
+}
+
 async function runWaitAfterGuardianReturnClickTick(
   state: BotState,
   nowMs: number,
@@ -6860,9 +7270,35 @@ async function runWaitAfterGuardianReturnClickTick(
   const location = readGuardianCoordinateLocation(tickCapture.bitmap);
   if (!location || location.regionId !== GUARDIAN_CRAFTING_REGION_ID) {
     const missingGuardianReturnRedTicks = stateAfterCamera.missingGuardianReturnRedTicks + 1;
+    const badCoordinateKey = getReturnPortalBadCoordinateKey(location);
+    const repeatedBadCoordinateReads =
+      badCoordinateKey === stateAfterCamera.returnPortalLastBadCoordinateKey
+        ? stateAfterCamera.returnPortalRepeatedBadCoordinateReads + 1
+        : 1;
+    const stateWithBadRead: BotState = {
+      ...stateAfterCamera,
+      missingGuardianReturnRedTicks,
+      returnPortalLastBadCoordinateKey: badCoordinateKey,
+      returnPortalRepeatedBadCoordinateReads: repeatedBadCoordinateReads,
+    };
+    discardPendingMovementObservation("altar-return-portal");
 
     const playerAnchor = getPlayerAnchor(tickCapture.bitmap);
     const portalCandidates = detectAllReturnPortalRedMarkers(tickCapture.bitmap);
+    const craftingRecoverySignals = detectReturnPortalCraftingRecoverySignals(tickCapture.bitmap, location);
+    if (
+      missingGuardianReturnRedTicks >= RETURN_PORTAL_OCR_LOOP_GUARD_MIN_RETRIES &&
+      repeatedBadCoordinateReads >= RETURN_PORTAL_OCR_LOOP_GUARD_MIN_REPEATED_READS &&
+      craftingRecoverySignals.confirmed
+    ) {
+      return transitionAfterReturnPortalOcrLoopGuard(
+        stateWithBadRead,
+        nowMs,
+        tickCapture,
+        `failedRegionRead=${badCoordinateKey} repeated=${repeatedBadCoordinateReads} retry=${missingGuardianReturnRedTicks}; signals=${craftingRecoverySignals.summary}.`,
+      );
+    }
+
     const returnPortal = pickNearestColoredMarker(portalCandidates, playerAnchor);
     if (returnPortal) {
       const returnPortalClickPoint = getBoundsCenterPoint(returnPortal);
@@ -6873,13 +7309,12 @@ async function runWaitAfterGuardianReturnClickTick(
       warn(
         stepMessage(
           WORKFLOW_STEPS.TELEPORT_BACK,
-          `Return teleport not confirmed yet; current region=${location?.regionId ?? "unknown"} chunk=${location?.chunkId ?? "unknown"} matched='${location?.matchedLine ?? "null"}'. Re-clicked randomized pixel inside ${RETURN_PORTAL_MARKER_COLOR_HEX} red portal marker at (${clicked.x},${clicked.y}) local=(${returnPortalClickPoint.centerX},${returnPortalClickPoint.centerY}) bounds=(${returnPortal.minX},${returnPortal.minY})-${returnPortal.maxX},${returnPortal.maxY} pixels=${returnPortal.pixelCount}; waiting two bot ticks before tapping '${POST_RETURN_CAMERA_NORTH_KEY}' to prepare camera north during return travel; waiting to return to region ${GUARDIAN_CRAFTING_REGION_ID} (retry=${missingGuardianReturnRedTicks}, ${formatTravelEstimate(travel)}).`,
+          `Return teleport not confirmed yet; current region=${location?.regionId ?? "unknown"} chunk=${location?.chunkId ?? "unknown"} matched='${location?.matchedLine ?? "null"}' badRead=${badCoordinateKey} repeated=${repeatedBadCoordinateReads}; signals=${craftingRecoverySignals.summary}. Re-clicked randomized pixel inside ${RETURN_PORTAL_MARKER_COLOR_HEX} red portal marker at (${clicked.x},${clicked.y}) local=(${returnPortalClickPoint.centerX},${returnPortalClickPoint.centerY}) bounds=(${returnPortal.minX},${returnPortal.minY})-${returnPortal.maxX},${returnPortal.maxY} pixels=${returnPortal.pixelCount}; waiting two bot ticks before tapping '${POST_RETURN_CAMERA_NORTH_KEY}' to prepare camera north during return travel; waiting to return to region ${GUARDIAN_CRAFTING_REGION_ID} (retry=${missingGuardianReturnRedTicks}, ${formatTravelEstimate(travel)}).`,
         ),
       );
 
       return {
-        ...stateAfterCamera,
-        missingGuardianReturnRedTicks,
+        ...stateWithBadRead,
         guardianReturnArrivalDeadlineMs: clickedAtMs + travel.waitTicks * GAME_TICK_MS,
         guardianReturnClickDistancePx: travel.distancePx,
         returnPortalCameraNorthReadyAtMs: cameraReadyAtMs,
@@ -6892,14 +7327,13 @@ async function runWaitAfterGuardianReturnClickTick(
       warn(
         stepMessage(
           WORKFLOW_STEPS.TELEPORT_BACK,
-          `Return teleport not confirmed yet; current region=${location?.regionId ?? "unknown"} chunk=${location?.chunkId ?? "unknown"} matched='${location?.matchedLine ?? "null"}'. ${RETURN_PORTAL_MARKER_COLOR_HEX} red portal marker not visible; waiting for region ${GUARDIAN_CRAFTING_REGION_ID}. Candidates=${formatColoredMarkerCandidates(portalCandidates)}.`,
+          `Return teleport not confirmed yet; current region=${location?.regionId ?? "unknown"} chunk=${location?.chunkId ?? "unknown"} matched='${location?.matchedLine ?? "null"}' badRead=${badCoordinateKey} repeated=${repeatedBadCoordinateReads}; signals=${craftingRecoverySignals.summary}. ${RETURN_PORTAL_MARKER_COLOR_HEX} red portal marker not visible; waiting for region ${GUARDIAN_CRAFTING_REGION_ID}. Candidates=${formatColoredMarkerCandidates(portalCandidates)}.`,
         ),
       );
     }
 
     return {
-      ...stateAfterCamera,
-      missingGuardianReturnRedTicks,
+      ...stateWithBadRead,
       actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
     };
   }
@@ -6918,6 +7352,8 @@ async function runWaitAfterGuardianReturnClickTick(
     returnPortalCameraNorthReadyAtMs: 0,
     returnPortalCameraNorthPreparedThisClick: false,
     missingGuardianReturnRedTicks: 0,
+    returnPortalLastBadCoordinateKey: null,
+    returnPortalRepeatedBadCoordinateReads: 0,
     actionLockUntilMs: 0,
   };
 
@@ -6966,6 +7402,7 @@ async function runWaitAfterGuardianReturnClickTick(
       `Return teleport confirmed: region=${location.regionId} chunk=${location.chunkId} matched='${location.matchedLine}'. ${cameraSummary} before continuing to post-return deposits.`,
     ),
   );
+  resolvePendingMovementObservation("success", "return teleport confirmed after altar red portal", nowMs, tickCapture.bitmap);
   return transitionToGreatGuardianState(returnedState);
 }
 
@@ -7219,7 +7656,7 @@ async function runWaitAfterGreatGuardianClickTick(
 
   resolvePendingMovementObservation("success", "great guardian inventory delta verified", nowMs, tickCapture.bitmap);
 
-  const verifiedState = withInventoryCheckpoint(
+  const greatGuardianConfirmedState = withGreatGuardianConfirmedAltarRunes(
     {
       ...currentState,
       inventoryFreeSlots: inventoryAfterClick.count,
@@ -7227,6 +7664,12 @@ async function runWaitAfterGreatGuardianClickTick(
       greatGuardianArrivalDeadlineMs: 0,
       greatGuardianClickDistancePx: null,
     },
+    currentState.inventoryFreeSlots,
+    inventoryAfterClick.count,
+  );
+
+  const verifiedState = withInventoryCheckpoint(
+    greatGuardianConfirmedState,
     "great-guardian",
     inventoryAfterClick.count,
     currentState.inventoryFreeSlots,
@@ -9483,13 +9926,17 @@ async function runLoop(
       createInitialState: () => initialState,
       captureTick: ({ state, nowMs }) => captureGuardianTick(state, nowMs, captureBounds),
       observeTick: ({ state, nowMs, tickCapture }) => {
-        if (!ENABLE_COORDINATE_AUTO_SCREENSHOTS || state.loopIndex % COORDINATE_AUTO_SCREENSHOT_INTERVAL_TICKS !== 0) {
-          if (!worldMapper || state.loopIndex % WORLD_MAPPER_OBSERVATION_INTERVAL_TICKS !== 0) {
-            return;
+        const observedState = trackActiveGuardianRuneTimer(state, nowMs, tickCapture, activeRuneTemplates);
+        if (
+          !ENABLE_COORDINATE_AUTO_SCREENSHOTS ||
+          observedState.loopIndex % COORDINATE_AUTO_SCREENSHOT_INTERVAL_TICKS !== 0
+        ) {
+          if (!worldMapper || observedState.loopIndex % WORLD_MAPPER_OBSERVATION_INTERVAL_TICKS !== 0) {
+            return observedState;
           }
         }
 
-        if (worldMapper && state.loopIndex % WORLD_MAPPER_OBSERVATION_INTERVAL_TICKS === 0) {
+        if (worldMapper && observedState.loopIndex % WORLD_MAPPER_OBSERVATION_INTERVAL_TICKS === 0) {
           const observation = readWorldMapObservationFromBitmap({
             bitmap: tickCapture.bitmap,
             observedAtMs: nowMs,
@@ -9500,18 +9947,27 @@ async function runLoop(
               screenshotBitmap: tickCapture.bitmap,
             });
 
-            if (state.loopIndex === WORLD_MAPPER_OBSERVATION_INTERVAL_TICKS || state.loopIndex % WORLD_MAPPER_LOG_INTERVAL_TICKS === 0) {
+            if (
+              observedState.loopIndex === WORLD_MAPPER_OBSERVATION_INTERVAL_TICKS ||
+              observedState.loopIndex % WORLD_MAPPER_LOG_INTERVAL_TICKS === 0
+            ) {
               log(
                 `World mapper observation: matched='${observation.matchedLine}' regionId=${observation.tile.regionId} chunkId=${observation.tile.chunkId} worldChunk=${observation.tile.worldChunkX},${observation.tile.worldChunkY}.`,
               );
             }
-          } else if (state.loopIndex === WORLD_MAPPER_OBSERVATION_INTERVAL_TICKS || state.loopIndex % WORLD_MAPPER_LOG_INTERVAL_TICKS === 0) {
-            warn(`World mapper observation unreadable at loop #${state.loopIndex}.`);
+          } else if (
+            observedState.loopIndex === WORLD_MAPPER_OBSERVATION_INTERVAL_TICKS ||
+            observedState.loopIndex % WORLD_MAPPER_LOG_INTERVAL_TICKS === 0
+          ) {
+            warn(`World mapper observation unreadable at loop #${observedState.loopIndex}.`);
           }
         }
 
-        if (!ENABLE_COORDINATE_AUTO_SCREENSHOTS || state.loopIndex % COORDINATE_AUTO_SCREENSHOT_INTERVAL_TICKS !== 0) {
-          return;
+        if (
+          !ENABLE_COORDINATE_AUTO_SCREENSHOTS ||
+          observedState.loopIndex % COORDINATE_AUTO_SCREENSHOT_INTERVAL_TICKS !== 0
+        ) {
+          return observedState;
         }
 
         const result = saveCoordinateAutoScreenshot({
@@ -9520,12 +9976,13 @@ async function runLoop(
           windowsScalePercent: currentWindowsScalePercent,
         });
         if (!result.saved) {
-          return;
+          return observedState;
         }
 
-        setCurrentLogLoopIndex(state.loopIndex);
-        setCurrentLogPhase(state.phase);
+        setCurrentLogLoopIndex(observedState.loopIndex);
+        setCurrentLogPhase(observedState.phase);
         log(`Coordinate auto screenshot saved: matched='${result.matchedLine}' path=${result.filePath}.`);
+        return observedState;
       },
       functions: {
         pickUnchargedCell: ({ state, nowMs, tickCapture }) => {

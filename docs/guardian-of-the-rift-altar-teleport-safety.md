@@ -90,16 +90,17 @@ hasLeftGuardianCraftingChunk
 runWaitAfterGuardianClickTick
 ```
 
-## TODO: Rare Red-Portal Recovery OCR Loop
+## TODO: Red-Portal Recovery OCR Loop
 
 Observed on 2026-05-08: during salmon/recovery flow, the bot clicked the red recovery portal repeatedly because every post-click coordinate revalidation still read outside `regionId=14484`, even though the player was visually back at the uncharged-cell/crafting area.
 
-This seems rare, so do not rush a broad rewrite. Track it as a recovery hardening item.
+This happened again on 2026-05-08, so treat it as a real recovery hardening item, not just a one-off. The likely failure mode is repeated bad coordinate OCR after a red recovery click.
 
 - Add diagnostics to each red recovery warning:
   - full coordinate debug via `formatGuardianCoordinateDebug`
   - whether `isNearGuardianCraftingAreaLocation(location)` is true
   - visible crafting-area signals, such as uncharged cell table, workbench marker, guardian UI, or inventory/mining state
+  - retry count and whether the same bad coordinate/region is repeating
 - Add a loop guard for repeated red recovery clicks:
   - count repeated outside-region reads after red portal clicks
   - if the read is stable but crafting-area visual signals are present, stop re-clicking red portal

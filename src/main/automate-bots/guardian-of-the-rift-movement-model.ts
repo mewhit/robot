@@ -108,12 +108,21 @@ type BucketStats = {
 
 const HISTORY_VERSION = 1;
 const HISTORY_FILE_NAME = "guardian-of-the-rift-movement-model-history.json";
+const PROFILE_MODEL_VERSION = "direct-v1";
 const MAX_OBSERVATIONS_PER_PROFILE = 240;
 const VERSION_2_MIN_OBSERVATIONS = 8;
 const VERSION_3_MIN_OBSERVATIONS = 25;
 const BUCKET_MIN_OBSERVATIONS = 4;
 const BUCKET_STRONG_SUCCESS_MIN = 5;
 const BUCKET_LOW_LATE_SUCCESS_MIN = 8;
+const TRAINING_KIND_SET = new Set([
+  "altar-click",
+  "great-guardian-deposit",
+  "charged-cell-deposit",
+  "rune-deposit",
+  "workbench-click",
+  "altar-return-portal",
+]);
 
 let historyFile: MovementHistoryFile | null = null;
 
@@ -153,11 +162,16 @@ export function getGuardianOfTheRiftMovementModelHistoryPath(): string {
 
 function buildProfileKey(bitmap: RobotBitmap, context: GuardianOfTheRiftMovementModelContext): string {
   return [
+    `model=${PROFILE_MODEL_VERSION}`,
     `host=${getHostKey()}`,
     `display=${sanitizeKeyPart(context.monitorTier)}`,
     `scale=${Math.round(context.windowsScalePercent)}`,
     `capture=${bitmap.width}x${bitmap.height}`,
   ].join("|");
+}
+
+export function isGuardianOfTheRiftMovementModelTrainingKind(kind: string): boolean {
+  return TRAINING_KIND_SET.has(kind);
 }
 
 function clampExtraTicks(value: number, maxExtraWaitTicks: number): number {
@@ -378,7 +392,9 @@ function pickLearnedExtraTicks(stats: BucketStats, fallbackTicks: number, maxExt
 }
 
 function selectModel(profile: MovementProfile, thresholds: GuardianOfTheRiftMovementModelThresholds): GuardianOfTheRiftMovementModelSelection {
-  const observations = profile.observations;
+  const observations = profile.observations.filter((observation) =>
+    isGuardianOfTheRiftMovementModelTrainingKind(observation.kind),
+  );
   const observationCount = observations.length;
   const successCount = observations.filter((observation) => observation.outcome === "success").length;
   const lateCount = observations.filter((observation) => observation.outcome === "late").length;
@@ -471,6 +487,15 @@ export function recordGuardianOfTheRiftMovementObservation(params: {
 }): GuardianOfTheRiftMovementObservationResult {
   const history = readHistoryFile(params.thresholds.maxExtraWaitTicks);
   const profile = getOrCreateProfile(history, params.bitmap, params.context, params.thresholds.maxExtraWaitTicks);
+  if (!isGuardianOfTheRiftMovementModelTrainingKind(params.kind)) {
+    return {
+      recorded: false,
+      key: profile.key,
+      path: getGuardianOfTheRiftMovementModelHistoryPath(),
+      model: selectModel(profile, params.thresholds),
+    };
+  }
+
   const nowIso = new Date().toISOString();
 
   profile.observations = [
