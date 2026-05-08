@@ -36,6 +36,7 @@ import { readCoordinateOverlayLocation, saveCoordinateAutoScreenshot } from "./s
 import {
   detectGuardianOfTheRiftAltarMarkersInScreenshot,
   formatGuardianOfTheRiftAltarCandidates,
+  formatGuardianOfTheRiftAltarDetectionDiagnostics,
   pickNearestGuardianOfTheRiftAltarMarker,
   type GuardianOfTheRiftAltarDetection,
 } from "./shared/guardian-of-the-rift-altar-detector";
@@ -472,6 +473,9 @@ const STARTUP_SETTLE_MS = 180;
 const STARTUP_UI_PREP_SETTLE_MS = 200;
 const STARTUP_CAMERA_NORTH_KEY = "n";
 const STARTUP_INVENTORY_KEY = "escape";
+const STARTUP_CAMERA_PITCH_UP_KEY = "w";
+const STARTUP_CAMERA_PITCH_UP_HOLD_MS = 2_000;
+const STARTUP_CAMERA_PITCH_SETTLE_MS = 120;
 const STARTUP_COORDINATE_VALIDATION_DELAY_MS = BOT_TICK_MS;
 const PLAYER_ANCHOR_FALLBACK_X_RATIO = 0.5;
 const PLAYER_ANCHOR_FALLBACK_Y_RATIO = 0.52;
@@ -590,7 +594,7 @@ const ACTIVE_GUARDIAN_MIN_HEIGHT_PX = GUARDIAN_OF_THE_RIFT_OVERLAY_MODE === "opt
 const ACTIVE_GUARDIAN_MIN_PIXELS = GUARDIAN_OF_THE_RIFT_OVERLAY_MODE === "optimizer" ? 1_500 : 2_500;
 const ACTIVE_GUARDIAN_MIN_ASPECT_RATIO = 0.45;
 const ACTIVE_GUARDIAN_MAX_ASPECT_RATIO = 2.8;
-const GUARDIAN_BLACK_MAX_COMPONENT = 70;
+const GUARDIAN_BLACK_MAX_COMPONENT = 85;
 const GUARDIAN_BLACK_MIN_EDGE_MARGIN_PX = 2;
 const GREAT_GUARDIAN_BLUE_MIN_PIXELS = 120;
 const CHARGED_CELL_DEPOSIT_PURPLE_MIN_PIXELS = 200;
@@ -2322,6 +2326,46 @@ function tapKey(key: string): boolean {
   return true;
 }
 
+async function holdKey(key: string, durationMs: number): Promise<boolean> {
+  if (typeof keyToggle !== "function") {
+    return tapKey(key);
+  }
+
+  let pressed = false;
+  try {
+    keyToggle(key, "down");
+    pressed = true;
+    await sleepWithAbort(durationMs, () => AppState.automateBotRunning);
+    return AppState.automateBotRunning;
+  } catch (error) {
+    warn(`RobotJS keyToggle('${key}') hold failed: ${error instanceof Error ? error.message : String(error)}.`);
+    return false;
+  } finally {
+    if (pressed) {
+      try {
+        keyToggle(key, "up");
+      } catch (error) {
+        warn(`RobotJS keyToggle('${key}') release failed: ${error instanceof Error ? error.message : String(error)}.`);
+      }
+    }
+  }
+}
+
+async function prepareStartupCameraPitch(): Promise<void> {
+  const heldUp = await holdKey(STARTUP_CAMERA_PITCH_UP_KEY, STARTUP_CAMERA_PITCH_UP_HOLD_MS);
+  if (!AppState.automateBotRunning) {
+    return;
+  }
+
+  log(
+    `Startup camera pitch prep: ${heldUp ? `held '${STARTUP_CAMERA_PITCH_UP_KEY}' ${STARTUP_CAMERA_PITCH_UP_HOLD_MS}ms` : `could not hold '${STARTUP_CAMERA_PITCH_UP_KEY}'`} for calibrated height.`,
+  );
+
+  if (STARTUP_CAMERA_PITCH_SETTLE_MS > 0) {
+    await sleepWithAbort(STARTUP_CAMERA_PITCH_SETTLE_MS, () => AppState.automateBotRunning);
+  }
+}
+
 async function prepareStartupUiForPouchCheck(): Promise<void> {
   const cameraNorthTapped = tapKey(STARTUP_CAMERA_NORTH_KEY);
   const inventoryTapped = tapKey(STARTUP_INVENTORY_KEY);
@@ -2830,6 +2874,10 @@ function getGuardianTeleportRetryDeadlineMs(clickedAtMs: number, travel: TravelW
 
 function formatGuardianTeleportWait(travel: TravelWaitEstimate): string {
   return `${formatTravelEstimate(travel)} retryGrace=${GUARDIAN_RECLICK_GRACE_TICKS} tick(s) validationBuffer=${GUARDIAN_TELEPORT_VALIDATION_EXTRA_BOT_TICKS} bot tick(s)`;
+}
+
+function formatAltarMarkerSearchDiagnostics(bitmap: RobotBitmap, detections: GuardianOfTheRiftAltarDetection[]): string {
+  return `Candidates=${formatGuardianOfTheRiftAltarCandidates(detections)}. ${formatGuardianOfTheRiftAltarDetectionDiagnostics(bitmap)}`;
 }
 
 function recordAltarDistanceTileCorrectionIfNeeded(state: BotState, bitmap: RobotBitmap): BotState {
@@ -5675,7 +5723,7 @@ async function runWaitAfterGuardianClickTick(
       warn(
         stepMessage(
           WORKFLOW_STEPS.FIND_ALTAR,
-          `Altar marker not visible in region ${guardianLocation.regionId ?? "unknown"}; ${rotated ? `tapped '${GUARDIAN_ALTAR_CAMERA_ROTATE_KEY}' and waiting ${GUARDIAN_ALTAR_CAMERA_ROTATE_SETTLE_BOT_TICKS} bot tick(s) for the camera to settle` : `could not tap '${GUARDIAN_ALTAR_CAMERA_ROTATE_KEY}'`} before retry ${missingGuardianYellowTicks}/${GUARDIAN_ALTAR_CAMERA_ROTATE_MAX_ATTEMPTS}. Candidates=${formatGuardianOfTheRiftAltarCandidates(altarCandidates)}.`,
+          `Altar marker not visible in region ${guardianLocation.regionId ?? "unknown"}; ${rotated ? `tapped '${GUARDIAN_ALTAR_CAMERA_ROTATE_KEY}' and waiting ${GUARDIAN_ALTAR_CAMERA_ROTATE_SETTLE_BOT_TICKS} bot tick(s) for the camera to settle` : `could not tap '${GUARDIAN_ALTAR_CAMERA_ROTATE_KEY}'`} before retry ${missingGuardianYellowTicks}/${GUARDIAN_ALTAR_CAMERA_ROTATE_MAX_ATTEMPTS}. ${formatAltarMarkerSearchDiagnostics(tickCapture.bitmap, altarCandidates)}.`,
         ),
       );
 
@@ -5694,7 +5742,7 @@ async function runWaitAfterGuardianClickTick(
         warn(
           stepMessage(
             WORKFLOW_STEPS.FIND_ALTAR,
-            `Altar marker not visible yet after teleport; scene may still be loading. Retry ${missingGuardianYellowTicks}/${GUARDIAN_ALTAR_SEARCH_RETRY_TICKS}. Candidates=${formatGuardianOfTheRiftAltarCandidates(altarCandidates)}.`,
+            `Altar marker not visible yet after teleport; scene may still be loading. Retry ${missingGuardianYellowTicks}/${GUARDIAN_ALTAR_SEARCH_RETRY_TICKS}. ${formatAltarMarkerSearchDiagnostics(tickCapture.bitmap, altarCandidates)}.`,
           ),
         );
       }
@@ -5708,7 +5756,7 @@ async function runWaitAfterGuardianClickTick(
 
     const message = stepMessage(
       WORKFLOW_STEPS.FIND_ALTAR,
-      `Teleport confirmed, but no altar marker was found after ${missingGuardianYellowTicks} check(s). Candidates=${formatGuardianOfTheRiftAltarCandidates(altarCandidates)}. Stopping bot.`,
+      `Teleport confirmed, but no altar marker was found after ${missingGuardianYellowTicks} check(s). ${formatAltarMarkerSearchDiagnostics(tickCapture.bitmap, altarCandidates)}. Stopping bot.`,
     );
     warn(message);
     notifyUserAndStop(message);
@@ -5807,7 +5855,49 @@ function runWaitAfterGuardianYellowClickTick(
           warn(
             stepMessage(
               WORKFLOW_STEPS.MOVE_TO_ALTAR,
-              `Inventory free-space is still 0 and altar marker is not visible yet; scene may still be loading. Retry ${missingGuardianYellowTicks}/${GUARDIAN_ALTAR_SEARCH_RETRY_TICKS}. Candidates=${formatGuardianOfTheRiftAltarCandidates(altarCandidates)}.`,
+              `Inventory free-space is still 0 and altar marker is not visible yet; scene may still be loading. Retry ${missingGuardianYellowTicks}/${GUARDIAN_ALTAR_SEARCH_RETRY_TICKS}. ${formatAltarMarkerSearchDiagnostics(tickCapture.bitmap, altarCandidates)}.`,
+            ),
+          );
+        }
+
+        return {
+          ...correctedState,
+          inventoryFreeSlots: inventory.count,
+          missingGuardianYellowTicks,
+          actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
+        };
+      }
+
+      const cameraRotateRetryLimit = GUARDIAN_ALTAR_SEARCH_RETRY_TICKS + GUARDIAN_ALTAR_CAMERA_ROTATE_MAX_ATTEMPTS;
+      if (missingGuardianYellowTicks <= cameraRotateRetryLimit) {
+        const rotationAttempt = missingGuardianYellowTicks - GUARDIAN_ALTAR_SEARCH_RETRY_TICKS;
+        const rotated = tapKey(GUARDIAN_ALTAR_CAMERA_ROTATE_KEY);
+        warn(
+          stepMessage(
+            WORKFLOW_STEPS.MOVE_TO_ALTAR,
+            `Inventory free-space is still 0 and no altar marker was accepted after ${GUARDIAN_ALTAR_SEARCH_RETRY_TICKS} retry tick(s); ${rotated ? `tapped '${GUARDIAN_ALTAR_CAMERA_ROTATE_KEY}' and waiting ${GUARDIAN_ALTAR_CAMERA_ROTATE_SETTLE_BOT_TICKS} bot tick(s) for the camera to settle` : `could not tap '${GUARDIAN_ALTAR_CAMERA_ROTATE_KEY}'`} before altar retry rotation ${rotationAttempt}/${GUARDIAN_ALTAR_CAMERA_ROTATE_MAX_ATTEMPTS}. ${formatAltarMarkerSearchDiagnostics(tickCapture.bitmap, altarCandidates)}.`,
+          ),
+        );
+
+        return {
+          ...correctedState,
+          inventoryFreeSlots: inventory.count,
+          missingGuardianYellowTicks,
+          guardianAltarCameraLeftRotations: correctedState.guardianAltarCameraLeftRotations + (rotated ? 1 : 0),
+          actionLockUntilMs: rotated
+            ? nowMs + GUARDIAN_ALTAR_CAMERA_ROTATE_SETTLE_BOT_TICKS * BOT_TICK_MS
+            : nowMs + FAST_ACTION_RETRY_MS,
+        };
+      }
+
+      const finalSearchRetryLimit = cameraRotateRetryLimit + GUARDIAN_ALTAR_SEARCH_RETRY_TICKS;
+      if (missingGuardianYellowTicks <= finalSearchRetryLimit) {
+        const finalRetry = missingGuardianYellowTicks - cameraRotateRetryLimit;
+        if (finalRetry === 1 || finalRetry % 3 === 0) {
+          warn(
+            stepMessage(
+              WORKFLOW_STEPS.MOVE_TO_ALTAR,
+              `Inventory free-space is still 0 and altar marker is still not visible after camera rotations. Final retry ${finalRetry}/${GUARDIAN_ALTAR_SEARCH_RETRY_TICKS}. ${formatAltarMarkerSearchDiagnostics(tickCapture.bitmap, altarCandidates)}.`,
             ),
           );
         }
@@ -5822,7 +5912,7 @@ function runWaitAfterGuardianYellowClickTick(
 
       const message = stepMessage(
         WORKFLOW_STEPS.MOVE_TO_ALTAR,
-        `Inventory free-space is still 0, but no altar marker was found after ${missingGuardianYellowTicks} check(s). Candidates=${formatGuardianOfTheRiftAltarCandidates(altarCandidates)}. Stopping bot.`,
+        `Inventory free-space is still 0, but no altar marker was found after ${missingGuardianYellowTicks} check(s), including ${GUARDIAN_ALTAR_CAMERA_ROTATE_MAX_ATTEMPTS} camera rotation(s). ${formatAltarMarkerSearchDiagnostics(tickCapture.bitmap, altarCandidates)}. Stopping bot.`,
       );
       warn(message);
       notifyUserAndStop(message);
@@ -5909,7 +5999,7 @@ function runWaitAfterGuardianYellowClickTick(
         warn(
           stepMessage(
             WORKFLOW_STEPS.MOVE_TO_ALTAR,
-            `Inventory free-space only changed to ${inventory.count} after first altar click while pouches were filled this cycle; treating the altar click as failed or partial, but the altar marker is not visible. ${rotated ? `Tapped '${GUARDIAN_ALTAR_CAMERA_ROTATE_KEY}' and waiting ${GUARDIAN_ALTAR_CAMERA_ROTATE_SETTLE_BOT_TICKS} bot tick(s) for the camera to settle` : `Could not tap '${GUARDIAN_ALTAR_CAMERA_ROTATE_KEY}'`} before retry ${missingGuardianYellowTicks}/${GUARDIAN_ALTAR_CAMERA_ROTATE_MAX_ATTEMPTS}. Candidates=${formatGuardianOfTheRiftAltarCandidates(altarCandidates)}.`,
+            `Inventory free-space only changed to ${inventory.count} after first altar click while pouches were filled this cycle; treating the altar click as failed or partial, but the altar marker is not visible. ${rotated ? `Tapped '${GUARDIAN_ALTAR_CAMERA_ROTATE_KEY}' and waiting ${GUARDIAN_ALTAR_CAMERA_ROTATE_SETTLE_BOT_TICKS} bot tick(s) for the camera to settle` : `Could not tap '${GUARDIAN_ALTAR_CAMERA_ROTATE_KEY}'`} before retry ${missingGuardianYellowTicks}/${GUARDIAN_ALTAR_CAMERA_ROTATE_MAX_ATTEMPTS}. ${formatAltarMarkerSearchDiagnostics(tickCapture.bitmap, altarCandidates)}.`,
           ),
         );
 
@@ -5934,7 +6024,7 @@ function runWaitAfterGuardianYellowClickTick(
           warn(
             stepMessage(
               WORKFLOW_STEPS.MOVE_TO_ALTAR,
-              `Inventory free-space only changed to ${inventory.count} after first altar click while pouches were filled this cycle; waiting for altar marker before re-clicking. Retry ${missingGuardianYellowTicks - GUARDIAN_ALTAR_CAMERA_ROTATE_MAX_ATTEMPTS}/${GUARDIAN_ALTAR_SEARCH_RETRY_TICKS}. Candidates=${formatGuardianOfTheRiftAltarCandidates(altarCandidates)}.`,
+              `Inventory free-space only changed to ${inventory.count} after first altar click while pouches were filled this cycle; waiting for altar marker before re-clicking. Retry ${missingGuardianYellowTicks - GUARDIAN_ALTAR_CAMERA_ROTATE_MAX_ATTEMPTS}/${GUARDIAN_ALTAR_SEARCH_RETRY_TICKS}. ${formatAltarMarkerSearchDiagnostics(tickCapture.bitmap, altarCandidates)}.`,
             ),
           );
         }
@@ -5950,7 +6040,7 @@ function runWaitAfterGuardianYellowClickTick(
 
       const message = stepMessage(
         WORKFLOW_STEPS.MOVE_TO_ALTAR,
-        `Inventory free-space only changed to ${inventory.count} after first altar click while pouches were filled this cycle, but no altar marker was found after ${missingGuardianYellowTicks} check(s). Candidates=${formatGuardianOfTheRiftAltarCandidates(altarCandidates)}. Stopping bot.`,
+        `Inventory free-space only changed to ${inventory.count} after first altar click while pouches were filled this cycle, but no altar marker was found after ${missingGuardianYellowTicks} check(s). ${formatAltarMarkerSearchDiagnostics(tickCapture.bitmap, altarCandidates)}. Stopping bot.`,
       );
       warn(message);
       notifyUserAndStop(message);
@@ -6004,7 +6094,7 @@ function runWaitAfterGuardianYellowClickTick(
         warn(
           stepMessage(
             WORKFLOW_STEPS.EMPTY_POUCHES_AT_ALTAR,
-            `Inventory free-space changed to ${inventory.count} after first altar click and pouches were filled this cycle, but altar marker is not visible yet. Retry ${missingGuardianYellowTicks}/${GUARDIAN_ALTAR_SEARCH_RETRY_TICKS}. Candidates=${formatGuardianOfTheRiftAltarCandidates(altarCandidates)}.`,
+            `Inventory free-space changed to ${inventory.count} after first altar click and pouches were filled this cycle, but altar marker is not visible yet. Retry ${missingGuardianYellowTicks}/${GUARDIAN_ALTAR_SEARCH_RETRY_TICKS}. ${formatAltarMarkerSearchDiagnostics(tickCapture.bitmap, altarCandidates)}.`,
           ),
         );
 
@@ -6019,7 +6109,7 @@ function runWaitAfterGuardianYellowClickTick(
 
       const message = stepMessage(
         WORKFLOW_STEPS.EMPTY_POUCHES_AT_ALTAR,
-        `Inventory free-space changed to ${inventory.count} after first altar click and pouches were filled this cycle, but no altar marker was found after ${missingGuardianYellowTicks} check(s). Candidates=${formatGuardianOfTheRiftAltarCandidates(altarCandidates)}. Stopping bot.`,
+        `Inventory free-space changed to ${inventory.count} after first altar click and pouches were filled this cycle, but no altar marker was found after ${missingGuardianYellowTicks} check(s). ${formatAltarMarkerSearchDiagnostics(tickCapture.bitmap, altarCandidates)}. Stopping bot.`,
       );
       warn(message);
       notifyUserAndStop(message);
@@ -6105,7 +6195,7 @@ function runEmptyPouchesAtAltarTick(
       warn(
         stepMessage(
           WORKFLOW_STEPS.EMPTY_POUCHES_AT_ALTAR,
-          `Finished pouch clicks, but altar marker is not visible for the second altar click. Retry ${missingGuardianYellowTicks}/${GUARDIAN_ALTAR_SEARCH_RETRY_TICKS}. Candidates=${formatGuardianOfTheRiftAltarCandidates(altarCandidates)}.`,
+          `Finished pouch clicks, but altar marker is not visible for the second altar click. Retry ${missingGuardianYellowTicks}/${GUARDIAN_ALTAR_SEARCH_RETRY_TICKS}. ${formatAltarMarkerSearchDiagnostics(tickCapture.bitmap, altarCandidates)}.`,
         ),
       );
 
@@ -6118,7 +6208,7 @@ function runEmptyPouchesAtAltarTick(
 
     const message = stepMessage(
       WORKFLOW_STEPS.EMPTY_POUCHES_AT_ALTAR,
-      `Finished pouch clicks, but no altar marker was found after ${missingGuardianYellowTicks} check(s). Candidates=${formatGuardianOfTheRiftAltarCandidates(altarCandidates)}. Stopping bot.`,
+      `Finished pouch clicks, but no altar marker was found after ${missingGuardianYellowTicks} check(s). ${formatAltarMarkerSearchDiagnostics(tickCapture.bitmap, altarCandidates)}. Stopping bot.`,
     );
     warn(message);
     notifyUserAndStop(message);
@@ -9427,6 +9517,11 @@ export function onRunecraftingGuardianOfTheRiftBotStart(): void {
       log(
         `Active guardian rune references loaded (${activeRuneTemplates.map((template) => `${template.rune}=${template.bitmap.width}x${template.bitmap.height}`).join(", ")}).`,
       );
+
+      await prepareStartupCameraPitch();
+      if (!AppState.automateBotRunning) {
+        return;
+      }
 
       await prepareStartupUiForPouchCheck();
       if (!AppState.automateBotRunning) {

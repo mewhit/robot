@@ -16,6 +16,12 @@ export type GuardianOfTheRiftAltarDetection = {
   maxY: number;
 };
 
+type AltarYellowComponent = GuardianOfTheRiftAltarDetection & {
+  aspectRatio: number;
+  fillRatio: number;
+  rejectionReasons: string[];
+};
+
 type SearchBounds = {
   minX: number;
   minY: number;
@@ -23,7 +29,7 @@ type SearchBounds = {
   maxY: number;
 };
 
-const ALTAR_YELLOW_MIN_PIXELS = 3_000;
+const ALTAR_YELLOW_MIN_PIXELS = 2_500;
 const ALTAR_SEARCH_BOUNDS = { minXRatio: 0.04, minYRatio: 0.03, maxXRatio: 0.94, maxYRatio: 0.86 };
 const ALTAR_MIN_SIZE_TO_SCREEN_HEIGHT_RATIO = 0.05;
 const ALTAR_MAX_SIZE_TO_SCREEN_HEIGHT_RATIO = 0.11;
@@ -63,15 +69,51 @@ function isAltarSizedComponent(bitmap: RobotBitmap, width: number, height: numbe
   );
 }
 
-export function detectGuardianOfTheRiftAltarMarkersInScreenshot(
+function getAltarComponentRejectionReasons(
+  bitmap: RobotBitmap,
+  component: Pick<AltarYellowComponent, "aspectRatio" | "fillRatio" | "height" | "pixelCount" | "width">,
+  minPixels: number,
+): string[] {
+  const minSize = bitmap.height * ALTAR_MIN_SIZE_TO_SCREEN_HEIGHT_RATIO;
+  const maxSize = bitmap.height * ALTAR_MAX_SIZE_TO_SCREEN_HEIGHT_RATIO;
+  const reasons: string[] = [];
+
+  if (component.pixelCount < minPixels) {
+    reasons.push(`pixels ${component.pixelCount}<${minPixels}`);
+  }
+
+  if (component.width < 4 || component.height < 4) {
+    reasons.push(`tiny ${component.width}x${component.height}`);
+  }
+
+  if (component.width < minSize || component.height < minSize) {
+    reasons.push(`size ${component.width}x${component.height}<${Math.ceil(minSize)}px`);
+  }
+
+  if (component.width > maxSize || component.height > maxSize) {
+    reasons.push(`size ${component.width}x${component.height}>${Math.floor(maxSize)}px`);
+  }
+
+  if (component.fillRatio < ALTAR_MIN_FILL_RATIO) {
+    reasons.push(`fill ${component.fillRatio.toFixed(2)}<${ALTAR_MIN_FILL_RATIO}`);
+  }
+
+  if (component.aspectRatio > ALTAR_MAX_ASPECT_RATIO) {
+    reasons.push(`aspect ${component.aspectRatio.toFixed(2)}>${ALTAR_MAX_ASPECT_RATIO}`);
+  }
+
+  return reasons;
+}
+
+function findGuardianOfTheRiftAltarYellowComponents(
   bitmap: RobotBitmap,
   minPixels: number = ALTAR_YELLOW_MIN_PIXELS,
-): GuardianOfTheRiftAltarDetection[] {
+): AltarYellowComponent[] {
   const width = bitmap.width;
   const height = bitmap.height;
   const bounds = resolveAltarSearchBounds(bitmap);
   const visited = new Uint8Array(width * height);
-  const detections: GuardianOfTheRiftAltarDetection[] = [];
+  const components: AltarYellowComponent[] = [];
 
   for (let y = bounds.minY; y <= bounds.maxY; y += 1) {
     for (let x = bounds.minX; x <= bounds.maxX; x += 1) {
@@ -141,22 +183,11 @@ export function detectGuardianOfTheRiftAltarMarkersInScreenshot(
         }
       }
 
-      if (pixelCount < minPixels) {
-        continue;
-      }
-
       const componentWidth = maxX - minX + 1;
       const componentHeight = maxY - minY + 1;
       const fillRatio = pixelCount / (componentWidth * componentHeight);
-      if (
-        componentWidth < 4 ||
-        componentHeight < 4 ||
-        !isAltarSizedComponent(bitmap, componentWidth, componentHeight, fillRatio)
-      ) {
-        continue;
-      }
-
-      detections.push({
+      const aspectRatio = Math.max(componentWidth / componentHeight, componentHeight / componentWidth);
+      const component: AltarYellowComponent = {
         centerX: Math.round(sumX / pixelCount),
         centerY: Math.round(sumY / pixelCount),
         pixelCount,
@@ -167,11 +198,42 @@ export function detectGuardianOfTheRiftAltarMarkersInScreenshot(
         minY,
         maxX,
         maxY,
-      });
+        aspectRatio,
+        fillRatio,
+        rejectionReasons: [] as string[],
+      };
+      component.rejectionReasons = getAltarComponentRejectionReasons(bitmap, component, minPixels);
+      components.push(component);
     }
   }
 
-  return detections.sort((a, b) => b.pixelCount - a.pixelCount);
+  return components.sort((a, b) => b.pixelCount - a.pixelCount);
+}
+
+export function detectGuardianOfTheRiftAltarMarkersInScreenshot(
+  bitmap: RobotBitmap,
+  minPixels: number = ALTAR_YELLOW_MIN_PIXELS,
+): GuardianOfTheRiftAltarDetection[] {
+  return findGuardianOfTheRiftAltarYellowComponents(bitmap, minPixels)
+    .filter(
+      (component) =>
+        component.pixelCount >= minPixels &&
+        component.width >= 4 &&
+        component.height >= 4 &&
+        isAltarSizedComponent(bitmap, component.width, component.height, component.fillRatio),
+    )
+    .map((component) => ({
+      centerX: component.centerX,
+      centerY: component.centerY,
+      pixelCount: component.pixelCount,
+      markerColor: component.markerColor,
+      width: component.width,
+      height: component.height,
+      minX: component.minX,
+      minY: component.minY,
+      maxX: component.maxX,
+      maxY: component.maxY,
+    }));
 }
 
 export function pickNearestGuardianOfTheRiftAltarMarker(
@@ -209,6 +271,38 @@ export function formatGuardianOfTheRiftAltarCandidates(
     .slice(0, limit)
     .map((detection) => `(${detection.centerX},${detection.centerY}) ${detection.markerColor} ${detection.width}x${detection.height} px=${detection.pixelCount}`)
     .join("; ");
+}
+
+export function formatGuardianOfTheRiftAltarDetectionDiagnostics(
+  bitmap: RobotBitmap,
+  minPixels: number = ALTAR_YELLOW_MIN_PIXELS,
+  limit = 4,
+): string {
+  const bounds = resolveAltarSearchBounds(bitmap);
+  const minSize = Math.ceil(bitmap.height * ALTAR_MIN_SIZE_TO_SCREEN_HEIGHT_RATIO);
+  const maxSize = Math.floor(bitmap.height * ALTAR_MAX_SIZE_TO_SCREEN_HEIGHT_RATIO);
+  const components = findGuardianOfTheRiftAltarYellowComponents(bitmap, minPixels);
+  const acceptedCount = components.filter((component) => component.rejectionReasons.length === 0).length;
+  const rejected = components.filter((component) => component.rejectionReasons.length > 0);
+  const yellowPixels = components.reduce((sum, component) => sum + component.pixelCount, 0);
+  const thresholds = `thresholds=minPixels=${minPixels}, size=${minSize}-${maxSize}px, fill>=${ALTAR_MIN_FILL_RATIO}, aspect<=${ALTAR_MAX_ASPECT_RATIO}, bounds=(${bounds.minX},${bounds.minY})-(${bounds.maxX},${bounds.maxY})`;
+
+  if (components.length === 0) {
+    return `yellowDiag=no yellow components matched altar color; yellowPixels=0; ${thresholds}`;
+  }
+
+  const rejectedSummary =
+    rejected.length === 0
+      ? "none"
+      : rejected
+          .slice(0, limit)
+          .map(
+            (component) =>
+              `(${component.centerX},${component.centerY}) ${component.width}x${component.height} px=${component.pixelCount} fill=${component.fillRatio.toFixed(2)} aspect=${component.aspectRatio.toFixed(2)} rejected=[${component.rejectionReasons.join(", ")}]`,
+          )
+          .join("; ");
+
+  return `yellowDiag=components=${components.length}, accepted=${acceptedCount}, rejected=${rejected.length}, yellowPixels=${yellowPixels}; topRejected=${rejectedSummary}; ${thresholds}`;
 }
 
 function toPng(bitmap: RobotBitmap): PNG {
