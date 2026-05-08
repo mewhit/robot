@@ -34,7 +34,7 @@ const ALTAR_SEARCH_BOUNDS = { minXRatio: 0.04, minYRatio: 0.03, maxXRatio: 0.94,
 const ALTAR_MIN_SIZE_TO_SCREEN_HEIGHT_RATIO = 0.05;
 const ALTAR_MAX_SIZE_TO_SCREEN_HEIGHT_RATIO = 0.11;
 const ALTAR_MAX_ASPECT_RATIO = 1.45;
-const ALTAR_MIN_FILL_RATIO = 0.6;
+const ALTAR_MIN_FILL_RATIO = 0.58;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
