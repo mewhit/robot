@@ -3,7 +3,7 @@ import path from "path";
 import { PNG } from "pngjs";
 import type { RobotBitmap } from "./ocr-engine";
 
-export const GUARDIAN_OF_THE_RIFT_DETECTABLE_POUCHES = ["small", "medium", "giant"] as const;
+export const GUARDIAN_OF_THE_RIFT_DETECTABLE_POUCHES = ["small", "medium", "large", "giant"] as const;
 export type GuardianOfTheRiftDetectablePouch = (typeof GUARDIAN_OF_THE_RIFT_DETECTABLE_POUCHES)[number];
 
 export type GuardianOfTheRiftPouchTemplate = {
@@ -389,6 +389,7 @@ export function detectGuardianOfTheRiftPouches(
   const pouches: Record<GuardianOfTheRiftDetectablePouch, GuardianOfTheRiftPouchMatch | null> = {
     small: null,
     medium: null,
+    large: null,
     giant: null,
   };
   const matches: GuardianOfTheRiftPouchMatch[] = [];

@@ -143,7 +143,7 @@ describe("Guardian of the Rift pouch detector", () => {
     }
   });
 
-  test("detects small, medium, and giant pouches in the inventory area", async () => {
+  test("detects small, medium, large, and giant pouches in the inventory area", async () => {
     const templates = await loadGuardianOfTheRiftPouchTemplatesFromDirectory(POUCH_ICON_DIR);
     const bitmap = await loadPngBitmap(POUCH_SCREENSHOT_PATH);
 
@@ -151,8 +151,14 @@ describe("Guardian of the Rift pouch detector", () => {
 
     expect(detection.pouches.small?.score).toBeGreaterThanOrEqual(0.82);
     expect(detection.pouches.medium?.score).toBeGreaterThanOrEqual(0.82);
+    expect(detection.pouches.large?.score).toBeGreaterThanOrEqual(0.82);
     expect(detection.pouches.giant?.score).toBeGreaterThanOrEqual(0.82);
-    expect(detection.detectedPouches.map((match) => match.pouch).sort()).toEqual(["giant", "medium", "small"]);
+    expect(detection.detectedPouches.map((match) => match.pouch).sort()).toEqual([
+      "giant",
+      "large",
+      "medium",
+      "small",
+    ]);
 
     for (const match of detection.detectedPouches) {
       expect(match.x).toBeGreaterThan(Math.round(bitmap.width * 0.72));
@@ -174,22 +180,22 @@ describe("Guardian of the Rift pouch detector", () => {
 
   test("ignores changing count pixels where the template is transparent", async () => {
     const templates = await loadGuardianOfTheRiftPouchTemplatesFromDirectory(POUCH_ICON_DIR);
-    const giantTemplate = templates.find((template) => template.pouch === "giant");
-    expect(giantTemplate).toBeDefined();
+    const largeTemplate = templates.find((template) => template.pouch === "large");
+    expect(largeTemplate).toBeDefined();
 
     const bitmap = createBitmap(320, 220, { r: 36, g: 31, b: 24 });
     const targetX = 160;
     const targetY = 96;
 
-    blitOpaquePixels(bitmap, giantTemplate!.bitmap, targetX, targetY);
-    drawCyanPixelsOverTransparentTemplateArea(bitmap, giantTemplate!, targetX, targetY);
+    blitOpaquePixels(bitmap, largeTemplate!.bitmap, targetX, targetY);
+    drawCyanPixelsOverTransparentTemplateArea(bitmap, largeTemplate!, targetX, targetY);
 
-    const detection = detectGuardianOfTheRiftPouches(bitmap, [giantTemplate!], {
+    const detection = detectGuardianOfTheRiftPouches(bitmap, [largeTemplate!], {
       searchRois: [{ x: 0, y: 0, width: bitmap.width, height: bitmap.height }],
     });
 
-    expect(detection.pouches.giant?.x).toBe(targetX);
-    expect(detection.pouches.giant?.y).toBe(targetY);
-    expect(detection.pouches.giant?.score).toBeGreaterThan(0.98);
+    expect(detection.pouches.large?.x).toBe(targetX);
+    expect(detection.pouches.large?.y).toBe(targetY);
+    expect(detection.pouches.large?.score).toBeGreaterThan(0.98);
   });
 });
