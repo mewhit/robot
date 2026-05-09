@@ -33,6 +33,8 @@ export type GuardianOfTheRiftPowerBarFillColor = "blue" | "yellow" | "empty" | "
 
 export type GuardianOfTheRiftPowerBarDetection = {
   fillColor: GuardianOfTheRiftPowerBarFillColor;
+  fillPercent: number | null;
+  filledPixels: number;
   bluePixels: number;
   yellowPixels: number;
   emptyPixels: number;
@@ -122,6 +124,8 @@ const MIN_POWER_BAR_BLUE_PIXELS = 500;
 const MIN_POWER_BAR_YELLOW_PIXELS = 80;
 const MIN_POWER_BAR_EMPTY_PIXELS = 400;
 const MIN_POWER_BAR_VISIBLE_PIXELS = 700;
+const MIN_POWER_BAR_COLUMN_VISIBLE_PIXELS = 3;
+const MIN_POWER_BAR_COLUMN_FILLED_PIXELS = 2;
 const MIN_TIME_SINCE_PORTAL_COLOR_PIXELS = 20;
 const TIME_SINCE_PORTAL_COLORS: GuardianOfTheRiftTimeSincePortalColor[] = ["green", "yellow", "white", "red"];
 const MIN_TIME_SINCE_PORTAL_DIGIT_PIXELS = 8;
@@ -157,6 +161,7 @@ const TIME_SINCE_PORTAL_DIGIT_TEMPLATE_ROWS: Record<string, string[][]> = {
   ],
   "6": [
     ["01111", "11111", "11100", "11111", "11011", "11111", "11111"],
+    ["11111", "11111", "11110", "11111", "11011", "11111", "11111"],
   ],
   "7": [
     ["11111", "11111", "00110", "01110", "01100", "01100", "11100"],
@@ -508,6 +513,8 @@ function detectGuardianOfTheRiftPowerBarInRoi(bitmap: RobotBitmap, sourceRoi: Ro
   let bluePixels = 0;
   let yellowPixels = 0;
   let emptyPixels = 0;
+  const filledPixelsByColumn = new Array<number>(roi.width).fill(0);
+  const visiblePixelsByColumn = new Array<number>(roi.width).fill(0);
 
   for (let y = roi.y; y < roi.y + roi.height; y += 1) {
     for (let x = roi.x; x < roi.x + roi.width; x += 1) {
@@ -515,18 +522,37 @@ function detectGuardianOfTheRiftPowerBarInRoi(bitmap: RobotBitmap, sourceRoi: Ro
       const b = bitmap.image[offset];
       const g = bitmap.image[offset + 1];
       const r = bitmap.image[offset + 2];
+      const localX = x - roi.x;
 
       if (isPowerBarBluePixel(r, g, b)) {
         bluePixels += 1;
+        filledPixelsByColumn[localX] += 1;
+        visiblePixelsByColumn[localX] += 1;
       } else if (isPowerBarYellowPixel(r, g, b)) {
         yellowPixels += 1;
+        filledPixelsByColumn[localX] += 1;
+        visiblePixelsByColumn[localX] += 1;
       } else if (isPowerBarEmptyPixel(r, g, b)) {
         emptyPixels += 1;
+        visiblePixelsByColumn[localX] += 1;
       }
     }
   }
 
+  const filledPixels = bluePixels + yellowPixels;
   const visiblePixels = bluePixels + yellowPixels + emptyPixels;
+  let filledColumns = 0;
+  let visibleColumns = 0;
+  for (let i = 0; i < roi.width; i += 1) {
+    if (visiblePixelsByColumn[i] >= MIN_POWER_BAR_COLUMN_VISIBLE_PIXELS) {
+      visibleColumns += 1;
+    }
+
+    if (filledPixelsByColumn[i] >= MIN_POWER_BAR_COLUMN_FILLED_PIXELS) {
+      filledColumns += 1;
+    }
+  }
+
   let fillColor: GuardianOfTheRiftPowerBarFillColor = "missing";
   if (bluePixels >= MIN_POWER_BAR_BLUE_PIXELS && bluePixels > yellowPixels) {
     fillColor = "blue";
@@ -535,9 +561,15 @@ function detectGuardianOfTheRiftPowerBarInRoi(bitmap: RobotBitmap, sourceRoi: Ro
   } else if (emptyPixels >= MIN_POWER_BAR_EMPTY_PIXELS && visiblePixels >= MIN_POWER_BAR_VISIBLE_PIXELS) {
     fillColor = "empty";
   }
+  const fillPercent =
+    fillColor === "missing" || visibleColumns === 0
+      ? null
+      : Math.max(0, Math.min(100, Math.round((filledColumns / visibleColumns) * 100)));
 
   return {
     fillColor,
+    fillPercent,
+    filledPixels,
     bluePixels,
     yellowPixels,
     emptyPixels,
@@ -598,13 +630,20 @@ function parseTimeSincePortalSeconds(
     parseMode === "mmss" && rawText.length >= 3
       ? Number(rawText.slice(0, -2)) * 60 + Number(rawText.slice(-2))
       : Number(rawText);
+  const fallbackParsed =
+    parseMode === "mmss" &&
+    rawText.length === 3 &&
+    parsed > MAX_TIME_SINCE_PORTAL_SECONDS &&
+    Number(rawText.slice(-2)) < 60
+      ? Number(rawText.slice(-2))
+      : parsed;
   return {
     secondsElapsed:
-      Number.isFinite(parsed) &&
-      parsed >= 0 &&
-      parsed <= MAX_TIME_SINCE_PORTAL_SECONDS &&
+      Number.isFinite(fallbackParsed) &&
+      fallbackParsed >= 0 &&
+      fallbackParsed <= MAX_TIME_SINCE_PORTAL_SECONDS &&
       (parseMode !== "mmss" || rawText.length < 3 || Number(rawText.slice(-2)) < 60)
-        ? parsed
+        ? fallbackParsed
         : null,
     rawText,
     components: parsedComponents,

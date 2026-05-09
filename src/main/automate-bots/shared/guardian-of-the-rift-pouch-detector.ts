@@ -3,7 +3,7 @@ import path from "path";
 import { PNG } from "pngjs";
 import type { RobotBitmap } from "./ocr-engine";
 
-export const GUARDIAN_OF_THE_RIFT_DETECTABLE_POUCHES = ["small", "medium", "large", "giant"] as const;
+export const GUARDIAN_OF_THE_RIFT_DETECTABLE_POUCHES = ["small", "medium", "large", "giant", "colossal"] as const;
 export type GuardianOfTheRiftDetectablePouch = (typeof GUARDIAN_OF_THE_RIFT_DETECTABLE_POUCHES)[number];
 
 export type GuardianOfTheRiftPouchTemplate = {
@@ -85,12 +85,13 @@ type PreparedTemplate = GuardianOfTheRiftPouchTemplate & {
 const DEFAULT_POUCH_ICON_DIR = "test-images/icon/guardin-of-the-rift/pouch";
 const TEMPLATE_SAMPLE_STRIDE = 2;
 const MIN_MATCH_SCORE = 0.82;
+const COLOSSAL_POUCH_EXCLUSIVE_MIN_SCORE = 0.95;
 const CACHED_ROI_PADDING_PX = 12;
 const INVENTORY_SEARCH_ROI = {
-  xRatio: 0.72,
-  yRatio: 0.68,
-  widthRatio: 0.28,
-  heightRatio: 0.32,
+  xRatio: 0.52,
+  yRatio: 0.62,
+  widthRatio: 0.48,
+  heightRatio: 0.38,
 };
 
 const preparedTemplateCache = new WeakMap<GuardianOfTheRiftPouchTemplate, PreparedTemplate>();
@@ -130,6 +131,10 @@ function getPixelWeight(templateBitmap: RobotBitmap, x: number, y: number): numb
   return 1 + gradient / 180 + saturation / 80 + brownStrength / 120;
 }
 
+function isOpaqueCyanCountPixel(r: number, g: number, b: number, a: number): boolean {
+  return a > 0 && r <= 80 && g >= 75 && b >= 65 && g - r >= 20 && b - r >= 20;
+}
+
 function prepareTemplate(template: GuardianOfTheRiftPouchTemplate): PreparedTemplate {
   const cached = preparedTemplateCache.get(template);
   if (cached) {
@@ -146,6 +151,10 @@ function prepareTemplate(template: GuardianOfTheRiftPouchTemplate): PreparedTemp
       }
 
       const pixel = readPixel(template.bitmap, x, y);
+      if (isOpaqueCyanCountPixel(pixel.r, pixel.g, pixel.b, pixel.a)) {
+        continue;
+      }
+
       const alphaWeight = pixel.a / 255;
       if (alphaWeight <= 0) {
         continue;
@@ -375,6 +384,20 @@ function detectPouchTemplate(
   return { accepted: null, matches };
 }
 
+function pouchMatchesOverlap(a: GuardianOfTheRiftPouchMatch, b: GuardianOfTheRiftPouchMatch): boolean {
+  const minX = Math.max(a.x, b.x);
+  const minY = Math.max(a.y, b.y);
+  const maxX = Math.min(a.x + a.width - 1, b.x + b.width - 1);
+  const maxY = Math.min(a.y + a.height - 1, b.y + b.height - 1);
+  if (maxX < minX || maxY < minY) {
+    return false;
+  }
+
+  const overlapArea = (maxX - minX + 1) * (maxY - minY + 1);
+  const smallerArea = Math.min(a.width * a.height, b.width * b.height);
+  return overlapArea / Math.max(1, smallerArea) >= 0.35;
+}
+
 export function createGuardianOfTheRiftPouchDetectorCache(): GuardianOfTheRiftPouchDetectorCache {
   return { entries: {} };
 }
@@ -391,6 +414,7 @@ export function detectGuardianOfTheRiftPouches(
     medium: null,
     large: null,
     giant: null,
+    colossal: null,
   };
   const matches: GuardianOfTheRiftPouchMatch[] = [];
 
@@ -398,6 +422,28 @@ export function detectGuardianOfTheRiftPouches(
     const result = detectPouchTemplate(bitmap, template, searchRois, minScore, options.cache);
     matches.push(...result.matches);
     pouches[template.pouch] = result.accepted;
+  }
+
+  const acceptedMatches = Object.values(pouches)
+    .filter((match): match is GuardianOfTheRiftPouchMatch => match !== null)
+    .sort((a, b) => b.score - a.score);
+  const keptMatches: GuardianOfTheRiftPouchMatch[] = [];
+  for (const match of acceptedMatches) {
+    if (keptMatches.some((kept) => pouchMatchesOverlap(kept, match))) {
+      pouches[match.pouch] = null;
+      continue;
+    }
+
+    keptMatches.push(match);
+  }
+
+  const colossalMatch = pouches.colossal;
+  if (colossalMatch && colossalMatch.score >= COLOSSAL_POUCH_EXCLUSIVE_MIN_SCORE) {
+    for (const pouch of GUARDIAN_OF_THE_RIFT_DETECTABLE_POUCHES) {
+      if (pouch !== "colossal") {
+        pouches[pouch] = null;
+      }
+    }
   }
 
   const detectedPouches = Object.values(pouches)
@@ -470,10 +516,14 @@ function loadPngBitmap(filePath: string): Promise<RobotBitmap> {
         const image = Buffer.alloc(png.width * png.height * 4);
 
         for (let index = 0; index < png.data.length; index += 4) {
+          const r = png.data[index];
+          const g = png.data[index + 1];
+          const b = png.data[index + 2];
+          const a = png.data[index + 3];
           image[index] = png.data[index + 2];
           image[index + 1] = png.data[index + 1];
           image[index + 2] = png.data[index];
-          image[index + 3] = png.data[index + 3];
+          image[index + 3] = isOpaqueCyanCountPixel(r, g, b, a) ? 0 : a;
         }
 
         resolve({

@@ -12,6 +12,8 @@ import type { RobotBitmap } from "./ocr-engine";
 const POUCH_ICON_DIR = "test-images/icon/guardin-of-the-rift/pouch";
 const POUCH_SCREENSHOT_PATH =
   "test-images/runescrafting/guardian-of-the-rift/phase-dectector/1289x1549-2k-125-workbench-phase-2.png";
+const COLOSSAL_POUCH_SCREENSHOT_PATH =
+  "test-images/runescrafting/guardian-of-the-rift/1298x1549-2k-125-colossal-pouch-debug.png";
 
 function loadPngBitmap(filePath: string): Promise<RobotBitmap> {
   return new Promise((resolve, reject) => {
@@ -153,6 +155,7 @@ describe("Guardian of the Rift pouch detector", () => {
     expect(detection.pouches.medium?.score).toBeGreaterThanOrEqual(0.82);
     expect(detection.pouches.large?.score).toBeGreaterThanOrEqual(0.82);
     expect(detection.pouches.giant?.score).toBeGreaterThanOrEqual(0.82);
+    expect(detection.pouches.colossal).toBeNull();
     expect(detection.detectedPouches.map((match) => match.pouch).sort()).toEqual([
       "giant",
       "large",
@@ -176,6 +179,38 @@ describe("Guardian of the Rift pouch detector", () => {
 
     expect(first.detectedPouches.every((match) => match.source === "full-search")).toBe(true);
     expect(second.detectedPouches.every((match) => match.source === "cached-roi")).toBe(true);
+  });
+
+  test("detects a colossal pouch template without requiring cyan count pixels", async () => {
+    const templates = await loadGuardianOfTheRiftPouchTemplatesFromDirectory(POUCH_ICON_DIR);
+    const colossalTemplate = templates.find((template) => template.pouch === "colossal");
+    expect(colossalTemplate).toBeDefined();
+
+    const bitmap = createBitmap(360, 260, { r: 36, g: 31, b: 24 });
+    const targetX = 220;
+    const targetY = 140;
+    blitOpaquePixels(bitmap, colossalTemplate!.bitmap, targetX, targetY);
+
+    const detection = detectGuardianOfTheRiftPouches(bitmap, templates, {
+      searchRois: [{ x: 0, y: 0, width: bitmap.width, height: bitmap.height }],
+    });
+
+    expect(detection.pouches.colossal?.x).toBe(targetX);
+    expect(detection.pouches.colossal?.y).toBe(targetY);
+    expect(detection.pouches.colossal?.score).toBeGreaterThan(0.98);
+  });
+
+  test("detects a colossal pouch when the inventory is shifted left by the client layout", async () => {
+    const templates = await loadGuardianOfTheRiftPouchTemplatesFromDirectory(POUCH_ICON_DIR);
+    const bitmap = await loadPngBitmap(COLOSSAL_POUCH_SCREENSHOT_PATH);
+
+    const detection = detectGuardianOfTheRiftPouches(bitmap, templates);
+    const match = detection.pouches.colossal;
+
+    expect(match?.score).toBeGreaterThanOrEqual(0.98);
+    expect(match?.x).toBe(972);
+    expect(match?.y).toBe(1165);
+    expect(detection.detectedPouches.map((pouchMatch) => pouchMatch.pouch)).toEqual(["colossal"]);
   });
 
   test("ignores changing count pixels where the template is transparent", async () => {

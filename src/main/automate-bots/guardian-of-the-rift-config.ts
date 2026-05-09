@@ -20,9 +20,45 @@ export type GuardianOfTheRiftActiveElement = (typeof GUARDIAN_OF_THE_RIFT_ACTIVE
 
 export type GuardianOfTheRiftConfig = {
   useAgilityCourse: boolean;
+  runecraftLevel: number;
   activeGuardianElements: Record<GuardianOfTheRiftActiveElement, boolean>;
   pouches: Record<GuardianOfTheRiftPouch, boolean>;
 };
+
+export type GuardianOfTheRiftColossalPouchStats = {
+  capacity: number;
+  fullUsesBeforeDecay: number;
+};
+
+export function getGuardianOfTheRiftColossalPouchStats(
+  runecraftLevel: number,
+): GuardianOfTheRiftColossalPouchStats | null {
+  if (runecraftLevel >= 85) {
+    return { capacity: 40, fullUsesBeforeDecay: 8 };
+  }
+
+  if (runecraftLevel >= 75) {
+    return { capacity: 27, fullUsesBeforeDecay: 12 };
+  }
+
+  if (runecraftLevel >= 50) {
+    return { capacity: 16, fullUsesBeforeDecay: 20 };
+  }
+
+  if (runecraftLevel >= 25) {
+    return { capacity: 8, fullUsesBeforeDecay: 40 };
+  }
+
+  return null;
+}
+
+export function normalizeGuardianOfTheRiftRunecraftLevel(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return 77;
+  }
+
+  return Math.max(1, Math.min(99, Math.round(value)));
+}
 
 export function createDefaultGuardianOfTheRiftConfig(): GuardianOfTheRiftConfig {
   const activeGuardianElements = {} as Record<GuardianOfTheRiftActiveElement, boolean>;
@@ -38,6 +74,7 @@ export function createDefaultGuardianOfTheRiftConfig(): GuardianOfTheRiftConfig 
 
   return {
     useAgilityCourse: false,
+    runecraftLevel: 77,
     activeGuardianElements,
     pouches,
   };
@@ -86,6 +123,7 @@ export function normalizeGuardianOfTheRiftConfig(raw: unknown): GuardianOfTheRif
   return {
     useAgilityCourse:
       typeof candidate.useAgilityCourse === "boolean" ? candidate.useAgilityCourse : defaults.useAgilityCourse,
+    runecraftLevel: normalizeGuardianOfTheRiftRunecraftLevel(candidate.runecraftLevel),
     activeGuardianElements: normalizedActiveElements,
     pouches: normalizedPouches,
   };

@@ -325,6 +325,123 @@
     @apply w-full flex flex-col items-start gap-2 p-2 overflow-y-auto;
   }
 
+  .gotr-stats-view {
+    @apply w-full min-h-0 flex flex-col gap-3 overflow-hidden;
+  }
+
+  .gotr-stats-toolbar {
+    @apply flex items-center gap-3 border border-slate-200 bg-slate-50 rounded-lg px-3 py-2;
+  }
+
+  .gotr-stats-title-block {
+    @apply flex-1 min-w-0;
+  }
+
+  .gotr-stats-title {
+    @apply m-0 text-sm font-bold text-slate-800;
+  }
+
+  .gotr-stats-path {
+    @apply m-0 mt-0.5 text-[11px] text-slate-500 truncate;
+  }
+
+  .gotr-stats-refresh {
+    @apply px-3 py-2 text-xs font-semibold rounded-md border-0 bg-teal-700 text-white cursor-pointer hover:bg-teal-800 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .gotr-stats-error {
+    @apply m-0 px-3 py-2 rounded-md border border-red-200 bg-red-50 text-xs text-red-700;
+  }
+
+  .gotr-stats-filters {
+    @apply grid grid-cols-[minmax(10rem,14rem)_minmax(10rem,14rem)_minmax(12rem,1fr)_auto] gap-2 items-end;
+  }
+
+  .gotr-stats-filter {
+    @apply flex flex-col gap-1 text-xs font-semibold text-slate-600;
+  }
+
+  .gotr-stats-filter select,
+  .gotr-stats-filter input {
+    @apply h-9 rounded-md border border-slate-300 bg-white px-2 text-xs text-slate-900;
+  }
+
+  .gotr-stats-modified {
+    @apply h-9 inline-flex items-center rounded-md border border-slate-200 bg-slate-50 px-2 text-[11px] text-slate-500 whitespace-nowrap;
+  }
+
+  .gotr-stats-summary {
+    @apply grid grid-cols-4 gap-2;
+  }
+
+  .gotr-stats-metric {
+    @apply min-w-0 rounded-md border border-slate-200 bg-white px-3 py-2;
+  }
+
+  .gotr-stats-metric span {
+    @apply block text-[11px] font-semibold text-slate-500;
+  }
+
+  .gotr-stats-metric strong {
+    @apply block mt-0.5 text-base font-bold text-slate-900 tabular-nums;
+  }
+
+  .gotr-stats-content {
+    @apply flex-1 min-h-0 grid grid-cols-[minmax(0,1fr)_20rem] gap-3;
+  }
+
+  .gotr-stats-table-wrap {
+    @apply min-h-0 overflow-auto rounded-lg border border-slate-200 bg-white;
+  }
+
+  .gotr-stats-table {
+    @apply w-full min-w-[88rem] border-collapse text-xs;
+  }
+
+  .gotr-stats-table th {
+    @apply sticky top-0 z-10 bg-slate-100 border-b border-slate-200 px-2 py-2 text-left font-bold text-slate-600 whitespace-nowrap;
+  }
+
+  .gotr-stats-table td {
+    @apply border-b border-slate-100 px-2 py-1.5 text-slate-700 whitespace-nowrap tabular-nums;
+  }
+
+  .gotr-stats-table tr {
+    @apply cursor-pointer;
+  }
+
+  .gotr-stats-table tbody tr:hover {
+    @apply bg-sky-50;
+  }
+
+  .gotr-stats-table tbody tr.selected {
+    @apply bg-sky-100;
+  }
+
+  .gotr-stats-detail {
+    @apply min-h-0 overflow-auto rounded-lg border border-slate-200 bg-slate-50 p-3;
+  }
+
+  .gotr-stats-detail h3 {
+    @apply m-0 mb-2 text-sm font-bold text-slate-800;
+  }
+
+  .gotr-stats-detail p {
+    @apply m-0 text-xs text-slate-500;
+  }
+
+  .gotr-stats-detail dl {
+    @apply m-0 grid grid-cols-[8rem_minmax(0,1fr)] gap-x-2 gap-y-1 text-xs;
+  }
+
+  .gotr-stats-detail dt {
+    @apply text-slate-500 font-semibold;
+  }
+
+  .gotr-stats-detail dd {
+    @apply m-0 min-w-0 break-words text-slate-800 tabular-nums;
+  }
+
   .debug-save-row {
     @apply w-full flex items-center gap-2;
   }
@@ -549,6 +666,22 @@
 
   .automatebot-log-panel {
     @apply w-full max-w-none min-w-0 min-h-64;
+  }
+
+  .gotr-stats-filters {
+    @apply grid-cols-1;
+  }
+
+  .gotr-stats-summary {
+    @apply grid-cols-2;
+  }
+
+  .gotr-stats-content {
+    @apply grid-cols-1;
+  }
+
+  .gotr-stats-detail {
+    @apply max-h-80;
   }
 
   .sidebar,

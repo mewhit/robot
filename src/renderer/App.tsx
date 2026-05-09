@@ -2,6 +2,8 @@ import React, { useState, useEffect, useCallback, useMemo } from "react";
 import type { IpcRenderer } from "electron";
 import ClickerTabs from "./clicker-tabs";
 import AutomateBot from "./automate-bot";
+import GotrStatsView from "./gotr-stats-view";
+import type { GuardianOfTheRiftRunStatsSnapshot } from "../main/guardianOfTheRiftRunStats";
 import {
   AUTOMATE_BOTS,
   DEFAULT_AUTOMATE_BOT_ID,
@@ -14,6 +16,7 @@ import {
   type GuardianOfTheRiftConfig,
   type GuardianOfTheRiftPouch,
   normalizeGuardianOfTheRiftConfig,
+  normalizeGuardianOfTheRiftRunecraftLevel,
 } from "../main/automate-bots/guardian-of-the-rift-config";
 import { CHANNELS } from "../main/ipcChannels";
 
@@ -104,7 +107,7 @@ type MarkerColorState = {
   point: { x: number; y: number } | null;
 };
 
-type ActiveView = "clicker" | "automateBot" | "debug";
+type ActiveView = "clicker" | "automateBot" | "stats" | "debug";
 const ACTIVE_VIEW_STORAGE_KEY = "robot.activeView";
 const SELECTED_AUTOMATE_BOT_STORAGE_KEY = "robot.selectedAutomateBotId";
 const EXPANDED_TASK_NODE_IDS_STORAGE_KEY = "robot.expandedTaskNodeIds";
@@ -113,6 +116,9 @@ function getInitialActiveView(): ActiveView {
   const savedView = window.localStorage.getItem(ACTIVE_VIEW_STORAGE_KEY);
   if (savedView === "automateBot") {
     return "automateBot";
+  }
+  if (savedView === "stats") {
+    return "stats";
   }
   if (savedView === "debug") {
     return "debug";
@@ -209,6 +215,9 @@ export default function App() {
     createDefaultGuardianOfTheRiftConfig(),
   );
   const [debugFolderFiles, setDebugFolderFiles] = useState<string[]>([]);
+  const [gotrRunStatsSnapshot, setGotrRunStatsSnapshot] = useState<GuardianOfTheRiftRunStatsSnapshot | null>(null);
+  const [isGotrRunStatsLoading, setIsGotrRunStatsLoading] = useState(false);
+  const [gotrRunStatsError, setGotrRunStatsError] = useState<string | null>(null);
   const taskTree = useMemo<TaskNode[]>(() => {
     const groups = new Map<string, TaskNode>();
     const result: TaskNode[] = [];
@@ -459,6 +468,31 @@ export default function App() {
 
   const handleToggleRecording = () => ipcRenderer.send(CHANNELS.TOGGLE_RECORDING);
 
+  const refreshGotrRunStats = useCallback(async () => {
+    setIsGotrRunStatsLoading(true);
+    setGotrRunStatsError(null);
+    try {
+      const result = await ipcRenderer.invoke(CHANNELS.GET_GUARDIAN_OF_THE_RIFT_RUN_STATS);
+      if (!result?.ok) {
+        setGotrRunStatsError(result?.error || "Unable to read Guardian stats.");
+        return;
+      }
+
+      setGotrRunStatsSnapshot(result.snapshot ?? null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setGotrRunStatsError(`Unable to read Guardian stats: ${message}`);
+    } finally {
+      setIsGotrRunStatsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeView === "stats") {
+      void refreshGotrRunStats();
+    }
+  }, [activeView, refreshGotrRunStats]);
+
   const handleReplayCsv = async () => {
     try {
       const result = await ipcRenderer.invoke(CHANNELS.REPLAY_ACTIVE_CSV, { fromUi: true });
@@ -613,6 +647,21 @@ export default function App() {
       const next: GuardianOfTheRiftConfig = {
         ...prev,
         useAgilityCourse: enabled,
+      };
+
+      void ipcRenderer.invoke(CHANNELS.SET_GUARDIAN_OF_THE_RIFT_CONFIG, next).catch(() => {
+        // Ignore non-critical config write failures.
+      });
+
+      return next;
+    });
+  }, []);
+
+  const handleGuardianOfTheRiftRunecraftLevelChange = useCallback((level: number) => {
+    setGuardianOfTheRiftConfig((prev) => {
+      const next: GuardianOfTheRiftConfig = {
+        ...prev,
+        runecraftLevel: normalizeGuardianOfTheRiftRunecraftLevel(level),
       };
 
       void ipcRenderer.invoke(CHANNELS.SET_GUARDIAN_OF_THE_RIFT_CONFIG, next).catch(() => {
@@ -1071,6 +1120,12 @@ export default function App() {
             Automate Bot
           </button>
           <button
+            className={`nav-tab ${activeView === "stats" ? "active" : ""}`}
+            onClick={() => setActiveView("stats")}
+          >
+            Stats
+          </button>
+          <button
             className={`nav-tab ${activeView === "debug" ? "active" : ""}`}
             onClick={() => setActiveView("debug")}
           >
@@ -1138,7 +1193,15 @@ export default function App() {
             onStepContextMenu={handleStepContextMenu}
             onGuardianOfTheRiftElementEnabledChange={handleGuardianOfTheRiftElementEnabledChange}
             onGuardianOfTheRiftUseAgilityCourseChange={handleGuardianOfTheRiftUseAgilityCourseChange}
+            onGuardianOfTheRiftRunecraftLevelChange={handleGuardianOfTheRiftRunecraftLevelChange}
             onGuardianOfTheRiftPouchChange={handleGuardianOfTheRiftPouchChange}
+          />
+        ) : activeView === "stats" ? (
+          <GotrStatsView
+            snapshot={gotrRunStatsSnapshot}
+            isLoading={isGotrRunStatsLoading}
+            error={gotrRunStatsError}
+            onRefresh={() => void refreshGotrRunStats()}
           />
         ) : (
           <div className="debug-view">

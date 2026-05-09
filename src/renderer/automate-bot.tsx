@@ -4,7 +4,10 @@ import type {
   GuardianOfTheRiftConfig,
   GuardianOfTheRiftPouch,
 } from "../main/automate-bots/guardian-of-the-rift-config";
-import { GUARDIAN_OF_THE_RIFT_POUCHES } from "../main/automate-bots/guardian-of-the-rift-config";
+import {
+  GUARDIAN_OF_THE_RIFT_POUCHES,
+  getGuardianOfTheRiftColossalPouchStats,
+} from "../main/automate-bots/guardian-of-the-rift-config";
 
 type TaskNode = {
   id: string;
@@ -29,6 +32,7 @@ type AutomateBotProps = {
   onStepContextMenu: (e: React.MouseEvent, stepId: string, stepName: string) => void;
   onGuardianOfTheRiftElementEnabledChange: (element: GuardianOfTheRiftActiveElement, enabled: boolean) => void;
   onGuardianOfTheRiftUseAgilityCourseChange: (enabled: boolean) => void;
+  onGuardianOfTheRiftRunecraftLevelChange: (level: number) => void;
   onGuardianOfTheRiftPouchChange: (pouch: GuardianOfTheRiftPouch, enabled: boolean) => void;
 };
 
@@ -302,11 +306,13 @@ export default function AutomateBot(props: AutomateBotProps) {
     onStepContextMenu,
     onGuardianOfTheRiftElementEnabledChange,
     onGuardianOfTheRiftUseAgilityCourseChange,
+    onGuardianOfTheRiftRunecraftLevelChange,
     onGuardianOfTheRiftPouchChange,
   } = props;
 
   const logContainerRef = useRef<HTMLDivElement | null>(null);
   const visibleLogLines = useMemo(() => logLines.slice(-500), [logLines]);
+  const colossalPouchStats = getGuardianOfTheRiftColossalPouchStats(guardianOfTheRiftConfig.runecraftLevel);
 
   useEffect(() => {
     const container = logContainerRef.current;
@@ -346,6 +352,22 @@ export default function AutomateBot(props: AutomateBotProps) {
         {showGuardianOfTheRiftConfig && (
           <div className="automatebot-config-panel">
             <h3 className="automatebot-config-title">Guardian of the Rift</h3>
+            <label className="automatebot-toggle-row">
+              <span className="automatebot-toggle-label">Runecraft level</span>
+              <input
+                type="number"
+                min={1}
+                max={99}
+                step={1}
+                value={guardianOfTheRiftConfig.runecraftLevel}
+                onChange={(e) => onGuardianOfTheRiftRunecraftLevelChange(Number(e.target.value))}
+              />
+              <span className="automatebot-toggle-value">
+                {colossalPouchStats
+                  ? `Colossal ${colossalPouchStats.capacity}/${colossalPouchStats.fullUsesBeforeDecay}`
+                  : "No colossal"}
+              </span>
+            </label>
             <label className="automatebot-toggle-row">
               <span className="automatebot-toggle-label">Use agility course</span>
               <input

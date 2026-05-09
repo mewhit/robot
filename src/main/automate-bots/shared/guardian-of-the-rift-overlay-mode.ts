@@ -2,16 +2,7 @@ export type GuardianOfTheRiftOverlayMode = "helper" | "optimizer";
 
 const DEFAULT_GUARDIAN_OF_THE_RIFT_OVERLAY_MODE: GuardianOfTheRiftOverlayMode = "optimizer";
 
-function normalizeGuardianOfTheRiftOverlayMode(value: string | undefined): GuardianOfTheRiftOverlayMode {
-  const normalized = value?.trim().toLowerCase();
-  if (normalized === "helper") {
-    return "helper";
-  }
-
-  if (normalized === "optimizer" || normalized === "optimiser") {
-    return "optimizer";
-  }
-
+function normalizeGuardianOfTheRiftOverlayMode(_value: string | undefined): GuardianOfTheRiftOverlayMode {
   return DEFAULT_GUARDIAN_OF_THE_RIFT_OVERLAY_MODE;
 }
 

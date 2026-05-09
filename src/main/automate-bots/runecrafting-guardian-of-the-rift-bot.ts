@@ -1,3 +1,5 @@
+import * as fs from "fs";
+import * as path from "path";
 import { screen as electronScreen } from "electron";
 import { keyTap, keyToggle, mouseClick, moveMouse } from "robotjs";
 import {
@@ -14,7 +16,10 @@ import { getRuneLite } from "../runeLiteWindow";
 import { captureScreenBitmap, type ScreenCaptureBounds } from "../windowsScreenCapture";
 import { RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID } from "./definitions";
 import { runBotEngine, sleepWithAbort } from "./engine/bot-engine";
-import { type GuardianOfTheRiftConfig } from "./guardian-of-the-rift-config";
+import {
+  getGuardianOfTheRiftColossalPouchStats,
+  type GuardianOfTheRiftConfig,
+} from "./guardian-of-the-rift-config";
 import {
   detectGuardianOfTheRiftPortalOpenIconWithCache,
   getGuardianOfTheRiftPortalOpenIconCachePath,
@@ -114,6 +119,8 @@ type BotPhase =
   | "fill-pouches-after-portal-mining-full"
   | "find-portal-exit"
   | "wait-after-portal-exit-click"
+  | "repair-pouches-npc"
+  | "repair-pouches-dialog"
   | "complete";
 type CameraFacing =
   | "north"
@@ -157,7 +164,9 @@ type EngineFunctionKey =
   | "portalMining"
   | "fillPouchesAfterPortalMiningFull"
   | "findPortalExit"
-  | "waitAfterPortalExitClick";
+  | "waitAfterPortalExitClick"
+  | "repairPouchesNpc"
+  | "repairPouchesDialog";
 
 type GuardianCoordinateLocation = {
   matchedLine: string;
@@ -216,6 +225,13 @@ type PendingPouchClick = {
   intent: PouchClickIntent;
   pouch: GuardianOfTheRiftDetectablePouch;
   beforeFreeSlots: number;
+};
+
+type RepairPouchesNpcMarkerMemory = {
+  centerX: number;
+  centerY: number;
+  width: number;
+  height: number;
 };
 
 type CachedMarker<T> = {
@@ -319,6 +335,7 @@ type BotState = {
   chargedCellDepositClickDistancePx: number | null;
   chargedCellToRuneCameraReadyAtMs: number;
   chargedCellDepositPlayerTileFallbackPending: boolean;
+  chargedCellDepositAttemptCount: number;
   runeDepositArrivalDeadlineMs: number;
   runeDepositClickDistancePx: number | null;
   runeDepositInventoryFreeSlotsBeforeClick: number | null;
@@ -344,6 +361,12 @@ type BotState = {
   missingFinalPortalTicks: number;
   missingPortalMiningOrangeTicks: number;
   missingPortalExitTicks: number;
+  repairPouchesNpcMissingTicks: number;
+  repairPouchesNpcClickAttempts: number;
+  repairPouchesNpcLastClickedMarker: RepairPouchesNpcMarkerMemory | null;
+  repairPouchesNpcRejectedMarkers: RepairPouchesNpcMarkerMemory[];
+  repairPouchesDialogClicks: number;
+  repairPouchesDialogMissingTicks: number;
 };
 
 type TickCapture = {
@@ -395,7 +418,24 @@ type ColoredMarkerDetection = OrangeObjectDetection;
 
 type GuardianTravelMarkerColor = "green" | "royal-blue";
 
+type GuardianInteriorRuneCandidate = {
+  slot: GuardianOfTheRiftSlot;
+  runeMatch: GuardianOfTheRiftRuneMatch;
+  color: GuardianInteriorColor;
+  matchingPixels: number;
+  grayscalePixels: number;
+  ratio: number;
+};
+
+type GuardianInteriorClassification = {
+  markerLabel: string;
+  candidates: GuardianInteriorRuneCandidate[];
+  best: GuardianInteriorRuneCandidate | null;
+  reason: string;
+};
+
 type GuardianTravelTarget = {
+  decisionSource: GuardianOfTheRiftSlot | "optimizer";
   slot: GuardianOfTheRiftSlot;
   runeMatch: GuardianOfTheRiftRuneMatch;
   marker: ColoredMarkerDetection;
@@ -434,8 +474,16 @@ type GuardianTravelTargetSelection = {
   rewardPoints: GuardianOfTheRiftRewardPointsDetection;
   greenCandidates: ColoredMarkerDetection[];
   catalyticCandidates: ColoredMarkerDetection[];
+  interiorClassifications: GuardianInteriorClassification[];
   skippedReasons: string[];
-  preferenceOrder: Array<GuardianOfTheRiftSlot | "optimizer-green">;
+  preferenceOrder: Array<GuardianOfTheRiftSlot | "optimizer-plugin">;
+};
+
+type GuardianOptimizerMarkerClassification = {
+  marker: ColoredMarkerDetection;
+  markerColor: GuardianTravelMarkerColor;
+  markerColorHex: string;
+  classification: GuardianInteriorClassification;
 };
 
 type TimerRead = {
@@ -492,10 +540,32 @@ type RunStatsTravelTimer = {
   completions: number;
 };
 
+type RunStatsInterval = {
+  startMs: number;
+  endMs: number | null;
+};
+
 type GuardianRunStats = {
   startedAtMs: number;
   cleanComplete: boolean;
   stablePlayerAnchor: StablePlayerAnchor | null;
+  runTimerWhiteAtMs: number | null;
+  endRoundDetectedAtMs: number | null;
+  pouchesDetected: GuardianOfTheRiftDetectablePouch[];
+  portalOpenDetectedAtMs: number[];
+  altarIntervals: RunStatsInterval[];
+  altarClickAtMs: number[];
+  workbenchIntervals: RunStatsInterval[];
+  salmonMiningIntervals: RunStatsInterval[];
+  greatGuardianClickAtMs: number[];
+  greatGuardianConfirmedAtMs: number[];
+  chargedCellClickAtMs: number[];
+  chargedCellConfirmedAtMs: number[];
+  runeDepositClickAtMs: number[];
+  runeDepositConfirmedAtMs: number[];
+  activeRuneChangeAtMs: number[];
+  objectMissCounts: Record<string, number>;
+  cameraRotateCount: number;
   activeGuardianRuneTimerSamples: number;
   activeGuardianRuneTimerTotalElapsedMs: number;
   activeGuardianRuneTimerMinElapsedMs: number | null;
@@ -541,6 +611,7 @@ type GuardianRunStats = {
 };
 
 const BOT_NAME = "Runecrafting - Guardian of the Rift";
+const RUN_STATS_CSV_PATH = path.resolve("./automate-bot-logs/guardian-of-the-rift-run-stats.csv");
 const STEP_PICK_UNCHARGED_CELL_ID = `${RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}-step-pick-uncharged-cell`;
 const STEP_WAIT_AFTER_PICKUP_ID = `${RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}-step-wait-after-pickup`;
 const STEP_AGILITY_COURSE_ID = `${RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}-step-agility-course`;
@@ -556,8 +627,10 @@ const STEP_GREAT_GUARDIAN_ID = `${RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}-step
 const STEP_CHARGED_CELL_DEPOSIT_ID = `${RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}-step-charged-cell-deposit`;
 const STEP_RUNE_DEPOSIT_ID = `${RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}-step-rune-deposit`;
 const STEP_FINAL_PORTAL_ID = `${RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}-step-final-portal`;
+const STEP_REPAIR_POUCHES_ID = `${RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}-step-repair-pouches`;
 const GAME_TICK_MS = 600;
 const BOT_TICK_MS = 200;
+const INVENTORY_SLOT_COUNT = 28;
 const ACTIVE_GUARDIAN_RUNE_TIMER_MS = 19_000;
 const ACTIVE_GUARDIAN_RUNE_TIMER_LATE_TOLERANCE_MS = BOT_TICK_MS;
 const ACTIVE_GUARDIAN_RUNE_TIMER_OVERDUE_GRACE_MS = BOT_TICK_MS;
@@ -578,7 +651,7 @@ const STARTUP_PLAYER_ANCHOR_MIN_X_RATIO = 0.25;
 const STARTUP_PLAYER_ANCHOR_MAX_X_RATIO = 0.75;
 const STARTUP_PLAYER_ANCHOR_MIN_Y_RATIO = 0.35;
 const STARTUP_PLAYER_ANCHOR_MAX_Y_RATIO = 0.7;
-const POUCH_CAPACITY_BY_TYPE: Record<GuardianOfTheRiftDetectablePouch, number> = {
+const POUCH_CAPACITY_BY_TYPE: Record<Exclude<GuardianOfTheRiftDetectablePouch, "colossal">, number> = {
   small: 3,
   medium: 6,
   large: 9,
@@ -689,13 +762,17 @@ const WORKBENCH_MAGENTA_MIN_HEIGHT_PX = 24;
 const WORKBENCH_MAGENTA_MIN_FILL_RATIO = 0.18;
 const GREEN_MIN_PIXELS = 240;
 const CATALYTIC_GUARDIAN_BLUE_MIN_PIXELS = 180;
-const ACTIVE_GUARDIAN_MIN_WIDTH_PX = GUARDIAN_OF_THE_RIFT_OVERLAY_MODE === "optimizer" ? 65 : 80;
+const ACTIVE_GUARDIAN_MIN_WIDTH_PX = GUARDIAN_OF_THE_RIFT_OVERLAY_MODE === "optimizer" ? 48 : 80;
 const ACTIVE_GUARDIAN_MIN_HEIGHT_PX = GUARDIAN_OF_THE_RIFT_OVERLAY_MODE === "optimizer" ? 70 : 80;
-const ACTIVE_GUARDIAN_MIN_PIXELS = GUARDIAN_OF_THE_RIFT_OVERLAY_MODE === "optimizer" ? 1_500 : 2_500;
+const ACTIVE_GUARDIAN_MIN_PIXELS = GUARDIAN_OF_THE_RIFT_OVERLAY_MODE === "optimizer" ? 800 : 2_500;
 const ACTIVE_GUARDIAN_MIN_ASPECT_RATIO = 0.45;
 const ACTIVE_GUARDIAN_MAX_ASPECT_RATIO = 2.8;
 const GUARDIAN_BLACK_MAX_COMPONENT = 85;
 const GUARDIAN_BLACK_MIN_EDGE_MARGIN_PX = 2;
+const GUARDIAN_INTERIOR_COLOR_TOLERANCE = 10;
+const GUARDIAN_INTERIOR_GRAYSCALE_TOLERANCE = 14;
+const GUARDIAN_INTERIOR_MIN_MATCH_PIXELS = 80;
+const GUARDIAN_INTERIOR_MIN_MATCH_RATIO = 0.08;
 const GREAT_GUARDIAN_BLUE_MIN_PIXELS = 120;
 const CHARGED_CELL_DEPOSIT_PURPLE_MIN_PIXELS = 200;
 const CHARGED_CELL_DEPOSIT_MIN_WIDTH_PX = 16;
@@ -714,6 +791,15 @@ const GUARDIAN_TELEPORT_DARK_SCREEN_SAMPLE_STEP_PX = 8;
 const GUARDIAN_TELEPORT_DARK_SCREEN_LUMINANCE_MAX = 40;
 const GUARDIAN_TELEPORT_DARK_SCREEN_AVERAGE_LUMINANCE_MAX = 55;
 const GUARDIAN_TELEPORT_DARK_SCREEN_DARK_RATIO_MIN = 0.72;
+const POUCH_REPAIR_RUN_INTERVAL = 3;
+const POUCH_REPAIR_NPC_MARKER_COLOR_HEX = "FFFFFFFF";
+const POUCH_REPAIR_NPC_MARKER_MIN_PIXELS = 300;
+const POUCH_REPAIR_NPC_MARKER_MAX_MISSING_TICKS = 10;
+const POUCH_REPAIR_NPC_MAX_CLICK_ATTEMPTS = 5;
+const POUCH_REPAIR_NPC_REJECT_RADIUS_PX = 96;
+const POUCH_REPAIR_DIALOG_BLUE_MIN_PIXELS = 20;
+const POUCH_REPAIR_DIALOG_BLUE_CLICK_COUNT = 9;
+const POUCH_REPAIR_DIALOG_MAX_MISSING_TICKS = 5;
 const GUARDIAN_YELLOW_CLICK_LOCK_TICKS = 2;
 const GUARDIAN_RETURN_CLICK_LOCK_TICKS = 2;
 const GUARDIAN_POST_RETURN_CLICK_LOCK_TICKS = 2;
@@ -736,6 +822,7 @@ const GUARDIAN_ALTAR_CAMERA_ROTATE_MAX_ATTEMPTS = 12;
 const GUARDIAN_ALTAR_CAMERA_ROTATE_SETTLE_BOT_TICKS = 3;
 const GUARDIAN_ALTAR_CAMERA_UNWIND_DELAY_TICKS = 1;
 const MAX_GREAT_GUARDIAN_CLICK_ATTEMPTS = 5;
+const MAX_CHARGED_CELL_DEPOSIT_ATTEMPTS = 5;
 const GUARDIAN_RETURN_PORTAL_CAMERA_ROTATE_KEY = "a";
 const GUARDIAN_RETURN_PORTAL_CAMERA_ROTATE_LOCK_TICKS = 1;
 const RETURN_PORTAL_OCR_LOOP_GUARD_MIN_RETRIES = 3;
@@ -861,6 +948,8 @@ const WORKFLOW_STEPS = {
   FIND_PORTAL_EXIT: "Step 28/30 Find and click salmon portal",
   TRAVEL_TO_PORTAL_EXIT: "Step 29/30 Travel to portal",
   REPEAT_GUARDIAN_CLICK: "Step 30/30 Repeat guardian click",
+  REPAIR_POUCHES_NPC: "Step 30.R/30 Repair pouches NPC",
+  REPAIR_POUCHES_DIALOG: "Step 30.S/30 Repair pouches dialog",
 } as const;
 
 let isLoopRunning = false;
@@ -877,6 +966,8 @@ let pendingMovementObservation: PendingMovementObservation | null = null;
 let stablePlayerAnchor: StablePlayerAnchor | null = null;
 let currentRunStats: GuardianRunStats | null = null;
 let currentCameraFacing: CameraFacing = "unknown";
+let completedRunsSincePouchRepair = 0;
+let currentRunecraftLevel = 77;
 const syncSleepBuffer = new Int32Array(new SharedArrayBuffer(4));
 
 function createRunStatsTravelTimer(): RunStatsTravelTimer {
@@ -893,6 +984,23 @@ function createEmptyGuardianRunStats(startedAtMs: number): GuardianRunStats {
     startedAtMs,
     cleanComplete: false,
     stablePlayerAnchor,
+    runTimerWhiteAtMs: null,
+    endRoundDetectedAtMs: null,
+    pouchesDetected: [],
+    portalOpenDetectedAtMs: [],
+    altarIntervals: [],
+    altarClickAtMs: [],
+    workbenchIntervals: [],
+    salmonMiningIntervals: [],
+    greatGuardianClickAtMs: [],
+    greatGuardianConfirmedAtMs: [],
+    chargedCellClickAtMs: [],
+    chargedCellConfirmedAtMs: [],
+    runeDepositClickAtMs: [],
+    runeDepositConfirmedAtMs: [],
+    activeRuneChangeAtMs: [],
+    objectMissCounts: {},
+    cameraRotateCount: 0,
     activeGuardianRuneTimerSamples: 0,
     activeGuardianRuneTimerTotalElapsedMs: 0,
     activeGuardianRuneTimerMinElapsedMs: null,
@@ -940,6 +1048,61 @@ function createEmptyGuardianRunStats(startedAtMs: number): GuardianRunStats {
 
 function resetGuardianRunStats(nowMs = Date.now()): void {
   currentRunStats = createEmptyGuardianRunStats(nowMs);
+}
+
+function recordRunStatsTimestampOnce(field: "runTimerWhiteAtMs" | "endRoundDetectedAtMs", nowMs: number): void {
+  if (!currentRunStats || currentRunStats[field] !== null) {
+    return;
+  }
+
+  currentRunStats[field] = nowMs;
+}
+
+function recordRunStatsTimestampList(list: number[], nowMs: number, minGapMs = 0): void {
+  const last = list[list.length - 1];
+  if (last !== undefined && nowMs - last < minGapMs) {
+    return;
+  }
+
+  list.push(nowMs);
+}
+
+function startRunStatsInterval(intervals: RunStatsInterval[], nowMs: number, minGapMs = 0): void {
+  const last = intervals[intervals.length - 1];
+  if (last && last.endMs === null) {
+    return;
+  }
+
+  if (last && nowMs - (last.endMs ?? last.startMs) < minGapMs) {
+    return;
+  }
+
+  intervals.push({ startMs: nowMs, endMs: null });
+}
+
+function endRunStatsInterval(intervals: RunStatsInterval[], nowMs: number): void {
+  const last = intervals[intervals.length - 1];
+  if (!last || last.endMs !== null) {
+    return;
+  }
+
+  last.endMs = nowMs;
+}
+
+function incrementRunStatsObjectMiss(objectName: string): void {
+  if (!currentRunStats) {
+    return;
+  }
+
+  currentRunStats.objectMissCounts[objectName] = (currentRunStats.objectMissCounts[objectName] ?? 0) + 1;
+}
+
+function recordRunStatsPouchesDetected(pouches: GuardianOfTheRiftPouchLocation[]): void {
+  if (!currentRunStats) {
+    return;
+  }
+
+  currentRunStats.pouchesDetected = pouches.map((location) => location.pouch);
 }
 
 function formatRunStatsDuration(ms: number): string {
@@ -1179,10 +1342,70 @@ function recordRunStatsMessage(message: string, nowMs: number): void {
 
   if (message.includes("End-of-round rune deposit complete")) {
     stats.cleanComplete = true;
+    recordRunStatsTimestampOnce("endRoundDetectedAtMs", nowMs);
+  }
+
+  if (message.includes("Mining status turned green") && message.includes("time-since-portal (color=white")) {
+    recordRunStatsTimestampOnce("runTimerWhiteAtMs", nowMs);
+  }
+
+  if (message.includes("Guardian Power bar is grey/empty")) {
+    recordRunStatsTimestampOnce("endRoundDetectedAtMs", nowMs);
+  }
+
+  if (message.includes("Active guardian rune timer changed:")) {
+    recordRunStatsTimestampList(stats.activeRuneChangeAtMs, nowMs, 1_000);
+  }
+
+  if (message.includes("Open portal icon detected")) {
+    recordRunStatsTimestampList(stats.portalOpenDetectedAtMs, nowMs, 45_000);
+  }
+
+  if (message.includes("Teleport confirmed: region changed from")) {
+    startRunStatsInterval(stats.altarIntervals, nowMs, 1_000);
+  }
+
+  if (message.includes("Clicked randomized pixel inside yellow altar marker")) {
+    stats.altarClickAtMs.push(nowMs);
+  }
+
+  if (message.includes("Return teleport confirmed")) {
+    endRunStatsInterval(stats.altarIntervals, nowMs);
+  }
+
+  if (
+    message.includes("Clicked middle of magenta workbench marker") ||
+    message.includes("clicked cached magenta workbench marker")
+  ) {
+    startRunStatsInterval(stats.workbenchIntervals, nowMs, 1_000);
+  }
+
+  if (
+    message.includes("Inventory is full after workbench") ||
+    (message.includes("Open portal icon detected during workbench loop") && message.includes("taking salmon portal")) ||
+    message.includes("through the crafting wait deadline")
+  ) {
+    endRunStatsInterval(stats.workbenchIntervals, nowMs);
+  }
+
+  if (
+    message.includes("Portal arrival confirmed at tile") ||
+    message.includes("Salmon-arrival recovery confirmed tile")
+  ) {
+    startRunStatsInterval(stats.salmonMiningIntervals, nowMs, 1_000);
+  }
+
+  if (
+    message.includes("Inventory is full after portal mining") ||
+    message.includes("While searching for the salmon exit portal, coordinate already confirms we left portal mining") ||
+    message.includes("While searching for the salmon exit portal, coordinate read outside region")
+  ) {
+    endRunStatsInterval(stats.salmonMiningIntervals, nowMs);
   }
 
   if (message.includes("Clicked interior of blue great guardian outline")) {
     stats.greatGuardianClicks += 1;
+    stats.greatGuardianClickAtMs.push(nowMs);
   }
 
   if (
@@ -1191,6 +1414,7 @@ function recordRunStatsMessage(message: string, nowMs: number): void {
     message.includes("End-of-round Great Guardian deposit verified:")
   ) {
     stats.greatGuardianVerified += 1;
+    stats.greatGuardianConfirmedAtMs.push(nowMs);
   }
 
   if (message.includes("Great guardian inventory did not") && message.includes("Re-clicking great guardian")) {
@@ -1222,6 +1446,7 @@ function recordRunStatsMessage(message: string, nowMs: number): void {
 
   if (message.includes("No FFFF0000 red portal marker was found")) {
     stats.redPortalMisses += 1;
+    incrementRunStatsObjectMiss("redPortal");
   }
 
   if (lowerMessage.includes("clicked randomized pixel inside ffff0000 red portal marker")) {
@@ -1251,6 +1476,7 @@ function recordRunStatsMessage(message: string, nowMs: number): void {
     message.includes("Salmon-arrival recovery did not confirm")
   ) {
     stats.salmonRetrySignals += 1;
+    incrementRunStatsObjectMiss("salmonPortal");
   }
 
   if (message.includes("Portal arrival confirmed at tile") && message.includes("orange mining marker is visible")) {
@@ -1260,6 +1486,7 @@ function recordRunStatsMessage(message: string, nowMs: number): void {
   if (lowerMessage.includes("clicked center-right of charged cell deposit marker")) {
     stats.chargedCellAttempts += 1;
     stats.chargedCellVerification.pendingStartedAtMs = nowMs;
+    stats.chargedCellClickAtMs.push(nowMs);
   }
 
   if (
@@ -1268,6 +1495,7 @@ function recordRunStatsMessage(message: string, nowMs: number): void {
     message.includes("End-of-round charged cell deposit verified:")
   ) {
     completeRunStatsTimer(stats.chargedCellVerification, nowMs);
+    stats.chargedCellConfirmedAtMs.push(nowMs);
   }
 
   if (
@@ -1275,10 +1503,12 @@ function recordRunStatsMessage(message: string, nowMs: number): void {
     message.includes("No charged cell deposit marker found yet")
   ) {
     stats.chargedCellRetrySignals += 1;
+    incrementRunStatsObjectMiss("chargedCellDeposit");
   }
 
   if (message.includes("Guardian decision:") && message.includes("chosen=none")) {
     stats.guardianNoTargetScans += 1;
+    incrementRunStatsObjectMiss("guardian");
   }
 
   if (message.includes("Guardian re-click decision:")) {
@@ -1294,6 +1524,38 @@ function recordRunStatsMessage(message: string, nowMs: number): void {
     const kind = lateMovementMatch[1];
     stats.movementLateByKind[kind] = (stats.movementLateByKind[kind] ?? 0) + 1;
   }
+
+  if (message.includes("clicked lower right-biased point of stable rune deposit marker")) {
+    stats.runeDepositClickAtMs.push(nowMs);
+  }
+
+  if (message.includes("Rune deposit verified:") || message.includes("End-of-round rune deposit complete")) {
+    stats.runeDepositConfirmedAtMs.push(nowMs);
+  }
+
+  if (message.includes("No magenta workbench marker found")) {
+    incrementRunStatsObjectMiss("workbench");
+  }
+
+  if (
+    message.includes("Altar marker not visible") ||
+    message.includes("no altar marker was found") ||
+    message.includes("altar marker is not visible")
+  ) {
+    incrementRunStatsObjectMiss("altar");
+  }
+
+  if (message.includes("No rune deposit marker found") || message.includes("Rune deposit did not increase")) {
+    incrementRunStatsObjectMiss("runeDeposit");
+  }
+
+  if (message.includes("No usable FFFFFFFF repair NPC marker") || message.includes("rejecting that repair marker")) {
+    incrementRunStatsObjectMiss("repairNpc");
+  }
+
+  if (message.includes("tapped 'a' to rotate camera") || message.includes("Tapped 'a' to rotate camera")) {
+    stats.cameraRotateCount += 1;
+  }
 }
 
 function formatMovementLateStats(stats: GuardianRunStats): string {
@@ -1307,6 +1569,189 @@ function formatStablePlayerAnchorStats(anchor: StablePlayerAnchor | null): strin
   }
 
   return `${anchor.source}@(${anchor.centerX},${anchor.centerY})/${anchor.bitmapWidth}x${anchor.bitmapHeight}`;
+}
+
+function formatStatsIso(ms: number | null): string {
+  return ms === null || !Number.isFinite(ms) ? "null" : new Date(ms).toISOString();
+}
+
+function formatStatsIsoList(values: number[], limit = values.length): string {
+  return values.slice(0, limit).map((value) => formatStatsIso(value)).join("|");
+}
+
+function formatStatsIntervalStartList(intervals: RunStatsInterval[]): string {
+  return intervals.map((interval) => formatStatsIso(interval.startMs)).join("|");
+}
+
+function formatStatsIntervalEndList(intervals: RunStatsInterval[]): string {
+  return intervals.map((interval) => formatStatsIso(interval.endMs)).join("|");
+}
+
+function getRunStatsIntervalTotalMs(intervals: RunStatsInterval[], fallbackEndMs: number): number {
+  return intervals.reduce((sum, interval) => sum + Math.max(0, (interval.endMs ?? fallbackEndMs) - interval.startMs), 0);
+}
+
+function formatRunStatsObjectMissCounts(counts: Record<string, number>): string {
+  return Object.entries(counts)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([objectName, count]) => `${objectName}:${count}`)
+    .join("|");
+}
+
+function csvEscape(value: string | number | boolean | null | undefined): string {
+  const text = value === null || value === undefined || value === "" ? "null" : String(value);
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+const GUARDIAN_RUN_STATS_CSV_COLUMNS = [
+  "sessionId",
+  "runIndex",
+  "versionName",
+  "status",
+  "stopSource",
+  "stopReason",
+  "startedAt",
+  "endedAt",
+  "durationMs",
+  "runTimerWhiteAt",
+  "firstSalmonSpawnAt",
+  "secondSalmonSpawnAt",
+  "thirdSalmonSpawnAt",
+  "runEndDetectedAt",
+  "pouchesDetected",
+  "pouchesDetectedCount",
+  "runecraftLevel",
+  "colossalCapacity",
+  "greatGuardianVerified",
+  "greatGuardianClicks",
+  "altarLoopsConfirmed",
+  "estimatedRunesConfirmedLower",
+  "estimatedRunesConfirmedUpper",
+  "estimatedRunesPendingLower",
+  "estimatedRunesPendingUpper",
+  "salmonPortalClicks",
+  "salmonPortalConfirmations",
+  "chargedCellAttempts",
+  "chargedCellVerified",
+  "workbenchClicks",
+  "workbenchFallbackCount",
+  "workbenchTotalMs",
+  "salmonMiningTotalMs",
+  "altarTotalMs",
+  "redPortalSearches",
+  "redPortalMisses",
+  "redPortalTotalMs",
+  "activeRuneChanges",
+  "activeRuneTimerAvgMs",
+  "guardianTimerRefusals",
+  "guardianNoTargetScans",
+  "cameraRotateCount",
+  "objectMissCounts",
+  "altarEnterAt",
+  "altarExitAt",
+  "altarClickAt",
+  "workbenchStartAt",
+  "workbenchEndAt",
+  "salmonMiningStartAt",
+  "salmonMiningEndAt",
+  "greatGuardianClickAt",
+  "greatGuardianConfirmedAt",
+  "chargedCellClickAt",
+  "chargedCellConfirmedAt",
+  "runeDepositClickAt",
+  "runeDepositConfirmedAt",
+] as const;
+
+function buildGuardianRunStatsCsvRow(
+  context: AutomateBotLogFooterContext,
+  stats: GuardianRunStats,
+  status: string,
+  durationMs: number,
+): Record<(typeof GUARDIAN_RUN_STATS_CSV_COLUMNS)[number], string | number> {
+  const endedAtMs = Date.parse(context.endedAtIso);
+  const fallbackEndMs = Number.isFinite(endedAtMs) ? endedAtMs : Date.now();
+  const colossalStats = getGuardianOfTheRiftColossalPouchStats(currentRunecraftLevel);
+  const activeRuneTimerAvgMs =
+    stats.activeGuardianRuneTimerSamples > 0
+      ? Math.round(stats.activeGuardianRuneTimerTotalElapsedMs / stats.activeGuardianRuneTimerSamples)
+      : 0;
+
+  return {
+    sessionId: context.sessionId,
+    runIndex: context.runIndex,
+    versionName: context.versionName ?? "unversioned",
+    status,
+    stopSource: context.stopSource,
+    stopReason: context.stopReason,
+    startedAt: context.startedAtIso,
+    endedAt: context.endedAtIso,
+    durationMs,
+    runTimerWhiteAt: formatStatsIso(stats.runTimerWhiteAtMs),
+    firstSalmonSpawnAt: formatStatsIso(stats.portalOpenDetectedAtMs[0] ?? null),
+    secondSalmonSpawnAt: formatStatsIso(stats.portalOpenDetectedAtMs[1] ?? null),
+    thirdSalmonSpawnAt: formatStatsIso(stats.portalOpenDetectedAtMs[2] ?? null),
+    runEndDetectedAt: formatStatsIso(stats.endRoundDetectedAtMs),
+    pouchesDetected: stats.pouchesDetected.join("|"),
+    pouchesDetectedCount: stats.pouchesDetected.length,
+    runecraftLevel: currentRunecraftLevel,
+    colossalCapacity: colossalStats?.capacity ?? 0,
+    greatGuardianVerified: stats.greatGuardianVerified,
+    greatGuardianClicks: stats.greatGuardianClicks,
+    altarLoopsConfirmed: stats.altarRunesConfirmedCycles,
+    estimatedRunesConfirmedLower: stats.altarRunesConfirmedLowerBound,
+    estimatedRunesConfirmedUpper: stats.altarRunesConfirmedUpperBound,
+    estimatedRunesPendingLower: stats.altarRunesPendingLowerBound,
+    estimatedRunesPendingUpper: stats.altarRunesPendingUpperBound,
+    salmonPortalClicks: stats.salmonPortalClicks,
+    salmonPortalConfirmations: stats.salmonValidation.completions,
+    chargedCellAttempts: stats.chargedCellAttempts,
+    chargedCellVerified: stats.chargedCellVerification.completions,
+    workbenchClicks: stats.workbenchClicks,
+    workbenchFallbackCount: stats.workbenchFallbackCount,
+    workbenchTotalMs: Math.round(getRunStatsIntervalTotalMs(stats.workbenchIntervals, fallbackEndMs)),
+    salmonMiningTotalMs: Math.round(getRunStatsIntervalTotalMs(stats.salmonMiningIntervals, fallbackEndMs)),
+    altarTotalMs: Math.round(getRunStatsIntervalTotalMs(stats.altarIntervals, fallbackEndMs)),
+    redPortalSearches: stats.redPortalSearches,
+    redPortalMisses: stats.redPortalMisses,
+    redPortalTotalMs: Math.round(stats.redPortalSearchTotalMs),
+    activeRuneChanges: stats.activeRuneChangeAtMs.length,
+    activeRuneTimerAvgMs,
+    guardianTimerRefusals: stats.guardianTimerRefusals + stats.guardianReclickTimerRefusals,
+    guardianNoTargetScans: stats.guardianNoTargetScans + stats.guardianReclickNoTargetScans,
+    cameraRotateCount: stats.cameraRotateCount,
+    objectMissCounts: formatRunStatsObjectMissCounts(stats.objectMissCounts),
+    altarEnterAt: formatStatsIntervalStartList(stats.altarIntervals),
+    altarExitAt: formatStatsIntervalEndList(stats.altarIntervals),
+    altarClickAt: formatStatsIsoList(stats.altarClickAtMs),
+    workbenchStartAt: formatStatsIntervalStartList(stats.workbenchIntervals),
+    workbenchEndAt: formatStatsIntervalEndList(stats.workbenchIntervals),
+    salmonMiningStartAt: formatStatsIntervalStartList(stats.salmonMiningIntervals),
+    salmonMiningEndAt: formatStatsIntervalEndList(stats.salmonMiningIntervals),
+    greatGuardianClickAt: formatStatsIsoList(stats.greatGuardianClickAtMs),
+    greatGuardianConfirmedAt: formatStatsIsoList(stats.greatGuardianConfirmedAtMs),
+    chargedCellClickAt: formatStatsIsoList(stats.chargedCellClickAtMs),
+    chargedCellConfirmedAt: formatStatsIsoList(stats.chargedCellConfirmedAtMs),
+    runeDepositClickAt: formatStatsIsoList(stats.runeDepositClickAtMs),
+    runeDepositConfirmedAt: formatStatsIsoList(stats.runeDepositConfirmedAtMs),
+  };
+}
+
+function appendGuardianRunStatsCsv(context: AutomateBotLogFooterContext, stats: GuardianRunStats, status: string, durationMs: number): void {
+  const row = buildGuardianRunStatsCsvRow(context, stats, status, durationMs);
+  try {
+    fs.mkdirSync(path.dirname(RUN_STATS_CSV_PATH), { recursive: true });
+    const header = GUARDIAN_RUN_STATS_CSV_COLUMNS.join(",");
+    const line = GUARDIAN_RUN_STATS_CSV_COLUMNS.map((column) => csvEscape(row[column])).join(",");
+    if (!fs.existsSync(RUN_STATS_CSV_PATH) || fs.readFileSync(RUN_STATS_CSV_PATH, "utf8").trim().length === 0) {
+      fs.writeFileSync(RUN_STATS_CSV_PATH, `${header}\n${line}\n`, "utf8");
+      return;
+    }
+
+    fs.appendFileSync(RUN_STATS_CSV_PATH, `${line}\n`, "utf8");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`Could not append Guardian of the Rift run stats CSV '${RUN_STATS_CSV_PATH}': ${message}`);
+  }
 }
 
 function buildGuardianRunStatsFooter(context: AutomateBotLogFooterContext): string[] | null {
@@ -1328,6 +1773,7 @@ function buildGuardianRunStatsFooter(context: AutomateBotLogFooterContext): stri
   const durationMs =
     Number.isFinite(startedAt) && Number.isFinite(endedAt) ? Math.max(0, endedAt - startedAt) : Date.now() - stats.startedAtMs;
   const status = stats.cleanComplete ? "clean_complete" : `stopped_${context.stopSource}`;
+  appendGuardianRunStatsCsv(context, stats, status, durationMs);
 
   return [
     "",
@@ -1380,6 +1826,10 @@ function getRememberedPouchLocations(state: BotState): GuardianOfTheRiftPouchLoc
 }
 
 function getPouchCapacity(pouch: GuardianOfTheRiftDetectablePouch): number {
+  if (pouch === "colossal") {
+    return getGuardianOfTheRiftColossalPouchStats(currentRunecraftLevel)?.capacity ?? 0;
+  }
+
   return POUCH_CAPACITY_BY_TYPE[pouch];
 }
 
@@ -1425,13 +1875,22 @@ function formatWorkbenchEssenceEstimate(state: BotState): string {
 
 function hasPouchesNeedingFill(state: BotState): boolean {
   return getRememberedPouchLocations(state).some((location) => {
+    const capacity = getPouchCapacity(location.pouch);
+    if (capacity <= 0) {
+      return false;
+    }
+
     const stored = getPouchStoredEssence(state, location.pouch);
-    return stored === null || stored < getPouchCapacity(location.pouch);
+    return stored === null || stored < capacity;
   });
 }
 
 function hasPouchesToEmpty(state: BotState): boolean {
   return getRememberedPouchLocations(state).some((location) => {
+    if (getPouchCapacity(location.pouch) <= 0) {
+      return false;
+    }
+
     const stored = getPouchStoredEssence(state, location.pouch);
     return stored === null || stored > 0;
   });
@@ -1447,8 +1906,13 @@ function getPouchMissingEssence(state: BotState, pouch: GuardianOfTheRiftDetecta
 
 function selectPouchesNeedingFill(state: BotState): GuardianOfTheRiftPouchLocation[] {
   const candidates = sortPouchLocationsByCapacityAsc(getRememberedPouchLocations(state)).filter((location) => {
+    const capacity = getPouchCapacity(location.pouch);
+    if (capacity <= 0) {
+      return false;
+    }
+
     const stored = getPouchStoredEssence(state, location.pouch);
-    return stored === null || stored < getPouchCapacity(location.pouch);
+    return stored === null || stored < capacity;
   });
 
   if (state.pouchFillAvailableEssenceSlots === null) {
@@ -1466,6 +1930,12 @@ function selectPouchesNeedingFill(state: BotState): GuardianOfTheRiftPouchLocati
     if (missingEssence <= remainingEssence) {
       selected.push(location);
       remainingEssence -= missingEssence;
+      continue;
+    }
+
+    if (remainingEssence > 0 && selected.length === 0) {
+      selected.push(location);
+      remainingEssence = 0;
     }
   }
 
@@ -1659,7 +2129,13 @@ function selectOptimizedPouchesNeedingFillBatch(state: BotState): GuardianOfTheR
     }))
     .filter((item) => item.stored > 0);
 
-  return selectBestAltarPouchEmptyBatch(candidates, maxBatchCapacity).map((item) => item.location);
+  const batch = selectBestAltarPouchEmptyBatch(candidates, maxBatchCapacity);
+  if (batch.length > 0) {
+    return batch.map((item) => item.location);
+  }
+
+  const partialCandidate = candidates.find((item) => item.stored > maxBatchCapacity && maxBatchCapacity > 0);
+  return partialCandidate ? [partialCandidate.location] : [];
 }
 
 function selectAltarPouchEmptyBatch(state: BotState, freeSlots: number): GuardianOfTheRiftPouchLocation[] {
@@ -1675,7 +2151,13 @@ function selectAltarPouchEmptyBatch(state: BotState, freeSlots: number): Guardia
     }))
     .filter((item) => item.stored > 0);
 
-  return selectBestAltarPouchEmptyBatch(candidates, maxBatchCapacity).map((item) => item.location);
+  const batch = selectBestAltarPouchEmptyBatch(candidates, maxBatchCapacity);
+  if (batch.length > 0) {
+    return batch.map((item) => item.location);
+  }
+
+  const partialCandidate = candidates.find((item) => item.stored > maxBatchCapacity && maxBatchCapacity > 0);
+  return partialCandidate ? [partialCandidate.location] : [];
 }
 
 function shouldEmptyPouchesAtAltar(state: BotState): boolean {
@@ -1700,37 +2182,68 @@ function withRememberedPouchesAssumedFull(state: BotState): BotState {
   };
 }
 
+function getExpectedPouchFillMove(state: BotState, pouch: GuardianOfTheRiftDetectablePouch): number {
+  const missingEssence = getPouchMissingEssence(state, pouch);
+  if (missingEssence <= 0) {
+    return 0;
+  }
+
+  const knownBudget =
+    state.pouchFillAvailableEssenceSlots !== null && state.pouchFillAvailableEssenceSlots > 0
+      ? state.pouchFillAvailableEssenceSlots
+      : state.workbenchLooseEssenceCount > 0
+        ? state.workbenchLooseEssenceCount
+        : null;
+
+  return knownBudget === null ? missingEssence : Math.min(missingEssence, knownBudget);
+}
+
 function updatePouchEssenceAfterInventoryDelta(
   state: BotState,
   pendingClick: PendingPouchClick,
   afterFreeSlots: number,
-): { state: BotState; delta: number } {
+): { state: BotState; delta: number; observedDelta: number; assumedDelta: number; resultingFreeSlots: number } {
   const rawDelta =
     pendingClick.intent === "fill"
       ? afterFreeSlots - pendingClick.beforeFreeSlots
       : pendingClick.beforeFreeSlots - afterFreeSlots;
-  const delta = Math.max(0, rawDelta);
+  const observedDelta = Math.max(0, rawDelta);
   const capacity = getPouchCapacity(pendingClick.pouch);
+  const currentStored = getPouchStoredEssence(state, pendingClick.pouch) ?? 0;
   const expectedMovedEssence =
-    pendingClick.intent === "fill" ? getPouchMissingEssence(state, pendingClick.pouch) : 0;
-  const nextStored = pendingClick.intent === "fill" ? capacity : 0;
+    pendingClick.intent === "fill" ? getExpectedPouchFillMove(state, pendingClick.pouch) : 0;
+  const assumedDelta = observedDelta > 0 ? 0 : expectedMovedEssence;
+  const appliedDelta = observedDelta > 0 ? observedDelta : assumedDelta;
+  const nextStored = pendingClick.intent === "fill" ? Math.min(capacity, currentStored + appliedDelta) : 0;
+  const resultingFreeSlots =
+    pendingClick.intent === "fill" && observedDelta === 0 && assumedDelta > 0
+      ? clamp(pendingClick.beforeFreeSlots + assumedDelta, 0, INVENTORY_SLOT_COUNT)
+      : afterFreeSlots;
   const workbenchLooseEssenceCount =
     pendingClick.intent === "fill"
-      ? Math.max(0, state.workbenchLooseEssenceCount - expectedMovedEssence)
+      ? Math.max(0, state.workbenchLooseEssenceCount - appliedDelta)
       : state.workbenchLooseEssenceCount;
+  const pouchFillAvailableEssenceSlots =
+    pendingClick.intent === "fill" && state.pouchFillAvailableEssenceSlots !== null
+      ? Math.max(0, state.pouchFillAvailableEssenceSlots - appliedDelta)
+      : state.pouchFillAvailableEssenceSlots;
 
   return {
-    delta,
+    delta: appliedDelta,
+    observedDelta,
+    assumedDelta,
+    resultingFreeSlots,
     state: {
       ...state,
       pouchEssence: {
         ...state.pouchEssence,
         [pendingClick.pouch]: nextStored,
       },
+      pouchFillAvailableEssenceSlots,
       pouchClickPending: null,
-      pouchClickBatchMovedEssence: state.pouchClickBatchMovedEssence + delta,
+      pouchClickBatchMovedEssence: state.pouchClickBatchMovedEssence + appliedDelta,
       workbenchLooseEssenceCount,
-      inventoryFreeSlots: afterFreeSlots,
+      inventoryFreeSlots: resultingFreeSlots,
       missingInventoryCountTicks: 0,
     },
   };
@@ -1850,13 +2363,16 @@ function clickRemainingAltarPouchBatchWithoutPerPouchInventoryReads(
   const pouchEssence = { ...state.pouchEssence };
   const clickedPouches: string[] = [];
   let expectedMovedEssence = 0;
+  let remainingFreeSlots = beforeFreeSlots + ALTAR_POUCH_EMPTY_FREE_SLOT_SLACK;
   for (let index = 0; index < locations.length; index += 1) {
     const location = locations[index];
     const storedEssence = getPouchStoredEssence(state, location.pouch) ?? getPouchCapacity(location.pouch);
-    expectedMovedEssence += storedEssence;
+    const expectedMovedFromPouch = Math.max(0, Math.min(storedEssence, remainingFreeSlots));
+    expectedMovedEssence += expectedMovedFromPouch;
+    remainingFreeSlots = Math.max(0, remainingFreeSlots - expectedMovedFromPouch);
     const clicked = clickScreenPointImmediate(location.screenCenterX, location.screenCenterY, captureBounds);
-    clickedPouches.push(`${location.pouch}@(${clicked.x},${clicked.y}) stored=${storedEssence}`);
-    pouchEssence[location.pouch] = 0;
+    clickedPouches.push(`${location.pouch}@(${clicked.x},${clicked.y}) stored=${storedEssence} expectedMoved=${expectedMovedFromPouch}`);
+    pouchEssence[location.pouch] = Math.max(0, storedEssence - expectedMovedFromPouch);
 
     if (index < locations.length - 1) {
       sleepSyncMs(OBJECT_PRE_CLICK_MOUSE_SETTLE_MS);
@@ -2008,6 +2524,7 @@ function detectStartupPouchInventory(
     const location = memory.pouches[pouch];
     return location ? [location] : [];
   });
+  recordRunStatsPouchesDetected(foundPouches);
   log(
     `Startup pouch check summary: found ${foundPouches.length}/${GUARDIAN_OF_THE_RIFT_DETECTABLE_POUCHES.length} pouch(es)${
       foundPouches.length === 0 ? "" : ` (${foundPouches.map((location) => location.pouch).join(", ")})`
@@ -2168,6 +2685,7 @@ function createEmptyPouchInventoryMemory(checkedAtMs = 0): GuardianOfTheRiftPouc
       medium: null,
       large: null,
       giant: null,
+      colossal: null,
     },
   };
 }
@@ -2178,6 +2696,7 @@ function createEmptyPouchEssenceMemory(defaultValue: number | null = null): Guar
     medium: defaultValue,
     large: defaultValue,
     giant: defaultValue,
+    colossal: defaultValue,
   };
 }
 
@@ -2416,6 +2935,7 @@ function createInitialState(): BotState {
     chargedCellDepositClickDistancePx: null,
     chargedCellToRuneCameraReadyAtMs: 0,
     chargedCellDepositPlayerTileFallbackPending: false,
+    chargedCellDepositAttemptCount: 0,
     runeDepositArrivalDeadlineMs: 0,
     runeDepositClickDistancePx: null,
     runeDepositInventoryFreeSlotsBeforeClick: null,
@@ -2441,6 +2961,12 @@ function createInitialState(): BotState {
     missingFinalPortalTicks: 0,
     missingPortalMiningOrangeTicks: 0,
     missingPortalExitTicks: 0,
+    repairPouchesNpcMissingTicks: 0,
+    repairPouchesNpcClickAttempts: 0,
+    repairPouchesNpcLastClickedMarker: null,
+    repairPouchesNpcRejectedMarkers: [],
+    repairPouchesDialogClicks: 0,
+    repairPouchesDialogMissingTicks: 0,
   };
 }
 
@@ -2472,6 +2998,33 @@ function isGuardianBlackPixel(r: number, g: number, b: number): boolean {
   return Math.max(r, g, b) <= GUARDIAN_BLACK_MAX_COMPONENT && Math.max(r, g, b) - Math.min(r, g, b) <= 45;
 }
 
+function parseGuardianInteriorColorRgb(color: GuardianInteriorColor): { r: number; g: number; b: number } {
+  const rgbHex = color.hex.length === 8 ? color.hex.slice(2) : color.hex;
+  return {
+    r: Number.parseInt(rgbHex.slice(0, 2), 16),
+    g: Number.parseInt(rgbHex.slice(2, 4), 16),
+    b: Number.parseInt(rgbHex.slice(4, 6), 16),
+  };
+}
+
+function isGuardianInteriorGrayscalePixel(r: number, g: number, b: number): boolean {
+  return (
+    Math.max(r, g, b) <= GUARDIAN_BLACK_MAX_COMPONENT &&
+    Math.max(r, g, b) - Math.min(r, g, b) <= GUARDIAN_INTERIOR_GRAYSCALE_TOLERANCE
+  );
+}
+
+function isGuardianInteriorColorPixel(r: number, g: number, b: number, color: GuardianInteriorColor): boolean {
+  if (!isGuardianInteriorGrayscalePixel(r, g, b)) {
+    return false;
+  }
+
+  const expected = parseGuardianInteriorColorRgb(color);
+  const observed = Math.round((r + g + b) / 3);
+  const expectedValue = Math.round((expected.r + expected.g + expected.b) / 3);
+  return Math.abs(observed - expectedValue) <= GUARDIAN_INTERIOR_COLOR_TOLERANCE;
+}
+
 function isGreatGuardianBluePixel(r: number, g: number, b: number): boolean {
   return r <= 55 && g <= 45 && b >= 210 && b - Math.max(r, g) >= 150;
 }
@@ -2496,8 +3049,34 @@ function isRuneDepositPinkPixel(r: number, g: number, b: number): boolean {
   return r >= 225 && g <= 65 && b >= 110 && b <= 190 && r - b >= 55;
 }
 
+function isPouchRepairNpcMarkerPixel(r: number, g: number, b: number): boolean {
+  return r >= 245 && g >= 245 && b >= 245 && Math.max(r, g, b) - Math.min(r, g, b) <= 10;
+}
+
+function isPouchRepairDialogBluePixel(r: number, g: number, b: number): boolean {
+  return r <= 90 && g <= 120 && b >= 155 && b - Math.max(r, g) >= 70;
+}
+
 function isBrightTimerTextPixel(r: number, g: number, b: number): boolean {
   return r >= 190 && g >= 190 && b >= 190 && Math.max(r, g, b) - Math.min(r, g, b) <= 80;
+}
+
+function resolvePouchRepairNpcSearchBounds(bitmap: RobotBitmap): SearchBounds {
+  return {
+    minX: clamp(Math.round(bitmap.width * 0.02), 0, bitmap.width - 1),
+    minY: clamp(Math.round(bitmap.height * 0.08), 0, bitmap.height - 1),
+    maxX: clamp(Math.round(bitmap.width * 0.78), 0, bitmap.width - 1),
+    maxY: clamp(Math.round(bitmap.height * 0.9), 0, bitmap.height - 1),
+  };
+}
+
+function resolvePouchRepairDialogBlueSearchBounds(bitmap: RobotBitmap): SearchBounds {
+  return {
+    minX: clamp(Math.round(bitmap.width * 0.04), 0, bitmap.width - 1),
+    minY: clamp(Math.round(bitmap.height * 0.82), 0, bitmap.height - 1),
+    maxX: clamp(Math.round(bitmap.width * 0.48), 0, bitmap.width - 1),
+    maxY: clamp(Math.round(bitmap.height * 0.97), 0, bitmap.height - 1),
+  };
 }
 
 function resolveGuardianTeleportDarkScreenBounds(bitmap: RobotBitmap): SearchBounds {
@@ -3129,6 +3708,62 @@ export function detectAllChargedCellDepositObjects(bitmap: RobotBitmap): Colored
 
 function detectAllRuneDepositObjects(bitmap: RobotBitmap): ColoredMarkerDetection[] {
   return detectAllColoredMarkers(bitmap, isRuneDepositPinkPixel, RUNE_DEPOSIT_PINK_MIN_PIXELS);
+}
+
+function detectAllPouchRepairNpcMarkers(bitmap: RobotBitmap): ColoredMarkerDetection[] {
+  return detectAllColoredMarkers(
+    bitmap,
+    isPouchRepairNpcMarkerPixel,
+    POUCH_REPAIR_NPC_MARKER_MIN_PIXELS,
+    resolvePouchRepairNpcSearchBounds(bitmap),
+  );
+}
+
+function detectPouchRepairDialogBlueTarget(bitmap: RobotBitmap): ColoredMarkerDetection | null {
+  const bounds = resolvePouchRepairDialogBlueSearchBounds(bitmap);
+  let pixelCount = 0;
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  let sumX = 0;
+  let sumY = 0;
+
+  for (let y = bounds.minY; y <= bounds.maxY; y += 1) {
+    for (let x = bounds.minX; x <= bounds.maxX; x += 1) {
+      const offset = y * bitmap.byteWidth + x * bitmap.bytesPerPixel;
+      const b = bitmap.image[offset];
+      const g = bitmap.image[offset + 1];
+      const r = bitmap.image[offset + 2];
+      if (!isPouchRepairDialogBluePixel(r, g, b)) {
+        continue;
+      }
+
+      pixelCount += 1;
+      sumX += x;
+      sumY += y;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+    }
+  }
+
+  if (pixelCount < POUCH_REPAIR_DIALOG_BLUE_MIN_PIXELS) {
+    return null;
+  }
+
+  return {
+    centerX: Math.round(sumX / pixelCount),
+    centerY: Math.round(sumY / pixelCount),
+    pixelCount,
+    width: maxX - minX + 1,
+    height: maxY - minY + 1,
+    minX,
+    minY,
+    maxX,
+    maxY,
+  };
 }
 
 function detectAllGreenObjects(bitmap: RobotBitmap, minPixels: number = GREEN_MIN_PIXELS): GreenObjectDetection[] {
@@ -4524,15 +5159,44 @@ function formatGuardianDecision(selection: GuardianTravelTargetSelection): strin
     `preference=${selection.preferenceOrder.join("->")}`,
     `chosen=${
       selection.target
-        ? `${selection.target.slot}:${selection.target.runeMatch.rune}@${selection.target.colorHex} local=(${selection.target.clickPoint.centerX},${selection.target.clickPoint.centerY}) bounds=(${selection.target.marker.minX},${selection.target.marker.minY})-${selection.target.marker.maxX},${selection.target.marker.maxY} size=${selection.target.marker.width}x${selection.target.marker.height} px=${selection.target.marker.pixelCount}`
+        ? `${formatGuardianTravelTargetName(selection.target)}@${selection.target.colorHex} local=(${selection.target.clickPoint.centerX},${selection.target.clickPoint.centerY}) bounds=(${selection.target.marker.minX},${selection.target.marker.minY})-${selection.target.marker.maxX},${selection.target.marker.maxY} size=${selection.target.marker.width}x${selection.target.marker.height} px=${selection.target.marker.pixelCount}`
         : "none"
     }`,
     `active elemental=${formatActiveGuardianRuneMatch(selection.elementalRune)}`,
     `catalytic=${formatActiveGuardianRuneMatch(selection.catalyticRune)}`,
+    `interior=${formatGuardianInteriorClassifications(selection.interiorClassifications)}`,
     `skipped=${selection.skippedReasons.join("; ") || "none"}`,
     `greenCandidates=${formatColoredMarkerCandidates(selection.greenCandidates)}`,
     `catalyticCandidates=${formatColoredMarkerCandidates(selection.catalyticCandidates)}`,
   ].join("; ");
+}
+
+function formatGuardianTravelTargetName(target: GuardianTravelTarget): string {
+  return `${target.decisionSource === "optimizer" ? "optimizer" : target.slot}:${target.runeMatch.rune}`;
+}
+
+function formatGuardianInteriorClassifications(classifications: GuardianInteriorClassification[]): string {
+  if (classifications.length === 0) {
+    return "none";
+  }
+
+  return classifications
+    .map((classification) => {
+      const candidates =
+        classification.candidates.length === 0
+          ? "none"
+          : classification.candidates
+              .map(
+                (candidate) =>
+                  `${candidate.slot}:${candidate.runeMatch.rune}@${candidate.color.hex}/${candidate.color.label} px=${candidate.matchingPixels}/${candidate.grayscalePixels} ratio=${(candidate.ratio * 100).toFixed(1)}%`,
+              )
+              .join(",");
+      const best = classification.best
+        ? `${classification.best.slot}:${classification.best.runeMatch.rune}@${classification.best.color.hex}`
+        : "none";
+      return `${classification.markerLabel}{best=${best}; reason=${classification.reason}; ${candidates}}`;
+    })
+    .join(" | ");
 }
 
 function getOppositeGuardianSlot(slot: GuardianOfTheRiftSlot): GuardianOfTheRiftSlot {
@@ -4576,13 +5240,108 @@ function shouldRotateCameraForMissingGuardianTarget(
   }
 
   return selection.preferenceOrder.some((slot) => {
-    if (slot === "optimizer-green") {
+    if (slot === "optimizer-plugin") {
       return true;
     }
 
     const runeMatch = slot === "elemental" ? selection.elementalRune : selection.catalyticRune;
     return runeMatch !== null && config.activeGuardianElements[runeMatch.rune] !== false;
   });
+}
+
+function getActiveGuardianInteriorCandidates(activeRunes: {
+  elemental: GuardianOfTheRiftRuneMatch | null;
+  catalytic: GuardianOfTheRiftRuneMatch | null;
+}): Array<{ slot: GuardianOfTheRiftSlot; runeMatch: GuardianOfTheRiftRuneMatch }> {
+  const candidates: Array<{ slot: GuardianOfTheRiftSlot; runeMatch: GuardianOfTheRiftRuneMatch }> = [];
+  if (activeRunes.elemental) {
+    candidates.push({ slot: "elemental", runeMatch: activeRunes.elemental });
+  }
+
+  if (activeRunes.catalytic) {
+    candidates.push({ slot: "catalytic", runeMatch: activeRunes.catalytic });
+  }
+
+  return candidates;
+}
+
+function classifyGuardianInteriorForActiveRunes(
+  bitmap: RobotBitmap,
+  marker: ColoredMarkerDetection,
+  markerLabel: string,
+  activeCandidates: Array<{ slot: GuardianOfTheRiftSlot; runeMatch: GuardianOfTheRiftRuneMatch }>,
+): GuardianInteriorClassification {
+  const counts = new Map<GuardianOfTheRiftRune, number>();
+  let grayscalePixels = 0;
+
+  for (const candidate of activeCandidates) {
+    counts.set(candidate.runeMatch.rune, 0);
+  }
+
+  const minX = clamp(marker.minX + GUARDIAN_BLACK_MIN_EDGE_MARGIN_PX, 0, bitmap.width - 1);
+  const minY = clamp(marker.minY + GUARDIAN_BLACK_MIN_EDGE_MARGIN_PX, 0, bitmap.height - 1);
+  const maxX = clamp(marker.maxX - GUARDIAN_BLACK_MIN_EDGE_MARGIN_PX, 0, bitmap.width - 1);
+  const maxY = clamp(marker.maxY - GUARDIAN_BLACK_MIN_EDGE_MARGIN_PX, 0, bitmap.height - 1);
+
+  for (let y = minY; y <= maxY; y += 1) {
+    for (let x = minX; x <= maxX; x += 1) {
+      const offset = y * bitmap.byteWidth + x * bitmap.bytesPerPixel;
+      const b = bitmap.image[offset];
+      const g = bitmap.image[offset + 1];
+      const r = bitmap.image[offset + 2];
+      if (!isGuardianInteriorGrayscalePixel(r, g, b)) {
+        continue;
+      }
+
+      grayscalePixels += 1;
+      for (const candidate of activeCandidates) {
+        const color = GUARDIAN_RUNE_INTERIOR_COLORS[candidate.runeMatch.rune];
+        if (isGuardianInteriorColorPixel(r, g, b, color)) {
+          counts.set(candidate.runeMatch.rune, (counts.get(candidate.runeMatch.rune) ?? 0) + 1);
+        }
+      }
+    }
+  }
+
+  const candidates = activeCandidates
+    .map<GuardianInteriorRuneCandidate>((candidate) => {
+      const matchingPixels = counts.get(candidate.runeMatch.rune) ?? 0;
+      return {
+        slot: candidate.slot,
+        runeMatch: candidate.runeMatch,
+        color: GUARDIAN_RUNE_INTERIOR_COLORS[candidate.runeMatch.rune],
+        matchingPixels,
+        grayscalePixels,
+        ratio: grayscalePixels > 0 ? matchingPixels / grayscalePixels : 0,
+      };
+    })
+    .sort((a, b) => b.matchingPixels - a.matchingPixels);
+
+  const best = candidates[0] ?? null;
+  if (!best) {
+    return {
+      markerLabel,
+      candidates,
+      best: null,
+      reason: "no active rune candidates",
+    };
+  }
+
+  if (best.matchingPixels < GUARDIAN_INTERIOR_MIN_MATCH_PIXELS || best.ratio < GUARDIAN_INTERIOR_MIN_MATCH_RATIO) {
+    return {
+      markerLabel,
+      candidates,
+      best: null,
+      reason: `weak match (min=${GUARDIAN_INTERIOR_MIN_MATCH_PIXELS}px/${(GUARDIAN_INTERIOR_MIN_MATCH_RATIO * 100).toFixed(0)}%)`,
+    };
+  }
+
+  return {
+    markerLabel,
+    candidates,
+    best,
+    reason: "matched active rune interior",
+  };
 }
 
 function selectGuardianTravelTarget(
@@ -4600,29 +5359,86 @@ function selectGuardianTravelTarget(
   const greenMarker = pickLargestGreenObject(fullGreenCandidates);
   const catalyticMarker = pickLargestColoredMarker(fullCatalyticCandidates);
   const skippedReasons: string[] = [];
+  const interiorClassifications: GuardianInteriorClassification[] = [];
   const targets: GuardianTravelTarget[] = [];
   const preferenceOrder = getGuardianSlotPreferenceOrder(rewardPoints, unknownRewardNextGuardianSlot);
 
   if (GUARDIAN_OF_THE_RIFT_OVERLAY_MODE === "optimizer") {
-    const optimizerPreferenceOrder: Array<GuardianOfTheRiftSlot | "optimizer-green"> = ["optimizer-green"];
-    const runeMatch = activeRunes.elemental ?? activeRunes.catalytic;
-    const slot: GuardianOfTheRiftSlot = activeRunes.elemental ? "elemental" : "catalytic";
+    const optimizerPreferenceOrder: Array<GuardianOfTheRiftSlot | "optimizer-plugin"> = ["optimizer-plugin"];
+    const activeInteriorCandidates = getActiveGuardianInteriorCandidates(activeRunes);
+    const optimizerMarkerClassifications: GuardianOptimizerMarkerClassification[] = [
+      ...fullGreenCandidates.map((marker, index) => ({
+        marker,
+        markerColor: "green" as const,
+        markerColorHex: ELEMENTAL_GUARDIAN_MARKER_COLOR_HEX,
+        classification: classifyGuardianInteriorForActiveRunes(
+          bitmap,
+          marker,
+          `optimizer-green#${index + 1}`,
+          activeInteriorCandidates,
+        ),
+      })),
+    ];
 
-    if (!greenMarker) {
+    interiorClassifications.push(...optimizerMarkerClassifications.map((entry) => entry.classification));
+
+    const matchedOptimizerMarkers = optimizerMarkerClassifications
+      .filter((entry) => entry.classification.best !== null)
+      .sort((left, right) => {
+        if (left.markerColor !== right.markerColor) {
+          return left.markerColor === "green" ? -1 : 1;
+        }
+
+        const leftBest = left.classification.best!;
+        const rightBest = right.classification.best!;
+        if (rightBest.matchingPixels !== leftBest.matchingPixels) {
+          return rightBest.matchingPixels - leftBest.matchingPixels;
+        }
+
+        return rightBest.ratio - leftBest.ratio;
+      });
+    const enabledOptimizerMarker =
+      matchedOptimizerMarkers.find((entry) => config.activeGuardianElements[entry.classification.best!.runeMatch.rune] !== false) ??
+      null;
+
+    if (optimizerMarkerClassifications.length === 0) {
       skippedReasons.push(
-        `optimizer: ${ELEMENTAL_GUARDIAN_MARKER_COLOR_HEX} green outline was not visible (${fullGreenCandidates.length}/${greenCandidates.length} candidate(s) passed shape filter); blue outline ignored by optimizer mode`,
+        `optimizer: no green optimized guardian outline was visible (green ${fullGreenCandidates.length}/${greenCandidates.length} candidate(s) passed shape filter; blue ignored)`,
       );
-    } else if (!runeMatch) {
-      skippedReasons.push("optimizer: green outline was visible, but active rune was not detected");
+    } else if (activeInteriorCandidates.length === 0) {
+      skippedReasons.push("optimizer: optimized outline was visible, but active rune was not detected");
+    } else if (matchedOptimizerMarkers.length === 0) {
+      skippedReasons.push(
+        `optimizer: optimized outline(s) were visible, but no interior gray matched an active rune (${formatGuardianInteriorClassifications(interiorClassifications)})`,
+      );
+    } else if (!enabledOptimizerMarker) {
+      const disabledRunes = matchedOptimizerMarkers
+        .map((entry) => entry.classification.best!.runeMatch.rune)
+        .filter((rune, index, runes) => runes.indexOf(rune) === index)
+        .join(",");
+      skippedReasons.push(`optimizer: matched guardian rune(s) are disabled in config (${disabledRunes})`);
     } else {
-      skippedReasons.push("optimizer: always choosing the green outline; blue outline and reward points ignored");
+      const best = enabledOptimizerMarker.classification.best!;
+      skippedReasons.push(
+        `optimizer: using ${enabledOptimizerMarker.classification.markerLabel} green outline location; blue guardian markers ignored; rune comes from interior gray (${best.color.hex}/${best.color.label})`,
+      );
       targets.push({
-        slot,
-        runeMatch,
-        marker: greenMarker,
-        clickPoint: pickGuardianGreenClickPoint(bitmap, greenMarker),
-        color: "green",
-        colorHex: ELEMENTAL_GUARDIAN_MARKER_COLOR_HEX,
+        decisionSource: "optimizer",
+        slot: best.slot,
+        runeMatch: best.runeMatch,
+        marker: enabledOptimizerMarker.marker,
+        clickPoint:
+          enabledOptimizerMarker.markerColor === "green"
+            ? pickGuardianGreenClickPoint(bitmap, enabledOptimizerMarker.marker)
+            : pickColoredOutlineClickPoint(
+                bitmap,
+                enabledOptimizerMarker.marker,
+                isCatalyticGuardianBluePixel,
+                GUARDIAN_COLORED_CLICK_TARGET_X_RATIO,
+                GUARDIAN_COLORED_CLICK_TARGET_Y_RATIO,
+              ),
+        color: enabledOptimizerMarker.markerColor,
+        colorHex: best.color.hex,
       });
     }
 
@@ -4633,6 +5449,7 @@ function selectGuardianTravelTarget(
       rewardPoints,
       greenCandidates,
       catalyticCandidates,
+      interiorClassifications,
       skippedReasons,
       preferenceOrder: optimizerPreferenceOrder,
     };
@@ -4665,6 +5482,7 @@ function selectGuardianTravelTarget(
     }
 
     targets.push({
+      decisionSource: slot,
       slot,
       runeMatch,
       marker,
@@ -4711,6 +5529,7 @@ function selectGuardianTravelTarget(
     rewardPoints,
     greenCandidates,
     catalyticCandidates,
+    interiorClassifications,
     skippedReasons,
     preferenceOrder,
   };
@@ -5541,7 +6360,13 @@ function transitionToCraftingState(
   setAutomateBotCurrentStep(STEP_CRAFTING_ID);
   recordRunStatsWorkbenchTravel(travel, nowMs);
   rememberMovementObservation("workbench-click", WORKFLOW_STEPS.MOVE_TO_WORKBENCH, nowMs, travel);
-  const pouchFillAvailableEssenceSlots = state.pouchFillAvailableEssenceSlots ?? startingInventoryFreeSlots;
+  const shouldStartNewPouchFillBudget =
+    startingInventoryFreeSlots !== null &&
+    hasPouchesNeedingFill(state) &&
+    (state.pouchFillAvailableEssenceSlots === null || state.pouchFillAvailableEssenceSlots <= 0);
+  const pouchFillAvailableEssenceSlots = shouldStartNewPouchFillBudget
+    ? startingInventoryFreeSlots
+    : state.pouchFillAvailableEssenceSlots ?? startingInventoryFreeSlots;
   log(
     stepMessage(
       WORKFLOW_STEPS.CRAFT_UNTIL_FULL,
@@ -5725,7 +6550,7 @@ function unwindAltarCamera(
 
 function getEndOfRoundDepositSignal(bitmap: RobotBitmap): string | null {
   const powerBar = detectGuardianOfTheRiftPowerBar(bitmap);
-  const summary = `powerBar=${powerBar.fillColor} blue=${powerBar.bluePixels} yellow=${powerBar.yellowPixels} empty=${powerBar.emptyPixels} visible=${powerBar.visiblePixels}`;
+  const summary = `powerBar=${powerBar.fillColor} progress=${powerBar.fillPercent === null ? "unknown" : `${powerBar.fillPercent}%`} filled=${powerBar.filledPixels} blue=${powerBar.bluePixels} yellow=${powerBar.yellowPixels} empty=${powerBar.emptyPixels} visible=${powerBar.visiblePixels}`;
 
   if (powerBar.fillColor === "blue") {
     return `Guardian Power bar is blue (${summary}); entering end-of-round deposit fallback.`;
@@ -5810,6 +6635,7 @@ function transitionToEndOfRoundChargedCellDepositState(state: BotState, nowMs: n
     chargedCellDepositClickDistancePx: null,
     chargedCellToRuneCameraReadyAtMs: 0,
     chargedCellDepositPlayerTileFallbackPending: false,
+    chargedCellDepositAttemptCount: 0,
     missingInventoryCountTicks: 0,
     missingGreatGuardianTicks: 0,
     missingChargedCellDepositTicks: 0,
@@ -5832,6 +6658,31 @@ function transitionToEndOfRoundRuneDepositState(state: BotState, nowMs: number, 
     chargedCellDepositClickDistancePx: null,
     chargedCellToRuneCameraReadyAtMs: 0,
     chargedCellDepositPlayerTileFallbackPending: false,
+    chargedCellDepositAttemptCount: 0,
+    runeDepositArrivalDeadlineMs: 0,
+    runeDepositClickDistancePx: null,
+    runeDepositInventoryFreeSlotsBeforeClick: null,
+    runeDepositCameraNorthReadyAtMs: 0,
+    runeDepositCameraNorthPreparedThisClick: false,
+    missingInventoryCountTicks: 0,
+    missingChargedCellDepositTicks: 0,
+    missingRuneDepositTicks: 0,
+    actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
+  };
+}
+
+function transitionToRuneDepositAfterChargedCellAttemptLimit(state: BotState, nowMs: number, reason: string): BotState {
+  setAutomateBotCurrentStep(STEP_RUNE_DEPOSIT_ID);
+  warn(stepMessage(WORKFLOW_STEPS.FIND_RUNE_DEPOSIT, `${reason} Trying rune deposit next.`));
+  return {
+    ...state,
+    currentFunction: "findRuneDeposit",
+    phase: "find-rune-deposit",
+    chargedCellDepositArrivalDeadlineMs: 0,
+    chargedCellDepositClickDistancePx: null,
+    chargedCellToRuneCameraReadyAtMs: 0,
+    chargedCellDepositPlayerTileFallbackPending: false,
+    chargedCellDepositAttemptCount: 0,
     runeDepositArrivalDeadlineMs: 0,
     runeDepositClickDistancePx: null,
     runeDepositInventoryFreeSlotsBeforeClick: null,
@@ -5855,6 +6706,7 @@ function transitionToRoundRestartState(state: BotState, nowMs: number, reason: s
   );
   rotateAutomateBotLogSession("gotr-round-restart");
   resetGuardianRunStats(nowMs);
+  recordRunStatsPouchesDetected(getRememberedPouchLocations(state));
 
   return {
     ...createInitialState(),
@@ -5863,6 +6715,239 @@ function transitionToRoundRestartState(state: BotState, nowMs: number, reason: s
     inventoryFreeSlots: state.inventoryFreeSlots,
     missingInventoryCountTicks: 0,
     actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
+  };
+}
+
+function getRememberedPouchCount(state: BotState): number {
+  return GUARDIAN_OF_THE_RIFT_DETECTABLE_POUCHES.filter((pouch) => state.pouchInventory.pouches[pouch] !== null).length;
+}
+
+function hasRepairablePouchSetup(state: BotState): boolean {
+  return state.pouchInventory.pouches.colossal !== null || getRememberedPouchCount(state) >= 4;
+}
+
+function rememberRepairPouchesNpcMarker(marker: ColoredMarkerDetection): RepairPouchesNpcMarkerMemory {
+  return {
+    centerX: marker.centerX,
+    centerY: marker.centerY,
+    width: marker.width,
+    height: marker.height,
+  };
+}
+
+function isRejectedRepairPouchesNpcMarker(
+  marker: ColoredMarkerDetection,
+  rejectedMarkers: RepairPouchesNpcMarkerMemory[],
+): boolean {
+  return rejectedMarkers.some((rejected) => distanceBetween(marker, rejected) <= POUCH_REPAIR_NPC_REJECT_RADIUS_PX);
+}
+
+function pickRepairPouchesNpcMarker(
+  markers: ColoredMarkerDetection[],
+  playerAnchor: { centerX: number; centerY: number },
+  rejectedMarkers: RepairPouchesNpcMarkerMemory[],
+): ColoredMarkerDetection | null {
+  return pickNearestColoredMarker(
+    markers.filter((marker) => !isRejectedRepairPouchesNpcMarker(marker, rejectedMarkers)),
+    playerAnchor,
+  );
+}
+
+function transitionAfterCleanEndOfRoundComplete(state: BotState, nowMs: number, reason: string): BotState {
+  completedRunsSincePouchRepair += 1;
+  const rememberedPouchCount = getRememberedPouchCount(state);
+  const shouldRepair =
+    completedRunsSincePouchRepair >= POUCH_REPAIR_RUN_INTERVAL &&
+    hasRepairablePouchSetup(state);
+
+  if (!shouldRepair) {
+    return transitionToRoundRestartState(
+      state,
+      nowMs,
+      `${reason} Pouch repair not needed yet: completedRunsSinceRepair=${completedRunsSincePouchRepair}/${POUCH_REPAIR_RUN_INTERVAL}, rememberedPouches=${rememberedPouchCount}/${GUARDIAN_OF_THE_RIFT_DETECTABLE_POUCHES.length}.`,
+    );
+  }
+
+  setAutomateBotCurrentStep(STEP_REPAIR_POUCHES_ID);
+  log(
+    stepMessage(
+      WORKFLOW_STEPS.REPAIR_POUCHES_NPC,
+      `${reason} Completed ${completedRunsSincePouchRepair}/${POUCH_REPAIR_RUN_INTERVAL} clean run(s) with ${rememberedPouchCount}/${GUARDIAN_OF_THE_RIFT_DETECTABLE_POUCHES.length} pouch(es); clicking ${POUCH_REPAIR_NPC_MARKER_COLOR_HEX} repair NPC marker before restarting.`,
+    ),
+  );
+
+  return {
+    ...state,
+    endOfRoundDepositMode: false,
+    currentFunction: "repairPouchesNpc",
+    phase: "repair-pouches-npc",
+    repairPouchesNpcMissingTicks: 0,
+    repairPouchesNpcClickAttempts: 0,
+    repairPouchesNpcLastClickedMarker: null,
+    repairPouchesNpcRejectedMarkers: [],
+    repairPouchesDialogClicks: 0,
+    repairPouchesDialogMissingTicks: 0,
+    actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
+  };
+}
+
+function runRepairPouchesNpcTick(
+  state: BotState,
+  nowMs: number,
+  tickCapture: TickCapture,
+  captureBounds: ScreenCaptureBounds,
+): BotState {
+  if (nowMs < state.actionLockUntilMs) {
+    return state;
+  }
+
+  const markers = detectAllPouchRepairNpcMarkers(tickCapture.bitmap);
+  const playerAnchor = getPlayerAnchor(tickCapture.bitmap);
+  const marker = pickRepairPouchesNpcMarker(markers, playerAnchor, state.repairPouchesNpcRejectedMarkers);
+  if (!marker) {
+    const repairPouchesNpcMissingTicks = state.repairPouchesNpcMissingTicks + 1;
+    if (repairPouchesNpcMissingTicks >= POUCH_REPAIR_NPC_MARKER_MAX_MISSING_TICKS) {
+      return transitionToRoundRestartState(
+        {
+          ...state,
+          repairPouchesNpcMissingTicks,
+        },
+        nowMs,
+        `Pouch repair skipped because no usable ${POUCH_REPAIR_NPC_MARKER_COLOR_HEX} NPC marker was found after ${repairPouchesNpcMissingTicks} check(s), attempts=${state.repairPouchesNpcClickAttempts}/${POUCH_REPAIR_NPC_MAX_CLICK_ATTEMPTS}, rejected=${state.repairPouchesNpcRejectedMarkers.length}. Candidates=${formatColoredMarkerCandidates(markers)}.`,
+      );
+    }
+
+    if (repairPouchesNpcMissingTicks === 1 || repairPouchesNpcMissingTicks % 3 === 0) {
+      warn(
+        stepMessage(
+          WORKFLOW_STEPS.REPAIR_POUCHES_NPC,
+          `No usable ${POUCH_REPAIR_NPC_MARKER_COLOR_HEX} repair NPC marker found yet. Retry ${repairPouchesNpcMissingTicks}/${POUCH_REPAIR_NPC_MARKER_MAX_MISSING_TICKS}; attempts=${state.repairPouchesNpcClickAttempts}/${POUCH_REPAIR_NPC_MAX_CLICK_ATTEMPTS}, rejected=${state.repairPouchesNpcRejectedMarkers.length}. Candidates=${formatColoredMarkerCandidates(markers)}.`,
+        ),
+      );
+    }
+
+    return {
+      ...state,
+      repairPouchesNpcMissingTicks,
+      actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
+    };
+  }
+
+  const repairPouchesNpcClickAttempts = state.repairPouchesNpcClickAttempts + 1;
+  const clicked = clickScreenPoint(captureBounds.x + marker.centerX, captureBounds.y + marker.centerY, captureBounds);
+  log(
+    stepMessage(
+      WORKFLOW_STEPS.REPAIR_POUCHES_NPC,
+      `Clicked interior of ${POUCH_REPAIR_NPC_MARKER_COLOR_HEX} repair NPC marker at (${clicked.x},${clicked.y}) local=(${marker.centerX},${marker.centerY}) bounds=(${marker.minX},${marker.minY})-${marker.maxX},${marker.maxY} pixels=${marker.pixelCount}; attempt ${repairPouchesNpcClickAttempts}/${POUCH_REPAIR_NPC_MAX_CLICK_ATTEMPTS}; waiting one game tick before clicking blue chatbox continue text.`,
+    ),
+  );
+
+  return {
+    ...state,
+    currentFunction: "repairPouchesDialog",
+    phase: "repair-pouches-dialog",
+    repairPouchesNpcMissingTicks: 0,
+    repairPouchesNpcClickAttempts,
+    repairPouchesNpcLastClickedMarker: rememberRepairPouchesNpcMarker(marker),
+    repairPouchesDialogClicks: 0,
+    repairPouchesDialogMissingTicks: 0,
+    actionLockUntilMs: Date.now() + GAME_TICK_MS,
+  };
+}
+
+function runRepairPouchesDialogTick(
+  state: BotState,
+  nowMs: number,
+  tickCapture: TickCapture,
+  captureBounds: ScreenCaptureBounds,
+): BotState {
+  if (nowMs < state.actionLockUntilMs) {
+    return state;
+  }
+
+  if (state.repairPouchesDialogClicks >= POUCH_REPAIR_DIALOG_BLUE_CLICK_COUNT) {
+    completedRunsSincePouchRepair = 0;
+    return transitionToRoundRestartState(
+      state,
+      nowMs,
+      `Pouch repair dialog completed after ${state.repairPouchesDialogClicks}/${POUCH_REPAIR_DIALOG_BLUE_CLICK_COUNT} blue chatbox click(s).`,
+    );
+  }
+
+  const blueTarget = detectPouchRepairDialogBlueTarget(tickCapture.bitmap);
+  if (!blueTarget) {
+    const repairPouchesDialogMissingTicks = state.repairPouchesDialogMissingTicks + 1;
+    const hadAnyDialogClick = state.repairPouchesDialogClicks > 0;
+    if (hadAnyDialogClick || repairPouchesDialogMissingTicks >= POUCH_REPAIR_DIALOG_MAX_MISSING_TICKS) {
+      if (hadAnyDialogClick) {
+        completedRunsSincePouchRepair = 0;
+      } else if (
+        state.repairPouchesNpcLastClickedMarker &&
+        state.repairPouchesNpcClickAttempts < POUCH_REPAIR_NPC_MAX_CLICK_ATTEMPTS
+      ) {
+        const rejectedMarker = state.repairPouchesNpcLastClickedMarker;
+        warn(
+          stepMessage(
+            WORKFLOW_STEPS.REPAIR_POUCHES_NPC,
+            `No blue chatbox text appeared after clicking ${POUCH_REPAIR_NPC_MARKER_COLOR_HEX} repair candidate local=(${rejectedMarker.centerX},${rejectedMarker.centerY}) size=${rejectedMarker.width}x${rejectedMarker.height}; rejecting that repair marker and trying another candidate (${state.repairPouchesNpcClickAttempts}/${POUCH_REPAIR_NPC_MAX_CLICK_ATTEMPTS}).`,
+          ),
+        );
+
+        return {
+          ...state,
+          currentFunction: "repairPouchesNpc",
+          phase: "repair-pouches-npc",
+          repairPouchesNpcMissingTicks: 0,
+          repairPouchesNpcLastClickedMarker: null,
+          repairPouchesNpcRejectedMarkers: [...state.repairPouchesNpcRejectedMarkers, rejectedMarker],
+          repairPouchesDialogClicks: 0,
+          repairPouchesDialogMissingTicks: 0,
+          actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
+        };
+      }
+
+      return transitionToRoundRestartState(
+        {
+          ...state,
+          repairPouchesDialogMissingTicks,
+        },
+        nowMs,
+        hadAnyDialogClick
+          ? `Pouch repair dialog blue text disappeared after ${state.repairPouchesDialogClicks}/${POUCH_REPAIR_DIALOG_BLUE_CLICK_COUNT} click(s); treating repair as complete.`
+          : `Pouch repair dialog skipped because blue chatbox text was not found after ${repairPouchesDialogMissingTicks} check(s) and ${state.repairPouchesNpcClickAttempts}/${POUCH_REPAIR_NPC_MAX_CLICK_ATTEMPTS} repair marker attempt(s).`,
+      );
+    }
+
+    if (repairPouchesDialogMissingTicks === 1 || repairPouchesDialogMissingTicks % 3 === 0) {
+      warn(
+        stepMessage(
+          WORKFLOW_STEPS.REPAIR_POUCHES_DIALOG,
+          `No blue chatbox continue text found yet for pouch repair. Retry ${repairPouchesDialogMissingTicks}/${POUCH_REPAIR_DIALOG_MAX_MISSING_TICKS}.`,
+        ),
+      );
+    }
+
+    return {
+      ...state,
+      repairPouchesDialogMissingTicks,
+      actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
+    };
+  }
+
+  const clicked = clickScreenPoint(captureBounds.x + blueTarget.centerX, captureBounds.y + blueTarget.centerY, captureBounds);
+  const repairPouchesDialogClicks = state.repairPouchesDialogClicks + 1;
+  log(
+    stepMessage(
+      WORKFLOW_STEPS.REPAIR_POUCHES_DIALOG,
+      `Clicked blue chatbox continue text for pouch repair at (${clicked.x},${clicked.y}) local=(${blueTarget.centerX},${blueTarget.centerY}) bounds=(${blueTarget.minX},${blueTarget.minY})-${blueTarget.maxX},${blueTarget.maxY} pixels=${blueTarget.pixelCount}; click ${repairPouchesDialogClicks}/${POUCH_REPAIR_DIALOG_BLUE_CLICK_COUNT}.`,
+    ),
+  );
+
+  return {
+    ...state,
+    repairPouchesDialogClicks,
+    repairPouchesDialogMissingTicks: 0,
+    actionLockUntilMs: Date.now() + GAME_TICK_MS,
   };
 }
 
@@ -6792,7 +7877,7 @@ function runFillPouchesAfterWorkbenchFullTick(
     log(
       stepMessage(
         WORKFLOW_STEPS.FILL_POUCHES_AFTER_WORKBENCH_FULL,
-        `Pouch fill verification for ${pendingClick.pouch}: free-space ${pendingClick.beforeFreeSlots} -> ${inventory.count}, observedFreedSlots=${result.delta}; marked ${pendingClick.pouch} full deterministically; ${formatWorkbenchEssenceEstimate(currentState)}.`,
+        `Pouch fill verification for ${pendingClick.pouch}: free-space read ${pendingClick.beforeFreeSlots} -> ${inventory.count}, effectiveFreeSpace=${result.resultingFreeSlots}, observedFreedSlots=${result.observedDelta}, assumedFreedSlots=${result.assumedDelta}, appliedMoved=${result.delta}; ${pendingClick.pouch} is now ${getPouchStoredEssence(currentState, pendingClick.pouch) ?? "unknown"}/${getPouchCapacity(pendingClick.pouch)}. ${formatWorkbenchEssenceEstimate(currentState)}.`,
       ),
     );
   }
@@ -6891,7 +7976,7 @@ function runTravelToGuardianTick(
     warn(
       stepMessage(
         WORKFLOW_STEPS.FIND_GUARDIAN,
-        `Guardian decision: ${formatGuardianDecision(guardianTargetSelection)}. Enabled ${target.slot} guardian (${target.runeMatch.rune}) click point is too close to the screen edge for a safe click; ${rotated ? `tapped '${GUARDIAN_GREEN_OUTLINE_CAMERA_ROTATE_KEY}'` : "waiting"} before retry ${missingGuardianGreenTicks}.`,
+        `Guardian decision: ${formatGuardianDecision(guardianTargetSelection)}. Enabled ${formatGuardianTravelTargetName(target)} guardian click point is too close to the screen edge for a safe click; ${rotated ? `tapped '${GUARDIAN_GREEN_OUTLINE_CAMERA_ROTATE_KEY}'` : "waiting"} before retry ${missingGuardianGreenTicks}.`,
       ),
     );
 
@@ -6943,7 +8028,7 @@ function runTravelToGuardianTick(
   log(
     stepMessage(
       WORKFLOW_STEPS.MOVE_TO_GUARDIAN,
-      `Clicked ${target.slot} guardian (${target.runeMatch.rune}, marker=${target.colorHex}/${target.color}) at (${clicked.x},${clicked.y}) local=(${target.clickPoint.centerX},${target.clickPoint.centerY}) bounds=(${target.marker.minX},${target.marker.minY})-${target.marker.maxX},${target.marker.maxY} pixels=${target.marker.pixelCount}; ${guardianPostClickSummary}; rewardPoints=${formatRewardPoints(guardianTargetSelection.rewardPoints)} preference=${guardianTargetSelection.preferenceOrder.join("->")} nextUnknown=${getOppositeGuardianSlot(target.slot)}; active elemental=${formatActiveGuardianRuneMatch(guardianTargetSelection.elementalRune)}, catalytic=${formatActiveGuardianRuneMatch(guardianTargetSelection.catalyticRune)}; runeTiming=${formatGuardianRuneTravelTimingDecision(runeTiming)}; waiting for teleport out of region ${GUARDIAN_CRAFTING_REGION_ID} (${formatGuardianTeleportWait(travel)}).`,
+      `Clicked ${formatGuardianTravelTargetName(target)} guardian (marker=${target.colorHex}/${target.color}) at (${clicked.x},${clicked.y}) local=(${target.clickPoint.centerX},${target.clickPoint.centerY}) bounds=(${target.marker.minX},${target.marker.minY})-${target.marker.maxX},${target.marker.maxY} pixels=${target.marker.pixelCount}; ${guardianPostClickSummary}; rewardPoints=${formatRewardPoints(guardianTargetSelection.rewardPoints)} preference=${guardianTargetSelection.preferenceOrder.join("->")} nextUnknown=${target.decisionSource === "optimizer" ? "unchanged" : getOppositeGuardianSlot(target.slot)}; active elemental=${formatActiveGuardianRuneMatch(guardianTargetSelection.elementalRune)}, catalytic=${formatActiveGuardianRuneMatch(guardianTargetSelection.catalyticRune)}; runeTiming=${formatGuardianRuneTravelTimingDecision(runeTiming)}; waiting for teleport out of region ${GUARDIAN_CRAFTING_REGION_ID} (${formatGuardianTeleportWait(travel)}).`,
     ),
   );
   rememberMovementObservation("guardian-to-altar", WORKFLOW_STEPS.MOVE_TO_GUARDIAN, clickedAtMs, travel);
@@ -6958,7 +8043,8 @@ function runTravelToGuardianTick(
     guardianAltarStartLocation: null,
     guardianAltarRune: target.runeMatch.rune,
     guardianAltarCameraLeftRotations: 0,
-    unknownRewardNextGuardianSlot: getOppositeGuardianSlot(target.slot),
+    unknownRewardNextGuardianSlot:
+      target.decisionSource === "optimizer" ? state.unknownRewardNextGuardianSlot : getOppositeGuardianSlot(target.slot),
     missingGuardianGreenTicks: 0,
     actionLockUntilMs: clickedAtMs + GUARDIAN_CLICK_LOCK_TICKS * GAME_TICK_MS,
   };
@@ -7053,11 +8139,41 @@ async function runWaitAfterGuardianClickTick(
       };
     }
 
+    const endAwareState = markEndOfRoundDepositModeIfNeeded(
+      unconfirmedState,
+      tickCapture,
+      WORKFLOW_STEPS.TELEPORT_TO_ALTAR,
+    );
+    if (endAwareState.endOfRoundDepositMode) {
+      return transitionToEndOfRoundChargedCellDepositState(
+        {
+          ...endAwareState,
+          missingGuardianYellowTicks: 0,
+          guardianArrivalDeadlineMs: 0,
+          guardianClickDistancePx: null,
+          guardianCoordinateConfirmed: false,
+          guardianAltarStartLocation: null,
+          guardianAltarRune: null,
+          guardianAltarCameraLeftRotations: 0,
+        },
+        nowMs,
+        `End-of-round signal detected while waiting for guardian teleport confirmation; current chunk=${guardianLocation.chunkId ?? "unknown"} region=${guardianLocation.regionId ?? "unknown"} matched='${guardianLocation.matchedLine ?? "null"}'. Abandoning stale guardian click and skipping Great Guardian because no altar craft was confirmed.`,
+      );
+    }
+
+    if (endAwareState.endOfRoundSignalTicks !== unconfirmedState.endOfRoundSignalTicks) {
+      return {
+        ...endAwareState,
+        missingGuardianYellowTicks: state.missingGuardianYellowTicks + 1,
+        actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
+      };
+    }
+
     const guardianTargetSelection = selectGuardianTravelTarget(
       tickCapture.bitmap,
       config,
       activeRuneTemplates,
-      unconfirmedState.unknownRewardNextGuardianSlot,
+      endAwareState.unknownRewardNextGuardianSlot,
     );
     if (guardianTargetSelection.target) {
       const target = guardianTargetSelection.target;
@@ -7067,19 +8183,19 @@ async function runWaitAfterGuardianClickTick(
         warn(
           stepMessage(
             WORKFLOW_STEPS.TELEPORT_TO_ALTAR,
-            `Guardian re-click decision: ${formatGuardianDecision(guardianTargetSelection)}. Still in crafting region after guardian travel deadline, but ${target.slot} guardian (${target.runeMatch.rune}) click point is too close to the screen edge for a safe re-click; ${rotated ? `tapped '${GUARDIAN_GREEN_OUTLINE_CAMERA_ROTATE_KEY}'` : "waiting"} before retry ${missingGuardianYellowTicks}.`,
+            `Guardian re-click decision: ${formatGuardianDecision(guardianTargetSelection)}. Still in crafting region after guardian travel deadline, but ${formatGuardianTravelTargetName(target)} guardian click point is too close to the screen edge for a safe re-click; ${rotated ? `tapped '${GUARDIAN_GREEN_OUTLINE_CAMERA_ROTATE_KEY}'` : "waiting"} before retry ${missingGuardianYellowTicks}.`,
           ),
         );
 
         return {
-          ...unconfirmedState,
+          ...endAwareState,
           missingGuardianYellowTicks,
           actionLockUntilMs: nowMs + GUARDIAN_GREEN_OUTLINE_CAMERA_ROTATE_LOCK_TICKS * GAME_TICK_MS,
         };
       }
 
       const travel = estimateTravelWaitTicks(playerAnchor, target.clickPoint);
-      const runeTiming = getGuardianRuneTravelTimingDecision(unconfirmedState, nowMs, travel);
+      const runeTiming = getGuardianRuneTravelTimingDecision(endAwareState, nowMs, travel);
       if (!runeTiming.canClick) {
         const missingGuardianYellowTicks = state.missingGuardianYellowTicks + 1;
         recordGuardianRuneTimerClickRefusal(true);
@@ -7093,7 +8209,7 @@ async function runWaitAfterGuardianClickTick(
         }
 
         return {
-          ...unconfirmedState,
+          ...endAwareState,
           missingGuardianYellowTicks,
           actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
         };
@@ -7118,20 +8234,21 @@ async function runWaitAfterGuardianClickTick(
       log(
         stepMessage(
           WORKFLOW_STEPS.MOVE_TO_GUARDIAN,
-          `Still in crafting region after guardian travel deadline: chunk=${guardianLocation.chunkId ?? "unknown"} region=${guardianLocation.regionId ?? "unknown"} matched='${guardianLocation.matchedLine ?? "null"}'; re-clicked ${target.slot} guardian (${target.runeMatch.rune}, marker=${target.colorHex}/${target.color}) at (${clicked.x},${clicked.y}) local=(${target.clickPoint.centerX},${target.clickPoint.centerY}) bounds=(${target.marker.minX},${target.marker.minY})-${target.marker.maxX},${target.marker.maxY} pixels=${target.marker.pixelCount}; ${guardianPostClickSummary}; rewardPoints=${formatRewardPoints(guardianTargetSelection.rewardPoints)} preference=${guardianTargetSelection.preferenceOrder.join("->")} nextUnknown=${getOppositeGuardianSlot(target.slot)}; runeTiming=${formatGuardianRuneTravelTimingDecision(runeTiming)}; ${formatGuardianTeleportWait(travel)}.`,
+          `Still in crafting region after guardian travel deadline: chunk=${guardianLocation.chunkId ?? "unknown"} region=${guardianLocation.regionId ?? "unknown"} matched='${guardianLocation.matchedLine ?? "null"}'; re-clicked ${formatGuardianTravelTargetName(target)} guardian (marker=${target.colorHex}/${target.color}) at (${clicked.x},${clicked.y}) local=(${target.clickPoint.centerX},${target.clickPoint.centerY}) bounds=(${target.marker.minX},${target.marker.minY})-${target.marker.maxX},${target.marker.maxY} pixels=${target.marker.pixelCount}; ${guardianPostClickSummary}; rewardPoints=${formatRewardPoints(guardianTargetSelection.rewardPoints)} preference=${guardianTargetSelection.preferenceOrder.join("->")} nextUnknown=${target.decisionSource === "optimizer" ? "unchanged" : getOppositeGuardianSlot(target.slot)}; runeTiming=${formatGuardianRuneTravelTimingDecision(runeTiming)}; ${formatGuardianTeleportWait(travel)}.`,
         ),
       );
       rememberMovementObservation("guardian-to-altar", WORKFLOW_STEPS.MOVE_TO_GUARDIAN, clickedAtMs, travel);
 
       return {
-        ...unconfirmedState,
+        ...endAwareState,
         guardianArrivalDeadlineMs: getGuardianTeleportRetryDeadlineMs(clickedAtMs, travel),
         guardianClickDistancePx: travel.distancePx,
         guardianCoordinateConfirmed: false,
         guardianAltarStartLocation: null,
         guardianAltarRune: target.runeMatch.rune,
         guardianAltarCameraLeftRotations: 0,
-        unknownRewardNextGuardianSlot: getOppositeGuardianSlot(target.slot),
+        unknownRewardNextGuardianSlot:
+          target.decisionSource === "optimizer" ? endAwareState.unknownRewardNextGuardianSlot : getOppositeGuardianSlot(target.slot),
         actionLockUntilMs: clickedAtMs + GUARDIAN_CLICK_LOCK_TICKS * GAME_TICK_MS,
       };
     }
@@ -7155,7 +8272,7 @@ async function runWaitAfterGuardianClickTick(
     }
 
     return {
-      ...unconfirmedState,
+      ...endAwareState,
       missingGuardianYellowTicks,
       actionLockUntilMs:
         nowMs + (shouldRotateCamera ? GUARDIAN_GREEN_OUTLINE_CAMERA_ROTATE_LOCK_TICKS * GAME_TICK_MS : FAST_ACTION_RETRY_MS),
@@ -7605,17 +8722,21 @@ function runEmptyPouchesAtAltarTick(
     const pendingClick = currentState.pouchClickPending;
     const observedMovedEssence = Math.max(0, pendingClick.beforeFreeSlots - inventory.count);
     const expectedMovedEssence = currentState.pouchClickBatchMovedEssence;
+    const effectiveFreeSlots =
+      observedMovedEssence === 0 && expectedMovedEssence > 0
+        ? clamp(pendingClick.beforeFreeSlots - expectedMovedEssence, 0, INVENTORY_SLOT_COUNT)
+        : inventory.count;
     currentState = {
       ...currentState,
       pouchClickPending: null,
-      pouchClickBatchMovedEssence: observedMovedEssence,
-      inventoryFreeSlots: inventory.count,
+      pouchClickBatchMovedEssence: observedMovedEssence > 0 ? observedMovedEssence : expectedMovedEssence,
+      inventoryFreeSlots: effectiveFreeSlots,
       missingInventoryCountTicks: 0,
     };
 
     const verificationMessage = stepMessage(
       WORKFLOW_STEPS.EMPTY_POUCHES_AT_ALTAR,
-      `Altar pouch batch verification: free-space ${pendingClick.beforeFreeSlots} -> ${inventory.count}, observedMoved=${observedMovedEssence}, expectedMoved=${expectedMovedEssence}; clicked=${formatPouchClickList(currentState.pouchClickQueue)}; pouch memory=${formatPouchEssenceSummary(currentState)}.`,
+      `Altar pouch batch verification: free-space read ${pendingClick.beforeFreeSlots} -> ${inventory.count}, effectiveFreeSpace=${effectiveFreeSlots}, observedMoved=${observedMovedEssence}, expectedMoved=${expectedMovedEssence}; clicked=${formatPouchClickList(currentState.pouchClickQueue)}; pouch memory=${formatPouchEssenceSummary(currentState)}.`,
     );
     if (observedMovedEssence !== expectedMovedEssence) {
       warn(verificationMessage);
@@ -7893,6 +9014,7 @@ function transitionToGreatGuardianFallbackAfterAttempts(
     chargedCellDepositArrivalDeadlineMs: 0,
     chargedCellDepositClickDistancePx: null,
     chargedCellDepositPlayerTileFallbackPending: false,
+    chargedCellDepositAttemptCount: 0,
     missingInventoryCountTicks: 0,
     missingChargedCellDepositTicks: 0,
     actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
@@ -7954,6 +9076,7 @@ function transitionToPendingPostReturnDepositState(state: BotState, nowMs: numbe
       chargedCellDepositArrivalDeadlineMs: 0,
       chargedCellDepositClickDistancePx: null,
       chargedCellDepositPlayerTileFallbackPending: false,
+      chargedCellDepositAttemptCount: 0,
       missingChargedCellDepositTicks: 0,
       missingInventoryCountTicks: 0,
     };
@@ -8016,6 +9139,7 @@ function transitionToPostPortalDepositResumeState(state: BotState, nowMs: number
       chargedCellDepositArrivalDeadlineMs: 0,
       chargedCellDepositClickDistancePx: null,
       chargedCellDepositPlayerTileFallbackPending: false,
+      chargedCellDepositAttemptCount: 0,
       missingChargedCellDepositTicks: 0,
       missingInventoryCountTicks: 0,
     };
@@ -8619,6 +9743,7 @@ async function runWaitAfterGreatGuardianClickTick(
       postPortalDepositResume: "chargedCell",
       actionLockUntilMs: 0,
       chargedCellDepositPlayerTileFallbackPending: false,
+      chargedCellDepositAttemptCount: 0,
       missingChargedCellDepositTicks: 0,
     };
     const chainedChargedCellState = await clickChargedCellDepositMarkerIfVisible(
@@ -8658,6 +9783,7 @@ async function runWaitAfterGreatGuardianClickTick(
     phase: "find-charged-cell-deposit",
     actionLockUntilMs: 0,
     chargedCellDepositPlayerTileFallbackPending: false,
+    chargedCellDepositAttemptCount: 0,
     missingChargedCellDepositTicks: 0,
   };
   const chainedChargedCellState = await clickChargedCellDepositMarkerIfVisible(
@@ -8722,6 +9848,14 @@ async function runFindChargedCellDepositTick(
     }
 
     if (currentState.chargedCellDepositPlayerTileFallbackPending) {
+      if (currentState.chargedCellDepositAttemptCount >= MAX_CHARGED_CELL_DEPOSIT_ATTEMPTS) {
+        return transitionToRuneDepositAfterChargedCellAttemptLimit(
+          currentState,
+          nowMs,
+          `Charged cell deposit reached ${currentState.chargedCellDepositAttemptCount}/${MAX_CHARGED_CELL_DEPOSIT_ATTEMPTS} click attempt(s), and the purple marker is still not visible for player-tile fallback.`,
+        );
+      }
+
       const playerTile = detectBestPlayerBoxInScreenshot(tickCapture.bitmap);
       if (playerTile) {
         const clicked = await clickDepositScreenPoint(
@@ -8733,10 +9867,11 @@ async function runFindChargedCellDepositTick(
           return currentState;
         }
         const clickedAtMs = Date.now();
+        const chargedCellDepositAttemptCount = currentState.chargedCellDepositAttemptCount + 1;
         log(
           stepMessage(
             WORKFLOW_STEPS.TRAVEL_TO_CHARGED_CELL_DEPOSIT,
-            `Charged-cell deposit retry could not find the purple marker after a failed deposit; moved mouse and waited ${DEPOSIT_PRE_CLICK_MOUSE_SETTLE_MS}ms, then clicked under the player cyan tile at (${clicked.x},${clicked.y}) local=(${playerTile.centerX},${playerTile.centerY}) bounds=(${playerTile.x},${playerTile.y})-(${playerTile.x + playerTile.width - 1},${playerTile.y + playerTile.height - 1}) pixels=${playerTile.pixelCount}. Waiting one bot tick before tapping '${CHARGED_CELL_TO_RUNE_CAMERA_KEY}' to turn the camera; checking inventory for ${CHARGED_CELL_DEPOSIT_PLAYER_TILE_VERIFY_TICKS} game tick(s).`,
+            `Charged-cell deposit retry could not find the purple marker after a failed deposit; moved mouse and waited ${DEPOSIT_PRE_CLICK_MOUSE_SETTLE_MS}ms, then clicked under the player cyan tile at (${clicked.x},${clicked.y}) local=(${playerTile.centerX},${playerTile.centerY}) bounds=(${playerTile.x},${playerTile.y})-(${playerTile.x + playerTile.width - 1},${playerTile.y + playerTile.height - 1}) pixels=${playerTile.pixelCount}; attempt ${chargedCellDepositAttemptCount}/${MAX_CHARGED_CELL_DEPOSIT_ATTEMPTS}. Waiting one bot tick before tapping '${CHARGED_CELL_TO_RUNE_CAMERA_KEY}' to turn the camera; checking inventory for ${CHARGED_CELL_DEPOSIT_PLAYER_TILE_VERIFY_TICKS} game tick(s).`,
           ),
         );
 
@@ -8749,6 +9884,7 @@ async function runFindChargedCellDepositTick(
           chargedCellDepositClickDistancePx: 0,
           chargedCellToRuneCameraReadyAtMs: cameraReadyAtMs,
           chargedCellDepositPlayerTileFallbackPending: false,
+          chargedCellDepositAttemptCount,
           missingChargedCellDepositTicks: 0,
           missingInventoryCountTicks: 0,
           actionLockUntilMs: cameraReadyAtMs,
@@ -8794,10 +9930,11 @@ async function clickChargedCellDepositMarker(
   }
   const clickedAtMs = Date.now();
   const cameraReadyAtMs = clickedAtMs + CHARGED_CELL_TO_RUNE_CAMERA_SETTLE_MS;
+  const chargedCellDepositAttemptCount = state.chargedCellDepositAttemptCount + 1;
   log(
     stepMessage(
       WORKFLOW_STEPS.TRAVEL_TO_CHARGED_CELL_DEPOSIT,
-      `Moved mouse and waited ${DEPOSIT_PRE_CLICK_MOUSE_SETTLE_MS}ms, then clicked center-right of charged cell deposit marker at (${clicked.x},${clicked.y}) local=(${chargedCellDepositClickPoint.centerX},${chargedCellDepositClickPoint.centerY}) bounds=(${chargedCellDeposit.minX},${chargedCellDeposit.minY})-(${chargedCellDeposit.maxX},${chargedCellDeposit.maxY}) pixels=${chargedCellDeposit.pixelCount}; waiting one bot tick before tapping '${CHARGED_CELL_TO_RUNE_CAMERA_KEY}' to turn the camera; checking inventory until travel deadline (${formatTravelEstimate(travel)}).`,
+      `Moved mouse and waited ${DEPOSIT_PRE_CLICK_MOUSE_SETTLE_MS}ms, then clicked center-right of charged cell deposit marker at (${clicked.x},${clicked.y}) local=(${chargedCellDepositClickPoint.centerX},${chargedCellDepositClickPoint.centerY}) bounds=(${chargedCellDeposit.minX},${chargedCellDeposit.minY})-(${chargedCellDeposit.maxX},${chargedCellDeposit.maxY}) pixels=${chargedCellDeposit.pixelCount}; attempt ${chargedCellDepositAttemptCount}/${MAX_CHARGED_CELL_DEPOSIT_ATTEMPTS}; waiting one bot tick before tapping '${CHARGED_CELL_TO_RUNE_CAMERA_KEY}' to turn the camera; checking inventory until travel deadline (${formatTravelEstimate(travel)}).`,
     ),
   );
   rememberMovementObservation("charged-cell-deposit", WORKFLOW_STEPS.TRAVEL_TO_CHARGED_CELL_DEPOSIT, clickedAtMs, travel);
@@ -8810,6 +9947,7 @@ async function clickChargedCellDepositMarker(
     chargedCellDepositClickDistancePx: travel.distancePx,
     chargedCellToRuneCameraReadyAtMs: cameraReadyAtMs,
     chargedCellDepositPlayerTileFallbackPending: false,
+    chargedCellDepositAttemptCount,
     missingChargedCellDepositTicks: 0,
     missingInventoryCountTicks: 0,
     actionLockUntilMs: cameraReadyAtMs,
@@ -8893,6 +10031,14 @@ async function runWaitAfterChargedCellDepositClickTick(
           currentState,
           nowMs,
           "Charged-cell deposit inventory was unreadable before the end-of-round travel deadline expired.",
+        );
+      }
+
+      if (currentState.chargedCellDepositAttemptCount >= MAX_CHARGED_CELL_DEPOSIT_ATTEMPTS) {
+        return transitionToRuneDepositAfterChargedCellAttemptLimit(
+          currentState,
+          nowMs,
+          `Charged cell deposit inventory was unreadable after ${currentState.chargedCellDepositAttemptCount}/${MAX_CHARGED_CELL_DEPOSIT_ATTEMPTS} click attempt(s).`,
         );
       }
 
@@ -8983,6 +10129,18 @@ async function runWaitAfterChargedCellDepositClickTick(
         );
       }
 
+      if (currentState.chargedCellDepositAttemptCount >= MAX_CHARGED_CELL_DEPOSIT_ATTEMPTS) {
+        return transitionToRuneDepositAfterChargedCellAttemptLimit(
+          {
+            ...currentState,
+            inventoryFreeSlots: inventoryAfterClick.count,
+            missingInventoryCountTicks: 0,
+          },
+          nowMs,
+          `Charged cell deposit did not reach expected free-space ${expectedInventoryFreeSlots} after ${currentState.chargedCellDepositAttemptCount}/${MAX_CHARGED_CELL_DEPOSIT_ATTEMPTS} click attempt(s); got ${inventoryAfterClick.count} from guardian baseline ${currentState.inventoryFreeSlots}.`,
+        );
+      }
+
       warn(
         stepMessage(
           WORKFLOW_STEPS.TRAVEL_TO_CHARGED_CELL_DEPOSIT,
@@ -9029,6 +10187,7 @@ async function runWaitAfterChargedCellDepositClickTick(
       chargedCellDepositArrivalDeadlineMs: 0,
       chargedCellDepositClickDistancePx: null,
       chargedCellDepositPlayerTileFallbackPending: false,
+      chargedCellDepositAttemptCount: 0,
     },
     "charged-cell-deposit",
     inventoryAfterClick.count,
@@ -9152,7 +10311,11 @@ function transitionAfterRuneDepositVerified(
     `${reasonPrefix}: inventory free-space increased ${beforeFreeSlots} -> ${afterFreeSlots}. ${cameraSummary} Inventory history=${formatInventoryHistory(endAwarePostRuneDepositState.inventoryHistory)}.`;
 
   if (endAwarePostRuneDepositState.endOfRoundDepositMode) {
-    return transitionToRoundRestartState(endAwarePostRuneDepositState, nowMs, `End-of-round rune deposit complete. ${depositSummary}`);
+    return transitionAfterCleanEndOfRoundComplete(
+      endAwarePostRuneDepositState,
+      nowMs,
+      `End-of-round rune deposit complete. ${depositSummary}`,
+    );
   }
 
   const portalOpenIcon = detectPortalOpenIcon(tickCapture.bitmap, portalOpenIconTemplate);
@@ -10441,17 +11604,24 @@ function runPortalMiningTick(
   }
 
   if (currentState.inventoryFreeSlots === null || inventory.count !== currentState.inventoryFreeSlots) {
+    const shouldStartNewPouchFillBudget =
+      currentState.inventoryFreeSlots === null &&
+      inventory.count > 0 &&
+      hasPouchesNeedingFill(currentState) &&
+      (currentState.pouchFillAvailableEssenceSlots === null || currentState.pouchFillAvailableEssenceSlots <= 0);
     log(
       stepMessage(
         WORKFLOW_STEPS.PORTAL_MINE_UNTIL_FULL,
-        `Portal mining inventory free-space ${currentState.inventoryFreeSlots === null ? "initialized" : "changed"}: ${currentState.inventoryFreeSlots ?? "unknown"} -> ${inventory.count}.`,
+        `Portal mining inventory free-space ${currentState.inventoryFreeSlots === null ? "initialized" : "changed"}: ${currentState.inventoryFreeSlots ?? "unknown"} -> ${inventory.count}${shouldStartNewPouchFillBudget ? `; starting new pouch fill budget=${inventory.count}` : ""}.`,
       ),
     );
     return {
       ...currentState,
       inventoryFreeSlots: inventory.count,
       pouchFillAvailableEssenceSlots:
-        currentState.pouchFillAvailableEssenceSlots ?? (currentState.inventoryFreeSlots === null ? inventory.count : null),
+        shouldStartNewPouchFillBudget
+          ? inventory.count
+          : currentState.pouchFillAvailableEssenceSlots ?? (currentState.inventoryFreeSlots === null ? inventory.count : null),
       missingInventoryCountTicks: 0,
       craftingInventoryChangeDeadlineMs: nowMs + PORTAL_MINING_INVENTORY_CHANGE_CHECK_TICKS * GAME_TICK_MS,
       portalMiningPouchesFilledThisCycle: hasPouchesNeedingFill(currentState) ? false : currentState.portalMiningPouchesFilledThisCycle,
@@ -10525,7 +11695,7 @@ function runFillPouchesAfterPortalMiningFullTick(
     log(
       stepMessage(
         WORKFLOW_STEPS.FILL_POUCHES_AFTER_PORTAL_MINING_FULL,
-        `Pouch fill verification for ${pendingClick.pouch}: free-space ${pendingClick.beforeFreeSlots} -> ${inventory.count}, observedFreedSlots=${result.delta}; marked ${pendingClick.pouch} full deterministically; pouch memory=${formatPouchEssenceSummary(currentState)}.`,
+        `Pouch fill verification for ${pendingClick.pouch}: free-space read ${pendingClick.beforeFreeSlots} -> ${inventory.count}, effectiveFreeSpace=${result.resultingFreeSlots}, observedFreedSlots=${result.observedDelta}, assumedFreedSlots=${result.assumedDelta}, appliedMoved=${result.delta}; ${pendingClick.pouch} is now ${getPouchStoredEssence(currentState, pendingClick.pouch) ?? "unknown"}/${getPouchCapacity(pendingClick.pouch)}. Pouch memory=${formatPouchEssenceSummary(currentState)}.`,
       ),
     );
   }
@@ -11142,6 +12312,20 @@ async function runLoop(
             ? runWaitAfterPortalExitClickTick(state, nowMs, tickCapture)
             : state;
         },
+        repairPouchesNpc: ({ state, nowMs, tickCapture }) => {
+          setCurrentLogLoopIndex(state.loopIndex);
+          setCurrentLogPhase(state.phase);
+          return state.phase === "repair-pouches-npc"
+            ? runRepairPouchesNpcTick(state, nowMs, tickCapture, captureBounds)
+            : state;
+        },
+        repairPouchesDialog: ({ state, nowMs, tickCapture }) => {
+          setCurrentLogLoopIndex(state.loopIndex);
+          setCurrentLogPhase(state.phase);
+          return state.phase === "repair-pouches-dialog"
+            ? runRepairPouchesDialogTick(state, nowMs, tickCapture, captureBounds)
+            : state;
+        },
       },
       onTickError: (error, state) => {
         const message = error instanceof Error ? error.message : String(error);
@@ -11167,6 +12351,7 @@ async function runLoop(
     stablePlayerAnchor = null;
     currentRunStats = null;
     currentCameraFacing = "unknown";
+    completedRunsSincePouchRepair = 0;
     setCurrentLogLoopIndex(0);
     setCurrentLogPhase(null);
     setAutomateBotCurrentStep(null);
@@ -11179,6 +12364,7 @@ export function onRunecraftingGuardianOfTheRiftBotStart(): void {
   setAutomateBotLogFooterProvider(buildGuardianRunStatsFooter);
   resetGuardianRunStats(Date.now());
   currentCameraFacing = "unknown";
+  completedRunsSincePouchRepair = 0;
 
   if (!isLoopRunning) {
     startedAtMs = Date.now();
@@ -11186,11 +12372,13 @@ export function onRunecraftingGuardianOfTheRiftBotStart(): void {
 
   log(`Automate Bot STARTED (${BOT_NAME}).`);
   const config = getSavedGuardianOfTheRiftConfig();
+  currentRunecraftLevel = config.runecraftLevel;
+  const colossalStats = getGuardianOfTheRiftColossalPouchStats(currentRunecraftLevel);
   const disabledGuardianElements = Object.entries(config.activeGuardianElements)
     .filter(([, enabled]) => !enabled)
     .map(([element]) => element);
   log(
-    `Config: botTick=${BOT_TICK_MS}ms, gameTick=${GAME_TICK_MS}ms, fastRetry=${FAST_ACTION_RETRY_MS}ms, preDecisionCaptureSettle=${PRE_DECISION_CAPTURE_SETTLE_MS}ms, startup-phase-check=on, agility-course=${config.useAgilityCourse ? "on" : "off"}.`,
+    `Config: botTick=${BOT_TICK_MS}ms, gameTick=${GAME_TICK_MS}ms, fastRetry=${FAST_ACTION_RETRY_MS}ms, preDecisionCaptureSettle=${PRE_DECISION_CAPTURE_SETTLE_MS}ms, startup-phase-check=on, agility-course=${config.useAgilityCourse ? "on" : "off"}, runecraftLevel=${currentRunecraftLevel}, colossal=${colossalStats ? `capacity=${colossalStats.capacity} fullUsesBeforeDecay=${colossalStats.fullUsesBeforeDecay}` : "unavailable"}.`,
   );
   log(
     `Active guardian config: disabled=${disabledGuardianElements.length > 0 ? disabledGuardianElements.join(",") : "none"}.`,

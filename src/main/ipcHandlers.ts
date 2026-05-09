@@ -25,6 +25,7 @@ import {
   normalizeGuardianOfTheRiftConfig,
   type GuardianOfTheRiftConfig,
 } from "./automate-bots/guardian-of-the-rift-config";
+import { readGuardianOfTheRiftRunStatsSnapshot } from "./guardianOfTheRiftRunStats";
 import { readActiveFileRows } from "./csvOperations";
 import { resolveInsideOutputFolder } from "./fileManager";
 import { getReplayTargetPoint } from "./utils";
@@ -89,9 +90,13 @@ export function setupIpcHandlers() {
     sendOutputFolderState();
   });
 
-  ipcMain.on(CHANNELS.SET_ACTIVE_VIEW, (_event, view: "clicker" | "automateBot" | "debug") => {
+  ipcMain.on(CHANNELS.SET_ACTIVE_VIEW, (_event, view: "clicker" | "automateBot" | "stats" | "debug") => {
     if (view === "automateBot") {
       setActiveView("automateBot");
+      return;
+    }
+    if (view === "stats") {
+      setActiveView("stats");
       return;
     }
     if (view === "debug") {
@@ -249,6 +254,19 @@ export function setupIpcHandlers() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`Could not save Guardian of the Rift config: ${message}`);
+      return { ok: false, error: message };
+    }
+  });
+
+  ipcMain.handle(CHANNELS.GET_GUARDIAN_OF_THE_RIFT_RUN_STATS, () => {
+    try {
+      return {
+        ok: true,
+        snapshot: readGuardianOfTheRiftRunStatsSnapshot(),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Could not read Guardian of the Rift run stats: ${message}`);
       return { ok: false, error: message };
     }
   });

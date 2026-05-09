@@ -307,4 +307,34 @@ describe("Guardian of the Rift panel detector", () => {
     expect(timer.secondsRemaining).toBe(48);
     expect(timer.rawText).toBe("48");
   });
+
+  test("detects optimizer portal time after the left panel moved", async () => {
+    const bitmap = await loadPngBitmap(
+      "test-images/runescrafting/guardian-of-the-rift/1335x1549-2k-125-ui-as-move.png",
+    );
+
+    const timeSincePortal = detectGuardianOfTheRiftTimeSincePortal(bitmap, "optimizer");
+    const timer = detectGuardianOfTheRiftTimer(bitmap, "optimizer");
+
+    expect(timeSincePortal.secondsElapsed).toBe(16);
+    expect(timeSincePortal.rawText).toBe("016");
+    expect(timeSincePortal.color).toBe("white");
+    expect(timer.secondsRemaining).toBe(3);
+    expect(timer.rawText).toBe("003");
+  });
+
+  test("detects optimizer portal time when the leading zero is misclassified", async () => {
+    const bitmap = await loadPngBitmap(
+      "test-images/runescrafting/guardian-of-the-rift/1639x1549-2k-125-the-bitch.png",
+    );
+
+    const timeSincePortal = detectGuardianOfTheRiftTimeSincePortal(bitmap, "optimizer");
+    const timer = detectGuardianOfTheRiftTimer(bitmap, "optimizer");
+
+    expect(timeSincePortal.secondsElapsed).toBe(55);
+    expect(timeSincePortal.rawText).toBe("855");
+    expect(timeSincePortal.color).toBe("white");
+    expect(timer.secondsRemaining).toBe(64);
+    expect(timer.rawText).toBe("104");
+  });
 });
