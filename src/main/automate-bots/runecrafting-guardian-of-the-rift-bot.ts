@@ -8853,10 +8853,10 @@ function runFindReturnPortalTick(
       warn(
         stepMessage(
           WORKFLOW_STEPS.FIND_PORTAL,
-          `No ${RETURN_PORTAL_MARKER_COLOR_HEX} red portal marker was found after salmon portal recovery, but coordinate now reads region ${GUARDIAN_CRAFTING_REGION_ID}: tile=${formatGuardianCoordinateLocation(location)} chunk=${location.chunkId} raw='${location.matchedLine}'. Treating the first outside-region read as stale/transition and retrying salmon portal flow instead of rotating for red portal.`,
+          `No ${RETURN_PORTAL_MARKER_COLOR_HEX} red portal marker was found after salmon portal recovery, but coordinate now reads region ${GUARDIAN_CRAFTING_REGION_ID}: tile=${formatGuardianCoordinateLocation(location)} chunk=${location.chunkId} raw='${location.matchedLine}'. Salmon portal is no longer reliable after recovery; resuming the pending deposit flow instead of waiting for the portal again.`,
         ),
       );
-      return transitionToFinalPortalWaitState(
+      return transitionToPendingPostReturnDepositState(
         {
           ...state,
           returnPortalRecoveryTarget: null,
@@ -8869,7 +8869,8 @@ function runFindReturnPortalTick(
           missingFinalPortalTicks: 0,
           actionLockUntilMs: 0,
         },
-        `Recovered from salmon portal outside-region read; coordinate is back in region ${GUARDIAN_CRAFTING_REGION_ID}, so waiting for salmon portal availability again.`,
+        nowMs,
+        `Recovered from salmon portal outside-region read; coordinate is back in region ${GUARDIAN_CRAFTING_REGION_ID}.`,
       );
     }
 
@@ -9209,7 +9210,7 @@ function transitionAfterReturnPortalOcrLoopGuard(
   warn(stepMessage(WORKFLOW_STEPS.TELEPORT_BACK, `Return recovery OCR loop guard accepted crafting-area recovery. ${reason} ${cameraSummary}`));
 
   if (recoveryTarget === "finalPortal") {
-    return transitionToFinalPortalWaitState(
+    return transitionToPendingPostReturnDepositState(
       {
         ...returnedState,
         finalPortalArrivalDeadlineMs: 0,
@@ -9219,7 +9220,8 @@ function transitionAfterReturnPortalOcrLoopGuard(
         missingFinalPortalTicks: 0,
         missingPortalMiningOrangeTicks: 0,
       },
-      `Return recovery OCR loop guard resumed salmon portal flow. ${reason}`,
+      nowMs,
+      `Return recovery OCR loop guard recovered from failed salmon portal travel. ${reason}`,
     );
   }
 
