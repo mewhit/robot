@@ -17,9 +17,11 @@ import {
   getSavedScreenshotNameSuffix,
   getSavedScreenshotSavePath,
   getSavedGuardianOfTheRiftConfig,
+  getSavedColossalPouchFullFillCountSinceRepair,
   setSavedScreenshotNameSuffix,
   setSavedScreenshotSavePath,
   setSavedGuardianOfTheRiftConfig,
+  setSavedColossalPouchFullFillCountSinceRepair,
 } from "./csvOperator";
 import {
   normalizeGuardianOfTheRiftConfig,
@@ -254,6 +256,30 @@ export function setupIpcHandlers() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`Could not save Guardian of the Rift config: ${message}`);
+      return { ok: false, error: message };
+    }
+  });
+
+  ipcMain.handle(CHANNELS.GET_GUARDIAN_OF_THE_RIFT_COLOSSAL_POUCH_FILL_COUNT, () => {
+    try {
+      return {
+        ok: true,
+        count: getSavedColossalPouchFullFillCountSinceRepair(),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Could not get colossal pouch fill count: ${message}`);
+      return { ok: false, error: message };
+    }
+  });
+
+  ipcMain.handle(CHANNELS.SET_GUARDIAN_OF_THE_RIFT_COLOSSAL_POUCH_FILL_COUNT, (_event, count: number) => {
+    try {
+      setSavedColossalPouchFullFillCountSinceRepair(count);
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Could not save colossal pouch fill count: ${message}`);
       return { ok: false, error: message };
     }
   });

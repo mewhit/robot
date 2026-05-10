@@ -34,6 +34,7 @@ type WindowConfig = {
   screenshotNameSuffix?: string;
   selectedAutomateBotId?: string;
   guardianOfTheRiftConfig?: GuardianOfTheRiftConfig;
+  colossalPouchFullFillCountSinceRepair?: number;
 };
 
 function isFiniteNumber(value: unknown): value is number {
@@ -69,6 +70,14 @@ function normalizeSelectedAutomateBotId(value: unknown): string | undefined {
 
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function normalizeColossalPouchFullFillCount(value: unknown): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    return 0;
+  }
+
+  return value;
 }
 
 function normalizeSavedGuardianOfTheRiftConfig(value: unknown): GuardianOfTheRiftConfig | undefined {
@@ -108,6 +117,7 @@ function toValidWindowConfig(raw: unknown): WindowConfig | null {
     screenshotNameSuffix: normalizeScreenshotNameSuffix(candidate.screenshotNameSuffix),
     selectedAutomateBotId: normalizeSelectedAutomateBotId(candidate.selectedAutomateBotId),
     guardianOfTheRiftConfig: normalizeSavedGuardianOfTheRiftConfig(candidate.guardianOfTheRiftConfig),
+    colossalPouchFullFillCountSinceRepair: normalizeColossalPouchFullFillCount(candidate.colossalPouchFullFillCountSinceRepair),
   };
 }
 
@@ -191,6 +201,7 @@ function writeWindowConfig(window: BrowserWindow) {
     screenshotNameSuffix: currentConfig?.screenshotNameSuffix,
     selectedAutomateBotId: currentConfig?.selectedAutomateBotId,
     guardianOfTheRiftConfig: currentConfig?.guardianOfTheRiftConfig,
+    colossalPouchFullFillCountSinceRepair: currentConfig?.colossalPouchFullFillCountSinceRepair,
   };
 
   const configPath = getWindowConfigPath();
@@ -233,6 +244,10 @@ export function getSavedSelectedAutomateBotId(): string {
 
 export function getSavedGuardianOfTheRiftConfig(): GuardianOfTheRiftConfig {
   return normalizeGuardianOfTheRiftConfig(readWindowConfig()?.guardianOfTheRiftConfig);
+}
+
+export function getSavedColossalPouchFullFillCountSinceRepair(): number {
+  return normalizeColossalPouchFullFillCount(readWindowConfig()?.colossalPouchFullFillCountSinceRepair);
 }
 
 export function setSavedScreenshotSavePath(nextPath: string) {
@@ -291,6 +306,18 @@ export function setSavedGuardianOfTheRiftConfig(nextConfig: GuardianOfTheRiftCon
   const payload: WindowConfig = {
     ...existing,
     guardianOfTheRiftConfig: normalizeGuardianOfTheRiftConfig(nextConfig),
+  };
+
+  const configPath = getWindowConfigPath();
+  fs.writeFileSync(configPath, JSON.stringify(payload, null, 2), "utf8");
+}
+
+export function setSavedColossalPouchFullFillCountSinceRepair(nextCount: number): void {
+  const existing = readWindowConfig() ?? getWindowConfigFallback();
+  const normalizedCount = normalizeColossalPouchFullFillCount(Math.round(nextCount));
+  const payload: WindowConfig = {
+    ...existing,
+    colossalPouchFullFillCountSinceRepair: normalizedCount,
   };
 
   const configPath = getWindowConfigPath();

@@ -8,7 +8,11 @@ import {
   type AutomateBotLogFooterContext,
 } from "../automateBotLogs";
 import { setAutomateBotCurrentStep, stopAutomateBot } from "../automateBotManager";
-import { getSavedGuardianOfTheRiftConfig } from "../csvOperator";
+import {
+  getSavedColossalPouchFullFillCountSinceRepair,
+  getSavedGuardianOfTheRiftConfig,
+  setSavedColossalPouchFullFillCountSinceRepair,
+} from "../csvOperator";
 import { AppState } from "../global-state";
 import { CHANNELS } from "../ipcChannels";
 import * as logger from "../logger";
@@ -111,7 +115,7 @@ type BotPhase =
   | "find-rune-deposit"
   | "wait-after-rune-deposit-click"
   | "wait-for-final-portal-open-icon"
-  | "find-final-portal"
+  | "find-portal-to-huge-remains"
   | "wait-after-final-portal-click"
   | "recover-final-portal-arrival"
   | "find-portal-mining"
@@ -702,7 +706,8 @@ const AGILITY_COURSE_EXIT_TARGET_X = 3633;
 const AGILITY_COURSE_EXIT_TARGET_Y = 9503;
 const AGILITY_COURSE_MARKER_MIN_PIXELS = 50;
 const AGILITY_CAMERA_NORTH_KEY = "n";
-const PORTAL_MINING_MARKER_COLOR_HEX = "FFFF7300";
+const PORTAL_MINING_MARKER_COLOR_HEX = "FF00A5FF";
+const PORTAL_MINING_MARKER_TOLERANCE = 16;
 const PORTAL_MINING_ORANGE_MIN_PIXELS = 50;
 const FINAL_PORTAL_MINING_TILE_X = 3592;
 const FINAL_PORTAL_MINING_TILE_Y = 9503;
@@ -871,6 +876,13 @@ const GUARDIAN_RUNE_ALTAR_ENTRY_CAMERA_PRESETS: Partial<Record<GuardianOfTheRift
       { key: GUARDIAN_ALTAR_CAMERA_UNWIND_KEY, count: 1 },
     ],
   },
+  fire: {
+    label: "fire altar m then d",
+    actions: [
+      { key: CHARGED_CELL_TO_RUNE_CAMERA_KEY, count: 1 },
+      { key: GUARDIAN_ALTAR_CAMERA_UNWIND_KEY, count: 1 },
+    ],
+  },
   earth: { label: "earth altar north", actions: [{ key: STARTUP_CAMERA_NORTH_KEY, count: 1 }] },
   nature: { label: "nature altar north", actions: [{ key: STARTUP_CAMERA_NORTH_KEY, count: 1 }] },
   chaos: { label: "chaos altar north", actions: [{ key: STARTUP_CAMERA_NORTH_KEY, count: 1 }] },
@@ -940,7 +952,7 @@ const WORKFLOW_STEPS = {
   FIND_RUNE_DEPOSIT: "Step 20/30 Find rune deposit",
   TRAVEL_TO_RUNE_DEPOSIT: "Step 21/30 Travel to rune deposit",
   WAIT_FOR_FINAL_PORTAL_ICON: "Step 22/30 Check for open portal icon",
-  FIND_FINAL_PORTAL: "Step 23/30 Check for salmon portal",
+  FIND_PORTAL_TO_HUGE_REMAINS: "Step 23/30 Find portal to huge remains",
   MOVE_TO_FINAL_PORTAL: "Step 24/30 Move to portal",
   RECOVER_FINAL_PORTAL_ARRIVAL: "Step 24.B/30 Recover salmon portal arrival",
   CHECK_PORTAL_MINING_ORANGE: "Step 25/30 Check if orange mining marker is clickable",
@@ -969,6 +981,7 @@ let stablePlayerAnchor: StablePlayerAnchor | null = null;
 let currentRunStats: GuardianRunStats | null = null;
 let currentCameraFacing: CameraFacing = "unknown";
 let completedRunsSincePouchRepair = 0;
+let colossalPouchFullFillCountSinceRepair = 0;
 let currentRunecraftLevel = 77;
 const syncSleepBuffer = new Int32Array(new SharedArrayBuffer(4));
 
@@ -2211,7 +2224,8 @@ function updatePouchEssenceAfterInventoryDelta(
       : pendingClick.beforeFreeSlots - afterFreeSlots;
   const observedDelta = Math.max(0, rawDelta);
   const capacity = getPouchCapacity(pendingClick.pouch);
-  const currentStored = getPouchStoredEssence(state, pendingClick.pouch) ?? 0;
+  const previousPouchStored = getPouchStoredEssence(state, pendingClick.pouch);
+  const currentStored = previousPouchStored ?? 0;
   const expectedMovedEssence =
     pendingClick.intent === "fill" ? getExpectedPouchFillMove(state, pendingClick.pouch) : 0;
   const assumedDelta = observedDelta > 0 ? 0 : expectedMovedEssence;
@@ -2221,6 +2235,17 @@ function updatePouchEssenceAfterInventoryDelta(
     pendingClick.intent === "fill" && observedDelta === 0 && assumedDelta > 0
       ? clamp(pendingClick.beforeFreeSlots + assumedDelta, 0, INVENTORY_SLOT_COUNT)
       : afterFreeSlots;
+  if (
+    pendingClick.intent === "fill" &&
+    pendingClick.pouch === "colossal" &&
+    previousPouchStored !== null &&
+    previousPouchStored < capacity &&
+    nextStored === capacity &&
+    capacity > 0
+  ) {
+    colossalPouchFullFillCountSinceRepair += 1;
+    setSavedColossalPouchFullFillCountSinceRepair(colossalPouchFullFillCountSinceRepair);
+  }
   const workbenchLooseEssenceCount =
     pendingClick.intent === "fill"
       ? Math.max(0, state.workbenchLooseEssenceCount - appliedDelta)
@@ -2584,7 +2609,7 @@ function setCurrentLogPhase(phase: BotPhase | "startup" | null | undefined): voi
     phase === "find-rune-deposit" ||
     phase === "wait-after-rune-deposit-click" ||
     phase === "wait-for-final-portal-open-icon" ||
-    phase === "find-final-portal" ||
+    phase === "find-portal-to-huge-remains" ||
     phase === "wait-after-final-portal-click" ||
     phase === "recover-final-portal-arrival" ||
     phase === "find-portal-mining" ||
@@ -2984,6 +3009,14 @@ function isStrictOrangePixel(r: number, g: number, b: number): boolean {
   return Math.abs(r - 255) <= 10 && Math.abs(g - 115) <= 18 && b <= 24;
 }
 
+function isPortalMiningMarkerPixel(r: number, g: number, b: number): boolean {
+  return (
+    Math.abs(r - 0) <= PORTAL_MINING_MARKER_TOLERANCE &&
+    Math.abs(g - 165) <= PORTAL_MINING_MARKER_TOLERANCE &&
+    Math.abs(b - 255) <= PORTAL_MINING_MARKER_TOLERANCE
+  );
+}
+
 function isAgilityCourseMarkerPixel(r: number, g: number, b: number): boolean {
   return Math.abs(r - 204) <= 18 && g >= 235 && b <= 24 && g - r >= 35 && g - r <= 75;
 }
@@ -3057,6 +3090,10 @@ function isPouchRepairNpcMarkerPixel(r: number, g: number, b: number): boolean {
 
 function isPouchRepairDialogBluePixel(r: number, g: number, b: number): boolean {
   return r <= 90 && g <= 120 && b >= 155 && b - Math.max(r, g) >= 70;
+}
+
+function isPouchRepairDialogWhitePixel(r: number, g: number, b: number): boolean {
+  return r >= 230 && g >= 230 && b >= 230 && Math.max(r, g, b) - Math.min(r, g, b) <= 25;
 }
 
 function isBrightTimerTextPixel(r: number, g: number, b: number): boolean {
@@ -3521,7 +3558,7 @@ function detectAllPortalMiningOrangeObjects(
 ): ColoredMarkerDetection[] {
   return detectAllColoredMarkers(
     bitmap,
-    isStrictOrangePixel,
+    isPortalMiningMarkerPixel,
     minPixels,
     resolvePortalMiningOrangeSearchBounds(bitmap),
   );
@@ -3738,6 +3775,53 @@ function detectPouchRepairDialogBlueTarget(bitmap: RobotBitmap): ColoredMarkerDe
       const g = bitmap.image[offset + 1];
       const r = bitmap.image[offset + 2];
       if (!isPouchRepairDialogBluePixel(r, g, b)) {
+        continue;
+      }
+
+      pixelCount += 1;
+      sumX += x;
+      sumY += y;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+    }
+  }
+
+  if (pixelCount < POUCH_REPAIR_DIALOG_BLUE_MIN_PIXELS) {
+    return null;
+  }
+
+  return {
+    centerX: Math.round(sumX / pixelCount),
+    centerY: Math.round(sumY / pixelCount),
+    pixelCount,
+    width: maxX - minX + 1,
+    height: maxY - minY + 1,
+    minX,
+    minY,
+    maxX,
+    maxY,
+  };
+}
+
+function detectPouchRepairDialogWhiteTarget(bitmap: RobotBitmap): ColoredMarkerDetection | null {
+  const bounds = resolvePouchRepairDialogBlueSearchBounds(bitmap);
+  let pixelCount = 0;
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  let sumX = 0;
+  let sumY = 0;
+
+  for (let y = bounds.minY; y <= bounds.maxY; y += 1) {
+    for (let x = bounds.minX; x <= bounds.maxX; x += 1) {
+      const offset = y * bitmap.byteWidth + x * bitmap.bytesPerPixel;
+      const b = bitmap.image[offset];
+      const g = bitmap.image[offset + 1];
+      const r = bitmap.image[offset + 2];
+      if (!isPouchRepairDialogWhitePixel(r, g, b)) {
         continue;
       }
 
@@ -6835,6 +6919,20 @@ function hasRepairablePouchSetup(state: BotState): boolean {
   return state.pouchInventory.pouches.colossal !== null || getRememberedPouchCount(state) >= 4;
 }
 
+function getColossalPouchRepairThreshold(): number | null {
+  const stats = getGuardianOfTheRiftColossalPouchStats(currentRunecraftLevel);
+  return stats === null ? null : stats.fullUsesBeforeDecay;
+}
+
+function shouldRepairColossalPouchBasedOnSessionFillCount(state: BotState): boolean {
+  if (state.pouchInventory.pouches.colossal === null) {
+    return false;
+  }
+
+  const threshold = getColossalPouchRepairThreshold();
+  return threshold !== null && colossalPouchFullFillCountSinceRepair >= threshold;
+}
+
 function rememberRepairPouchesNpcMarker(marker: ColoredMarkerDetection): RepairPouchesNpcMarkerMemory {
   return {
     centerX: marker.centerX,
@@ -6865,23 +6963,38 @@ function pickRepairPouchesNpcMarker(
 function transitionAfterCleanEndOfRoundComplete(state: BotState, nowMs: number, reason: string): BotState {
   completedRunsSincePouchRepair += 1;
   const rememberedPouchCount = getRememberedPouchCount(state);
-  const shouldRepair =
+  const shouldRepairColossal = shouldRepairColossalPouchBasedOnSessionFillCount(state);
+  const colossalThreshold = getColossalPouchRepairThreshold();
+  const hasColossalPouch = state.pouchInventory.pouches.colossal !== null;
+  const hasColossalRepairPlan = hasColossalPouch && colossalThreshold !== null;
+  const shouldRepairByRuns =
+    (!hasColossalPouch || !hasColossalRepairPlan) &&
     completedRunsSincePouchRepair >= POUCH_REPAIR_RUN_INTERVAL &&
     hasRepairablePouchSetup(state);
+  const shouldRepair = shouldRepairColossal || shouldRepairByRuns;
 
   if (!shouldRepair) {
+    const threshold = colossalThreshold;
+    const colossalStatus = hasColossalPouch
+      ? ` colossalFullFillCount=${colossalPouchFullFillCountSinceRepair}${
+          threshold === null ? "" : ` (threshold>=${threshold})`
+        }`
+      : " no-colossal";
     return transitionToRoundRestartState(
       state,
       nowMs,
-      `${reason} Pouch repair not needed yet: completedRunsSinceRepair=${completedRunsSincePouchRepair}/${POUCH_REPAIR_RUN_INTERVAL}, rememberedPouches=${rememberedPouchCount}/${GUARDIAN_OF_THE_RIFT_DETECTABLE_POUCHES.length}.`,
+      `${reason} Pouch repair not needed yet: completedRunsSinceRepair=${completedRunsSincePouchRepair}/${POUCH_REPAIR_RUN_INTERVAL}, rememberedPouches=${rememberedPouchCount}/${GUARDIAN_OF_THE_RIFT_DETECTABLE_POUCHES.length}.${colossalStatus}`,
     );
   }
 
   setAutomateBotCurrentStep(STEP_REPAIR_POUCHES_ID);
+  const repairReason = shouldRepairColossal
+    ? `session refill counter reached threshold (${colossalPouchFullFillCountSinceRepair} >= ${getColossalPouchRepairThreshold() ?? "n/a"}).`
+    : `completed ${completedRunsSincePouchRepair}/${POUCH_REPAIR_RUN_INTERVAL} run(s).`;
   log(
     stepMessage(
       WORKFLOW_STEPS.REPAIR_POUCHES_NPC,
-      `${reason} Completed ${completedRunsSincePouchRepair}/${POUCH_REPAIR_RUN_INTERVAL} clean run(s) with ${rememberedPouchCount}/${GUARDIAN_OF_THE_RIFT_DETECTABLE_POUCHES.length} pouch(es); clicking ${POUCH_REPAIR_NPC_MARKER_COLOR_HEX} repair NPC marker before restarting.`,
+      `${reason} ${repairReason} Completed ${rememberedPouchCount}/${GUARDIAN_OF_THE_RIFT_DETECTABLE_POUCHES.length} remembered pouch(es); clicking ${POUCH_REPAIR_NPC_MARKER_COLOR_HEX} repair NPC marker before restarting.`,
     ),
   );
 
@@ -6947,7 +7060,7 @@ function runRepairPouchesNpcTick(
   log(
     stepMessage(
       WORKFLOW_STEPS.REPAIR_POUCHES_NPC,
-      `Clicked interior of ${POUCH_REPAIR_NPC_MARKER_COLOR_HEX} repair NPC marker at (${clicked.x},${clicked.y}) local=(${marker.centerX},${marker.centerY}) bounds=(${marker.minX},${marker.minY})-${marker.maxX},${marker.maxY} pixels=${marker.pixelCount}; attempt ${repairPouchesNpcClickAttempts}/${POUCH_REPAIR_NPC_MAX_CLICK_ATTEMPTS}; waiting one game tick before clicking blue chatbox continue text.`,
+      `Clicked interior of ${POUCH_REPAIR_NPC_MARKER_COLOR_HEX} repair NPC marker at (${clicked.x},${clicked.y}) local=(${marker.centerX},${marker.centerY}) bounds=(${marker.minX},${marker.minY})-${marker.maxX},${marker.maxY} pixels=${marker.pixelCount}; attempt ${repairPouchesNpcClickAttempts}/${POUCH_REPAIR_NPC_MAX_CLICK_ATTEMPTS}; waiting one game tick before clicking chatbox continue text.`,
     ),
   );
 
@@ -6976,15 +7089,20 @@ function runRepairPouchesDialogTick(
 
   if (state.repairPouchesDialogClicks >= POUCH_REPAIR_DIALOG_BLUE_CLICK_COUNT) {
     completedRunsSincePouchRepair = 0;
+    colossalPouchFullFillCountSinceRepair = 0;
+    setSavedColossalPouchFullFillCountSinceRepair(0);
     return transitionToRoundRestartState(
       state,
       nowMs,
-      `Pouch repair dialog completed after ${state.repairPouchesDialogClicks}/${POUCH_REPAIR_DIALOG_BLUE_CLICK_COUNT} blue chatbox click(s).`,
+      `Pouch repair dialog completed after ${state.repairPouchesDialogClicks}/${POUCH_REPAIR_DIALOG_BLUE_CLICK_COUNT} chatbox click(s).`,
     );
   }
 
   const blueTarget = detectPouchRepairDialogBlueTarget(tickCapture.bitmap);
-  if (!blueTarget) {
+  const whiteTarget = blueTarget ? null : detectPouchRepairDialogWhiteTarget(tickCapture.bitmap);
+  const dialogTarget = blueTarget ?? whiteTarget;
+  const dialogColor = blueTarget ? "blue" : whiteTarget ? "white" : null;
+  if (!dialogTarget) {
     const repairPouchesDialogMissingTicks = state.repairPouchesDialogMissingTicks + 1;
     if (repairPouchesDialogMissingTicks >= POUCH_REPAIR_DIALOG_MAX_MISSING_TICKS) {
       if (
@@ -6996,7 +7114,7 @@ function runRepairPouchesDialogTick(
         warn(
           stepMessage(
             WORKFLOW_STEPS.REPAIR_POUCHES_NPC,
-            `No blue chatbox text appeared after clicking ${POUCH_REPAIR_NPC_MARKER_COLOR_HEX} repair candidate local=(${rejectedMarker.centerX},${rejectedMarker.centerY}) size=${rejectedMarker.width}x${rejectedMarker.height}; rejecting that repair marker and trying another candidate (${state.repairPouchesNpcClickAttempts}/${POUCH_REPAIR_NPC_MAX_CLICK_ATTEMPTS}).`,
+            `No blue/white chatbox text appeared after clicking ${POUCH_REPAIR_NPC_MARKER_COLOR_HEX} repair candidate local=(${rejectedMarker.centerX},${rejectedMarker.centerY}) size=${rejectedMarker.width}x${rejectedMarker.height}; rejecting that repair marker and trying another candidate (${state.repairPouchesNpcClickAttempts}/${POUCH_REPAIR_NPC_MAX_CLICK_ATTEMPTS}).`,
           ),
         );
 
@@ -7017,7 +7135,7 @@ function runRepairPouchesDialogTick(
         warn(
           stepMessage(
             WORKFLOW_STEPS.REPAIR_POUCHES_DIALOG,
-            `Pouch repair dialog blue text is still missing after ${repairPouchesDialogMissingTicks}/${POUCH_REPAIR_DIALOG_MAX_MISSING_TICKS} check(s), but only ${state.repairPouchesDialogClicks}/${POUCH_REPAIR_DIALOG_BLUE_CLICK_COUNT} click(s) were completed; continuing to wait because the blue text can flicker.`,
+            `Pouch repair dialog text is still missing after ${repairPouchesDialogMissingTicks}/${POUCH_REPAIR_DIALOG_MAX_MISSING_TICKS} check(s), but only ${state.repairPouchesDialogClicks}/${POUCH_REPAIR_DIALOG_BLUE_CLICK_COUNT} click(s) were completed; continuing to wait because the text can flicker.`,
           ),
         );
 
@@ -7034,7 +7152,7 @@ function runRepairPouchesDialogTick(
           repairPouchesDialogMissingTicks,
         },
         nowMs,
-        `Pouch repair dialog skipped because blue chatbox text was not found after ${repairPouchesDialogMissingTicks} check(s) and ${state.repairPouchesNpcClickAttempts}/${POUCH_REPAIR_NPC_MAX_CLICK_ATTEMPTS} repair marker attempt(s).`,
+        `Pouch repair dialog skipped because blue/white chatbox text was not found after ${repairPouchesDialogMissingTicks} check(s) and ${state.repairPouchesNpcClickAttempts}/${POUCH_REPAIR_NPC_MAX_CLICK_ATTEMPTS} repair marker attempt(s).`,
       );
     }
 
@@ -7042,7 +7160,7 @@ function runRepairPouchesDialogTick(
       warn(
         stepMessage(
           WORKFLOW_STEPS.REPAIR_POUCHES_DIALOG,
-          `No blue chatbox continue text found yet for pouch repair. Retry ${repairPouchesDialogMissingTicks}/${POUCH_REPAIR_DIALOG_MAX_MISSING_TICKS}.`,
+          `No blue/white chatbox continue text found yet for pouch repair. Retry ${repairPouchesDialogMissingTicks}/${POUCH_REPAIR_DIALOG_MAX_MISSING_TICKS}.`,
         ),
       );
     }
@@ -7054,12 +7172,16 @@ function runRepairPouchesDialogTick(
     };
   }
 
-  const clicked = clickScreenPoint(captureBounds.x + blueTarget.centerX, captureBounds.y + blueTarget.centerY, captureBounds);
+  const clicked = clickScreenPoint(
+    captureBounds.x + dialogTarget!.centerX,
+    captureBounds.y + dialogTarget!.centerY,
+    captureBounds,
+  );
   const repairPouchesDialogClicks = state.repairPouchesDialogClicks + 1;
   log(
     stepMessage(
       WORKFLOW_STEPS.REPAIR_POUCHES_DIALOG,
-      `Clicked blue chatbox continue text for pouch repair at (${clicked.x},${clicked.y}) local=(${blueTarget.centerX},${blueTarget.centerY}) bounds=(${blueTarget.minX},${blueTarget.minY})-${blueTarget.maxX},${blueTarget.maxY} pixels=${blueTarget.pixelCount}; click ${repairPouchesDialogClicks}/${POUCH_REPAIR_DIALOG_BLUE_CLICK_COUNT}.`,
+      `Clicked ${dialogColor} chatbox continue text for pouch repair at (${clicked.x},${clicked.y}) local=(${dialogTarget!.centerX},${dialogTarget!.centerY}) bounds=(${dialogTarget!.minX},${dialogTarget!.minY})-${dialogTarget!.maxX},${dialogTarget!.maxY} pixels=${dialogTarget!.pixelCount}; click ${repairPouchesDialogClicks}/${POUCH_REPAIR_DIALOG_BLUE_CLICK_COUNT}.`,
     ),
   );
 
@@ -10934,7 +11056,7 @@ function transitionToFinalPortalSearchState(state: BotState, nowMs: number, reas
   return {
     ...state,
     currentFunction: "findFinalPortal",
-    phase: "find-final-portal",
+    phase: "find-portal-to-huge-remains",
     openPortalAfterCurrentPostReturnAction: false,
     portalMiningPouchesFilledThisCycle: false,
     missingFinalPortalOpenIconTicks: 0,
@@ -11015,7 +11137,7 @@ function runFindFinalPortalTick(
     if (missingFinalPortalTicks === 1 || missingFinalPortalTicks % 5 === 0) {
       warn(
         stepMessage(
-          WORKFLOW_STEPS.FIND_FINAL_PORTAL,
+          WORKFLOW_STEPS.FIND_PORTAL_TO_HUGE_REMAINS,
           `No ${GUARDIAN_OF_THE_RIFT_PORTAL_MARKER_COLOR_HEX} portal marker found yet; ${rotated ? `tapped '${GUARDIAN_SALMON_PORTAL_CAMERA_ROTATE_KEY}'` : `could not tap '${GUARDIAN_SALMON_PORTAL_CAMERA_ROTATE_KEY}'`} to rotate camera before retry ${missingFinalPortalTicks}. Candidates=${formatGuardianOfTheRiftPortalCandidates(portalCandidates)}.`,
         ),
       );
@@ -11040,7 +11162,7 @@ function runFindFinalPortalTick(
       const clickedAtMs = Date.now();
       warn(
         stepMessage(
-          WORKFLOW_STEPS.FIND_FINAL_PORTAL,
+          WORKFLOW_STEPS.FIND_PORTAL_TO_HUGE_REMAINS,
           `${GUARDIAN_OF_THE_RIFT_PORTAL_MARKER_COLOR_HEX} salmon portal marker overlaps guardian marker(s), and no safe pink click point was available. Clicked safe reposition point toward portal at (${clicked.x},${clicked.y}) local=(${repositionPoint.centerX},${repositionPoint.centerY}) before retry ${missingFinalPortalTicks}. Portal=${formatMarkerBounds(finalPortal)} blockers=${finalPortalBlockers.map(formatMarkerBounds).join("; ")} (${formatTravelEstimate(travel)}).`,
         ),
       );
@@ -11056,7 +11178,7 @@ function runFindFinalPortalTick(
     const rotated = tapCameraKey(GUARDIAN_SALMON_PORTAL_CAMERA_ROTATE_KEY);
     warn(
       stepMessage(
-        WORKFLOW_STEPS.FIND_FINAL_PORTAL,
+        WORKFLOW_STEPS.FIND_PORTAL_TO_HUGE_REMAINS,
         `${GUARDIAN_OF_THE_RIFT_PORTAL_MARKER_COLOR_HEX} salmon portal marker overlaps guardian marker(s), so the visual marker may be rendered over an unclickable guardian. ${rotated ? `Tapped '${GUARDIAN_SALMON_PORTAL_CAMERA_ROTATE_KEY}'` : `Could not tap '${GUARDIAN_SALMON_PORTAL_CAMERA_ROTATE_KEY}'`} before retry ${missingFinalPortalTicks}. Portal=${formatMarkerBounds(finalPortal)} blockers=${finalPortalBlockers.map(formatMarkerBounds).join("; ")}.`,
       ),
     );
@@ -11073,7 +11195,7 @@ function runFindFinalPortalTick(
     const readyAtMs = nowMs + SALMON_PORTAL_PRE_CLICK_SETTLE_TICKS * GAME_TICK_MS;
     log(
       stepMessage(
-        WORKFLOW_STEPS.FIND_FINAL_PORTAL,
+        WORKFLOW_STEPS.FIND_PORTAL_TO_HUGE_REMAINS,
         `${GUARDIAN_OF_THE_RIFT_PORTAL_MARKER_COLOR_HEX} salmon portal marker found at center=(${finalPortalClickPoint.centerX},${finalPortalClickPoint.centerY}); waiting ${SALMON_PORTAL_PRE_CLICK_SETTLE_TICKS} game tick(s) before clicking.`,
       ),
     );
@@ -12502,7 +12624,7 @@ async function runLoop(
         findFinalPortal: ({ state, nowMs, tickCapture }) => {
           setCurrentLogLoopIndex(state.loopIndex);
           setCurrentLogPhase(state.phase);
-          return state.phase === "find-final-portal"
+      return state.phase === "find-portal-to-huge-remains"
             ? runFindFinalPortalTick(state, nowMs, tickCapture, captureBounds, portalOpenIconTemplate)
             : state;
         },
@@ -12604,6 +12726,7 @@ export function onRunecraftingGuardianOfTheRiftBotStart(): void {
   resetGuardianRunStats(Date.now());
   currentCameraFacing = "unknown";
   completedRunsSincePouchRepair = 0;
+  colossalPouchFullFillCountSinceRepair = getSavedColossalPouchFullFillCountSinceRepair();
 
   if (!isLoopRunning) {
     startedAtMs = Date.now();

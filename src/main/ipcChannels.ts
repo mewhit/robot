@@ -14,6 +14,10 @@ export const CHANNELS = {
   GET_DEBUG_FOLDER_FILES: "get-debug-folder-files",
   GET_GUARDIAN_OF_THE_RIFT_CONFIG: "get-guardian-of-the-rift-config",
   SET_GUARDIAN_OF_THE_RIFT_CONFIG: "set-guardian-of-the-rift-config",
+  GET_GUARDIAN_OF_THE_RIFT_COLOSSAL_POUCH_FILL_COUNT:
+    "get-guardian-of-the-rift-colossal-pouch-fill-count",
+  SET_GUARDIAN_OF_THE_RIFT_COLOSSAL_POUCH_FILL_COUNT:
+    "set-guardian-of-the-rift-colossal-pouch-fill-count",
   GET_GUARDIAN_OF_THE_RIFT_RUN_STATS: "get-guardian-of-the-rift-run-stats",
   SET_REPLAY_REPEAT: "set-replay-repeat",
   SET_REPLAY_CLICK_DELAY_MS: "set-replay-click-delay-ms",

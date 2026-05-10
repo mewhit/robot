@@ -34,6 +34,8 @@ type AutomateBotProps = {
   onGuardianOfTheRiftUseAgilityCourseChange: (enabled: boolean) => void;
   onGuardianOfTheRiftRunecraftLevelChange: (level: number) => void;
   onGuardianOfTheRiftPouchChange: (pouch: GuardianOfTheRiftPouch, enabled: boolean) => void;
+  colossalPouchFullFillCount: number;
+  onGuardianOfTheRiftColossalFillCountChange: (count: number) => void;
 };
 
 function formatGuardianElementLabel(value: GuardianOfTheRiftActiveElement): string {
@@ -305,14 +307,24 @@ export default function AutomateBot(props: AutomateBotProps) {
     onToggleSelectedTaskRun,
     onStepContextMenu,
     onGuardianOfTheRiftElementEnabledChange,
-    onGuardianOfTheRiftUseAgilityCourseChange,
-    onGuardianOfTheRiftRunecraftLevelChange,
-    onGuardianOfTheRiftPouchChange,
-  } = props;
+  onGuardianOfTheRiftUseAgilityCourseChange,
+  onGuardianOfTheRiftRunecraftLevelChange,
+  onGuardianOfTheRiftPouchChange,
+  colossalPouchFullFillCount,
+  onGuardianOfTheRiftColossalFillCountChange,
+} = props;
 
   const logContainerRef = useRef<HTMLDivElement | null>(null);
   const visibleLogLines = useMemo(() => logLines.slice(-500), [logLines]);
   const colossalPouchStats = getGuardianOfTheRiftColossalPouchStats(guardianOfTheRiftConfig.runecraftLevel);
+  const maxColossalPouchUseCount = colossalPouchStats?.fullUsesBeforeDecay ?? 0;
+  const normalizedColossalPouchFullFillCount =
+    maxColossalPouchUseCount > 0
+      ? Math.max(0, Math.min(maxColossalPouchUseCount, colossalPouchFullFillCount))
+      : 0;
+  const remainingColossalPouchUses =
+    maxColossalPouchUseCount > 0 ? Math.max(0, maxColossalPouchUseCount - normalizedColossalPouchFullFillCount) : 0;
+  const colossalInputValue = maxColossalPouchUseCount > 0 ? normalizedColossalPouchFullFillCount : 0;
 
   useEffect(() => {
     const container = logContainerRef.current;
@@ -365,6 +377,32 @@ export default function AutomateBot(props: AutomateBotProps) {
               <span className="automatebot-toggle-value">
                 {colossalPouchStats
                   ? `Colossal ${colossalPouchStats.capacity}/${colossalPouchStats.fullUsesBeforeDecay}`
+                  : "No colossal"}
+              </span>
+            </label>
+            <label className="automatebot-toggle-row">
+              <span className="automatebot-toggle-label">
+                Colossal fills since repair{maxColossalPouchUseCount > 0 ? ` (remaining ${remainingColossalPouchUses})` : ""}
+              </span>
+              <input
+                type="number"
+                min={0}
+                max={maxColossalPouchUseCount > 0 ? maxColossalPouchUseCount : 0}
+                step={1}
+                value={colossalInputValue}
+                onChange={(e) => {
+                  const raw = Number(e.target.value);
+                  const clamped =
+                    maxColossalPouchUseCount > 0
+                      ? Math.max(0, Math.min(maxColossalPouchUseCount, Number.isFinite(raw) ? Math.round(raw) : 0))
+                      : 0;
+                  onGuardianOfTheRiftColossalFillCountChange(clamped);
+                }}
+                disabled={maxColossalPouchUseCount === 0}
+              />
+              <span className="automatebot-toggle-value">
+                {maxColossalPouchUseCount > 0
+                  ? `${normalizedColossalPouchFullFillCount}/${maxColossalPouchUseCount}`
                   : "No colossal"}
               </span>
             </label>

@@ -214,6 +214,7 @@ export default function App() {
   const [guardianOfTheRiftConfig, setGuardianOfTheRiftConfig] = useState<GuardianOfTheRiftConfig>(() =>
     createDefaultGuardianOfTheRiftConfig(),
   );
+  const [guardianOfTheRiftColossalFillCount, setGuardianOfTheRiftColossalFillCount] = useState(0);
   const [debugFolderFiles, setDebugFolderFiles] = useState<string[]>([]);
   const [gotrRunStatsSnapshot, setGotrRunStatsSnapshot] = useState<GuardianOfTheRiftRunStatsSnapshot | null>(null);
   const [isGotrRunStatsLoading, setIsGotrRunStatsLoading] = useState(false);
@@ -408,6 +409,19 @@ export default function App() {
         }
 
         setGuardianOfTheRiftConfig(result.config);
+      })
+      .catch(() => {
+        // Ignore non-critical config read failures.
+      });
+
+    void ipcRenderer
+      .invoke(CHANNELS.GET_GUARDIAN_OF_THE_RIFT_COLOSSAL_POUCH_FILL_COUNT)
+      .then((result: { ok?: boolean; count?: number }) => {
+        if (!result?.ok || typeof result.count !== "number") {
+          return;
+        }
+
+        setGuardianOfTheRiftColossalFillCount(Math.max(0, Math.round(result.count)));
       })
       .catch(() => {
         // Ignore non-critical config read failures.
@@ -689,6 +703,14 @@ export default function App() {
       });
 
       return next;
+    });
+  }, []);
+
+  const handleGuardianOfTheRiftColossalFillCountChange = useCallback((count: number) => {
+    const next = Number.isFinite(count) ? Math.max(0, Math.round(count)) : 0;
+    setGuardianOfTheRiftColossalFillCount(next);
+    void ipcRenderer.invoke(CHANNELS.SET_GUARDIAN_OF_THE_RIFT_COLOSSAL_POUCH_FILL_COUNT, next).catch(() => {
+      // Ignore non-critical config write failures.
     });
   }, []);
 
@@ -1195,6 +1217,8 @@ export default function App() {
             onGuardianOfTheRiftUseAgilityCourseChange={handleGuardianOfTheRiftUseAgilityCourseChange}
             onGuardianOfTheRiftRunecraftLevelChange={handleGuardianOfTheRiftRunecraftLevelChange}
             onGuardianOfTheRiftPouchChange={handleGuardianOfTheRiftPouchChange}
+            colossalPouchFullFillCount={guardianOfTheRiftColossalFillCount}
+            onGuardianOfTheRiftColossalFillCountChange={handleGuardianOfTheRiftColossalFillCountChange}
           />
         ) : activeView === "stats" ? (
           <GotrStatsView

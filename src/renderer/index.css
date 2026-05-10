@@ -173,6 +173,10 @@
     @apply flex items-center gap-2 text-xs rounded border border-slate-200 bg-slate-50 px-2 py-1.5;
   }
 
+  .automatebot-toggle-row input[type="number"] {
+    @apply w-14 px-1 py-0.5 text-right text-xs;
+  }
+
   .automatebot-toggle-row-small {
     @apply py-1;
   }
