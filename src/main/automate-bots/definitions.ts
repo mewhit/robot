@@ -70,7 +70,7 @@ export const AUTOMATE_BOTS: AutomateBotDefinition[] = [
     id: RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID,
     name: "Guardian of the Rift",
     group: "Runecrafting",
-    versionName: "optimized-salmon-portal-precise-click",
+    versionName: "optimized-salmon-guardian-safe-click",
   },
 ];
 

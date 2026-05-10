@@ -713,6 +713,8 @@ const SALMON_PORTAL_PRE_CLICK_SETTLE_TICKS = 1;
 const SALMON_PORTAL_TO_MINING_VALIDATION_BUFFER_TICKS = 0;
 const SALMON_PORTAL_STALLED_ARRIVAL_RECOVERY_TICKS = 10;
 const SALMON_PORTAL_CLICK_RATIO_X = 0.5;
+const SALMON_PORTAL_GUARDIAN_BLOCKER_MARGIN_PX = 18;
+const SALMON_PORTAL_DIRECTIONAL_REPOSITION_LOCK_TICKS = 2;
 const AGILITY_EAST_CLICK_RATIO_X = 0.68;
 const AGILITY_EAST_CLICK_RATIO_Y = 0.5;
 const AGILITY_EAST_CLICK_LOCK_TICKS = 3;
@@ -767,11 +769,11 @@ const ACTIVE_GUARDIAN_MIN_HEIGHT_PX = GUARDIAN_OF_THE_RIFT_OVERLAY_MODE === "opt
 const ACTIVE_GUARDIAN_MIN_PIXELS = GUARDIAN_OF_THE_RIFT_OVERLAY_MODE === "optimizer" ? 800 : 2_500;
 const ACTIVE_GUARDIAN_MIN_ASPECT_RATIO = 0.45;
 const ACTIVE_GUARDIAN_MAX_ASPECT_RATIO = 2.8;
-const GUARDIAN_BLACK_MAX_COMPONENT = 85;
+const GUARDIAN_BLACK_MAX_COMPONENT = 125;
 const GUARDIAN_BLACK_MIN_EDGE_MARGIN_PX = 2;
-const GUARDIAN_INTERIOR_COLOR_TOLERANCE = 10;
+const GUARDIAN_INTERIOR_COLOR_TOLERANCE = 12;
 const GUARDIAN_INTERIOR_GRAYSCALE_TOLERANCE = 14;
-const GUARDIAN_INTERIOR_MIN_MATCH_PIXELS = 80;
+const GUARDIAN_INTERIOR_MIN_MATCH_PIXELS = 24;
 const GUARDIAN_INTERIOR_MIN_MATCH_RATIO = 0.08;
 const GREAT_GUARDIAN_BLUE_MIN_PIXELS = 120;
 const CHARGED_CELL_DEPOSIT_PURPLE_MIN_PIXELS = 200;
@@ -798,7 +800,7 @@ const POUCH_REPAIR_NPC_MARKER_MAX_MISSING_TICKS = 10;
 const POUCH_REPAIR_NPC_MAX_CLICK_ATTEMPTS = 5;
 const POUCH_REPAIR_NPC_REJECT_RADIUS_PX = 96;
 const POUCH_REPAIR_DIALOG_BLUE_MIN_PIXELS = 20;
-const POUCH_REPAIR_DIALOG_BLUE_CLICK_COUNT = 9;
+const POUCH_REPAIR_DIALOG_BLUE_CLICK_COUNT = 12;
 const POUCH_REPAIR_DIALOG_MAX_MISSING_TICKS = 5;
 const GUARDIAN_YELLOW_CLICK_LOCK_TICKS = 2;
 const GUARDIAN_RETURN_CLICK_LOCK_TICKS = 2;
@@ -847,18 +849,18 @@ const MINING_CAMERA_WORKBENCH_DELAY_BOT_TICKS = 2;
 const WORKBENCH_CAMERA_NORTH_KEY = "n";
 const WORKBENCH_CAMERA_NORTH_DELAY_BOT_TICKS = 2;
 const GUARDIAN_RUNE_INTERIOR_COLORS: Record<GuardianOfTheRiftRune, GuardianInteriorColor> = {
-  air: { label: "light-black", hex: "FF181818" },
+  air: { label: "gray-24", hex: "FF242424" },
   cosmic: { label: "black", hex: "FF000000" },
-  water: { label: "gray-2", hex: "FF424242" },
-  earth: { label: "light-black", hex: "FF181818" },
+  water: { label: "gray-70", hex: "FF707070" },
+  earth: { label: "gray-24", hex: "FF242424" },
   nature: { label: "black", hex: "FF000000" },
-  fire: { label: "gray-2", hex: "FF424242" },
+  fire: { label: "gray-70", hex: "FF707070" },
   blood: { label: "black", hex: "FF000000" },
-  law: { label: "gray-1", hex: "FF303030" },
+  law: { label: "gray-50", hex: "FF505050" },
   death: { label: "black", hex: "FF000000" },
-  chaos: { label: "gray-1", hex: "FF303030" },
+  chaos: { label: "gray-50", hex: "FF505050" },
   body: { label: "black", hex: "FF000000" },
-  mind: { label: "gray-1", hex: "FF303030" },
+  mind: { label: "gray-50", hex: "FF505050" },
 };
 const GUARDIAN_RUNE_ALTAR_ENTRY_CAMERA_PRESETS: Partial<Record<GuardianOfTheRiftRune, GuardianCameraPreset>> = {
   air: { label: "air altar north", actions: [{ key: STARTUP_CAMERA_NORTH_KEY, count: 1 }] },
@@ -4344,6 +4346,126 @@ function getSalmonPortalClickPoint(marker: Pick<OrangeObjectDetection, "minX" | 
   );
 }
 
+function isPointInsideMarkerBounds(
+  point: { centerX: number; centerY: number },
+  marker: Pick<ColoredMarkerDetection, "minX" | "minY" | "maxX" | "maxY">,
+  marginPx = 0,
+): boolean {
+  return (
+    point.centerX >= marker.minX - marginPx &&
+    point.centerX <= marker.maxX + marginPx &&
+    point.centerY >= marker.minY - marginPx &&
+    point.centerY <= marker.maxY + marginPx
+  );
+}
+
+function markerBoundsOverlap(
+  left: Pick<ColoredMarkerDetection, "minX" | "minY" | "maxX" | "maxY">,
+  right: Pick<ColoredMarkerDetection, "minX" | "minY" | "maxX" | "maxY">,
+  marginPx = 0,
+): boolean {
+  return !(
+    left.maxX + marginPx < right.minX ||
+    right.maxX + marginPx < left.minX ||
+    left.maxY + marginPx < right.minY ||
+    right.maxY + marginPx < left.minY
+  );
+}
+
+function formatMarkerBounds(marker: Pick<ColoredMarkerDetection, "minX" | "minY" | "maxX" | "maxY" | "pixelCount">): string {
+  return `bounds=(${marker.minX},${marker.minY})-${marker.maxX},${marker.maxY}) px=${marker.pixelCount}`;
+}
+
+function detectSalmonPortalGuardianBlockers(
+  bitmap: RobotBitmap,
+  portalMarker: Pick<ColoredMarkerDetection, "minX" | "minY" | "maxX" | "maxY">,
+): ColoredMarkerDetection[] {
+  const activeGuardianMarkers = filterFullActiveGuardianMarkers(detectAllGreenObjects(bitmap, GREEN_MIN_PIXELS));
+  const inactiveGuardianMarkers = filterFullActiveGuardianMarkers(
+    detectAllColoredMarkers(bitmap, isGuardianInteriorGrayscalePixel, ACTIVE_GUARDIAN_MIN_PIXELS),
+  );
+
+  return [...activeGuardianMarkers, ...inactiveGuardianMarkers].filter((marker) =>
+    markerBoundsOverlap(marker, portalMarker, SALMON_PORTAL_GUARDIAN_BLOCKER_MARGIN_PX),
+  );
+}
+
+function getSalmonPortalClickPointAvoidingBlockers(
+  marker: Pick<OrangeObjectDetection, "minX" | "minY" | "maxX" | "maxY">,
+  blockers: Array<Pick<ColoredMarkerDetection, "minX" | "minY" | "maxX" | "maxY">>,
+): { centerX: number; centerY: number } | null {
+  if (blockers.length === 0) {
+    return getSalmonPortalClickPoint(marker);
+  }
+
+  const ratios: Array<{ x: number; y: number }> = [
+    { x: 0.5, y: 0.5 },
+    { x: 0.5, y: 0.2 },
+    { x: 0.5, y: 0.8 },
+    { x: 0.25, y: 0.5 },
+    { x: 0.75, y: 0.5 },
+    { x: 0.25, y: 0.25 },
+    { x: 0.75, y: 0.25 },
+    { x: 0.25, y: 0.75 },
+    { x: 0.75, y: 0.75 },
+  ];
+
+  for (const ratio of ratios) {
+    const point = getRandomPointInsideMarkerBox(
+      marker,
+      ratio.x,
+      ratio.y,
+      SALMON_PORTAL_CLICK_RANDOM_SPAN_RATIO_X,
+      SALMON_PORTAL_CLICK_RANDOM_SPAN_RATIO_Y,
+    );
+    if (!blockers.some((blocker) => isPointInsideMarkerBounds(point, blocker, SALMON_PORTAL_GUARDIAN_BLOCKER_MARGIN_PX))) {
+      return point;
+    }
+  }
+
+  return null;
+}
+
+function getSalmonPortalDirectionalRepositionPoint(
+  marker: Pick<OrangeObjectDetection, "centerX" | "centerY" | "minX" | "minY" | "maxX" | "maxY">,
+  blockers: Array<Pick<ColoredMarkerDetection, "minX" | "minY" | "maxX" | "maxY">>,
+  playerAnchor: { centerX: number; centerY: number },
+  bitmap: RobotBitmap,
+): { centerX: number; centerY: number } | null {
+  const dx = marker.centerX - playerAnchor.centerX;
+  const dy = marker.centerY - playerAnchor.centerY;
+  const distance = Math.sqrt(dx * dx + dy * dy);
+  if (distance < 1) {
+    return null;
+  }
+
+  const unitX = dx / distance;
+  const unitY = dy / distance;
+  const perpendicularX = -unitY;
+  const perpendicularY = unitX;
+  const fractions = [0.85, 0.72, 0.6, 0.48, 1.08, 1.2];
+  const offsets = [0, -24, 24, -48, 48, -72, 72];
+
+  for (const fraction of fractions) {
+    for (const offset of offsets) {
+      const point = {
+        centerX: Math.round(playerAnchor.centerX + dx * fraction + perpendicularX * offset),
+        centerY: Math.round(playerAnchor.centerY + dy * fraction + perpendicularY * offset),
+      };
+
+      if (!isGuardianClickPointSafelyOnScreen(bitmap, point)) {
+        continue;
+      }
+
+      if (!blockers.some((blocker) => isPointInsideMarkerBounds(point, blocker, SALMON_PORTAL_GUARDIAN_BLOCKER_MARGIN_PX))) {
+        return point;
+      }
+    }
+  }
+
+  return null;
+}
+
 function getBoundsCenterRightPoint(marker: Pick<OrangeObjectDetection, "minX" | "minY" | "maxX" | "maxY">): {
   centerX: number;
   centerY: number;
@@ -5229,7 +5351,7 @@ function getGuardianSlotPreferenceOrder(
 
 function shouldRotateCameraForMissingGuardianTarget(
   selection: GuardianTravelTargetSelection,
-  config: GuardianOfTheRiftConfig,
+  _config: GuardianOfTheRiftConfig,
 ): boolean {
   if (selection.target) {
     return false;
@@ -5245,7 +5367,7 @@ function shouldRotateCameraForMissingGuardianTarget(
     }
 
     const runeMatch = slot === "elemental" ? selection.elementalRune : selection.catalyticRune;
-    return runeMatch !== null && config.activeGuardianElements[runeMatch.rune] !== false;
+    return runeMatch !== null;
   });
 }
 
@@ -5397,9 +5519,7 @@ function selectGuardianTravelTarget(
 
         return rightBest.ratio - leftBest.ratio;
       });
-    const enabledOptimizerMarker =
-      matchedOptimizerMarkers.find((entry) => config.activeGuardianElements[entry.classification.best!.runeMatch.rune] !== false) ??
-      null;
+    const enabledOptimizerMarker = matchedOptimizerMarkers[0] ?? null;
 
     if (optimizerMarkerClassifications.length === 0) {
       skippedReasons.push(
@@ -5411,12 +5531,6 @@ function selectGuardianTravelTarget(
       skippedReasons.push(
         `optimizer: optimized outline(s) were visible, but no interior gray matched an active rune (${formatGuardianInteriorClassifications(interiorClassifications)})`,
       );
-    } else if (!enabledOptimizerMarker) {
-      const disabledRunes = matchedOptimizerMarkers
-        .map((entry) => entry.classification.best!.runeMatch.rune)
-        .filter((rune, index, runes) => runes.indexOf(rune) === index)
-        .join(",");
-      skippedReasons.push(`optimizer: matched guardian rune(s) are disabled in config (${disabledRunes})`);
     } else {
       const best = enabledOptimizerMarker.classification.best!;
       skippedReasons.push(
@@ -5464,11 +5578,6 @@ function selectGuardianTravelTarget(
   ): void => {
     if (!runeMatch) {
       skippedReasons.push(`${slot}: active rune was not detected`);
-      return;
-    }
-
-    if (config.activeGuardianElements[runeMatch.rune] === false) {
-      skippedReasons.push(`${slot}: ${runeMatch.rune} is disabled in config`);
       return;
     }
 
@@ -6877,11 +6986,9 @@ function runRepairPouchesDialogTick(
   const blueTarget = detectPouchRepairDialogBlueTarget(tickCapture.bitmap);
   if (!blueTarget) {
     const repairPouchesDialogMissingTicks = state.repairPouchesDialogMissingTicks + 1;
-    const hadAnyDialogClick = state.repairPouchesDialogClicks > 0;
-    if (hadAnyDialogClick || repairPouchesDialogMissingTicks >= POUCH_REPAIR_DIALOG_MAX_MISSING_TICKS) {
-      if (hadAnyDialogClick) {
-        completedRunsSincePouchRepair = 0;
-      } else if (
+    if (repairPouchesDialogMissingTicks >= POUCH_REPAIR_DIALOG_MAX_MISSING_TICKS) {
+      if (
+        state.repairPouchesDialogClicks <= 0 &&
         state.repairPouchesNpcLastClickedMarker &&
         state.repairPouchesNpcClickAttempts < POUCH_REPAIR_NPC_MAX_CLICK_ATTEMPTS
       ) {
@@ -6906,15 +7013,28 @@ function runRepairPouchesDialogTick(
         };
       }
 
+      if (state.repairPouchesDialogClicks > 0) {
+        warn(
+          stepMessage(
+            WORKFLOW_STEPS.REPAIR_POUCHES_DIALOG,
+            `Pouch repair dialog blue text is still missing after ${repairPouchesDialogMissingTicks}/${POUCH_REPAIR_DIALOG_MAX_MISSING_TICKS} check(s), but only ${state.repairPouchesDialogClicks}/${POUCH_REPAIR_DIALOG_BLUE_CLICK_COUNT} click(s) were completed; continuing to wait because the blue text can flicker.`,
+          ),
+        );
+
+        return {
+          ...state,
+          repairPouchesDialogMissingTicks: 0,
+          actionLockUntilMs: nowMs + FAST_ACTION_RETRY_MS,
+        };
+      }
+
       return transitionToRoundRestartState(
         {
           ...state,
           repairPouchesDialogMissingTicks,
         },
         nowMs,
-        hadAnyDialogClick
-          ? `Pouch repair dialog blue text disappeared after ${state.repairPouchesDialogClicks}/${POUCH_REPAIR_DIALOG_BLUE_CLICK_COUNT} click(s); treating repair as complete.`
-          : `Pouch repair dialog skipped because blue chatbox text was not found after ${repairPouchesDialogMissingTicks} check(s) and ${state.repairPouchesNpcClickAttempts}/${POUCH_REPAIR_NPC_MAX_CLICK_ATTEMPTS} repair marker attempt(s).`,
+        `Pouch repair dialog skipped because blue chatbox text was not found after ${repairPouchesDialogMissingTicks} check(s) and ${state.repairPouchesNpcClickAttempts}/${POUCH_REPAIR_NPC_MAX_CLICK_ATTEMPTS} repair marker attempt(s).`,
       );
     }
 
@@ -10909,7 +11029,46 @@ function runFindFinalPortalTick(
     };
   }
 
-  const finalPortalClickPoint = getSalmonPortalClickPoint(finalPortal);
+  const finalPortalBlockers = detectSalmonPortalGuardianBlockers(tickCapture.bitmap, finalPortal);
+  const finalPortalClickPoint = getSalmonPortalClickPointAvoidingBlockers(finalPortal, finalPortalBlockers);
+  if (!finalPortalClickPoint) {
+    const missingFinalPortalTicks = state.missingFinalPortalTicks + 1;
+    const repositionPoint = getSalmonPortalDirectionalRepositionPoint(finalPortal, finalPortalBlockers, playerAnchor, tickCapture.bitmap);
+    if (repositionPoint) {
+      const travel = estimateTravelWaitTicks(playerAnchor, repositionPoint);
+      const clicked = clickScreenPoint(captureBounds.x + repositionPoint.centerX, captureBounds.y + repositionPoint.centerY, captureBounds);
+      const clickedAtMs = Date.now();
+      warn(
+        stepMessage(
+          WORKFLOW_STEPS.FIND_FINAL_PORTAL,
+          `${GUARDIAN_OF_THE_RIFT_PORTAL_MARKER_COLOR_HEX} salmon portal marker overlaps guardian marker(s), and no safe pink click point was available. Clicked safe reposition point toward portal at (${clicked.x},${clicked.y}) local=(${repositionPoint.centerX},${repositionPoint.centerY}) before retry ${missingFinalPortalTicks}. Portal=${formatMarkerBounds(finalPortal)} blockers=${finalPortalBlockers.map(formatMarkerBounds).join("; ")} (${formatTravelEstimate(travel)}).`,
+        ),
+      );
+
+      return {
+        ...state,
+        missingFinalPortalTicks,
+        finalPortalClickReadyAtMs: 0,
+        actionLockUntilMs: clickedAtMs + SALMON_PORTAL_DIRECTIONAL_REPOSITION_LOCK_TICKS * GAME_TICK_MS,
+      };
+    }
+
+    const rotated = tapCameraKey(GUARDIAN_SALMON_PORTAL_CAMERA_ROTATE_KEY);
+    warn(
+      stepMessage(
+        WORKFLOW_STEPS.FIND_FINAL_PORTAL,
+        `${GUARDIAN_OF_THE_RIFT_PORTAL_MARKER_COLOR_HEX} salmon portal marker overlaps guardian marker(s), so the visual marker may be rendered over an unclickable guardian. ${rotated ? `Tapped '${GUARDIAN_SALMON_PORTAL_CAMERA_ROTATE_KEY}'` : `Could not tap '${GUARDIAN_SALMON_PORTAL_CAMERA_ROTATE_KEY}'`} before retry ${missingFinalPortalTicks}. Portal=${formatMarkerBounds(finalPortal)} blockers=${finalPortalBlockers.map(formatMarkerBounds).join("; ")}.`,
+      ),
+    );
+
+    return {
+      ...state,
+      missingFinalPortalTicks,
+      finalPortalClickReadyAtMs: 0,
+      actionLockUntilMs: nowMs + GUARDIAN_SALMON_PORTAL_CAMERA_ROTATE_LOCK_TICKS * GAME_TICK_MS,
+    };
+  }
+
   if (state.finalPortalClickReadyAtMs === 0) {
     const readyAtMs = nowMs + SALMON_PORTAL_PRE_CLICK_SETTLE_TICKS * GAME_TICK_MS;
     log(
@@ -10940,7 +11099,7 @@ function runFindFinalPortalTick(
   log(
     stepMessage(
       WORKFLOW_STEPS.MOVE_TO_FINAL_PORTAL,
-      `Clicked center of ${GUARDIAN_OF_THE_RIFT_PORTAL_MARKER_COLOR_HEX} portal marker at (${clicked.x},${clicked.y}) local=(${finalPortalClickPoint.centerX},${finalPortalClickPoint.centerY}) bounds=(${finalPortal.minX},${finalPortal.minY})-${finalPortal.maxX},${finalPortal.maxY} pixels=${finalPortal.pixelCount}; waiting before checking the orange mining marker (${formatTravelEstimate(travel)}, salmonValidationBuffer=${SALMON_PORTAL_TO_MINING_VALIDATION_BUFFER_TICKS} tick(s)).`,
+      `Clicked safe point of ${GUARDIAN_OF_THE_RIFT_PORTAL_MARKER_COLOR_HEX} portal marker at (${clicked.x},${clicked.y}) local=(${finalPortalClickPoint.centerX},${finalPortalClickPoint.centerY}) bounds=(${finalPortal.minX},${finalPortal.minY})-${finalPortal.maxX},${finalPortal.maxY} pixels=${finalPortal.pixelCount}; guardianBlockers=${finalPortalBlockers.length}; waiting before checking the orange mining marker (${formatTravelEstimate(travel)}, salmonValidationBuffer=${SALMON_PORTAL_TO_MINING_VALIDATION_BUFFER_TICKS} tick(s)).`,
     ),
   );
   rememberMovementObservation("salmon-portal-to-mining", WORKFLOW_STEPS.MOVE_TO_FINAL_PORTAL, clickedAtMs, travel);
@@ -11173,7 +11332,46 @@ function runWaitAfterFinalPortalClickTick(
     const retryPortal = pickNearestGuardianOfTheRiftPortalMarker(portalCandidates, playerAnchor);
 
     if (retryPortal) {
-      const retryPortalClickPoint = getSalmonPortalClickPoint(retryPortal);
+      const retryPortalBlockers = detectSalmonPortalGuardianBlockers(tickCapture.bitmap, retryPortal);
+      const retryPortalClickPoint = getSalmonPortalClickPointAvoidingBlockers(retryPortal, retryPortalBlockers);
+      if (!retryPortalClickPoint) {
+        const missingPortalMiningOrangeTicks = state.missingPortalMiningOrangeTicks + 1;
+        const repositionPoint = getSalmonPortalDirectionalRepositionPoint(retryPortal, retryPortalBlockers, playerAnchor, tickCapture.bitmap);
+        if (repositionPoint) {
+          const travel = estimateTravelWaitTicks(playerAnchor, repositionPoint);
+          const clicked = clickScreenPoint(captureBounds.x + repositionPoint.centerX, captureBounds.y + repositionPoint.centerY, captureBounds);
+          const clickedAtMs = Date.now();
+          warn(
+            stepMessage(
+              WORKFLOW_STEPS.MOVE_TO_FINAL_PORTAL,
+              `Salmon retry portal marker overlaps guardian marker(s), and no safe pink click point was available. Clicked safe reposition point toward portal at (${clicked.x},${clicked.y}) local=(${repositionPoint.centerX},${repositionPoint.centerY}) before retry ${missingPortalMiningOrangeTicks}. Portal=${formatMarkerBounds(retryPortal)} blockers=${retryPortalBlockers.map(formatMarkerBounds).join("; ")} (${formatTravelEstimate(travel)}).`,
+            ),
+          );
+
+          return {
+            ...state,
+            finalPortalClickReadyAtMs: 0,
+            missingPortalMiningOrangeTicks,
+            actionLockUntilMs: clickedAtMs + SALMON_PORTAL_DIRECTIONAL_REPOSITION_LOCK_TICKS * GAME_TICK_MS,
+          };
+        }
+
+        const rotated = tapCameraKey(GUARDIAN_SALMON_PORTAL_CAMERA_ROTATE_KEY);
+        warn(
+          stepMessage(
+            WORKFLOW_STEPS.MOVE_TO_FINAL_PORTAL,
+            `Salmon retry portal marker overlaps guardian marker(s), so the visual marker may be rendered over an unclickable guardian. ${rotated ? `Tapped '${GUARDIAN_SALMON_PORTAL_CAMERA_ROTATE_KEY}'` : `Could not tap '${GUARDIAN_SALMON_PORTAL_CAMERA_ROTATE_KEY}'`} before retry ${missingPortalMiningOrangeTicks}. Portal=${formatMarkerBounds(retryPortal)} blockers=${retryPortalBlockers.map(formatMarkerBounds).join("; ")}.`,
+          ),
+        );
+
+        return {
+          ...state,
+          finalPortalClickReadyAtMs: 0,
+          missingPortalMiningOrangeTicks,
+          actionLockUntilMs: nowMs + GUARDIAN_SALMON_PORTAL_CAMERA_ROTATE_LOCK_TICKS * GAME_TICK_MS,
+        };
+      }
+
       if (state.finalPortalClickReadyAtMs === 0) {
         const readyAtMs = nowMs + SALMON_PORTAL_PRE_CLICK_SETTLE_TICKS * GAME_TICK_MS;
         log(
@@ -11203,7 +11401,7 @@ function runWaitAfterFinalPortalClickTick(
       log(
         stepMessage(
           WORKFLOW_STEPS.MOVE_TO_FINAL_PORTAL,
-          `Salmon portal arrival tile ${FINAL_PORTAL_MINING_TILE_X},${FINAL_PORTAL_MINING_TILE_Y} is not confirmed yet (current tile=${formatGuardianCoordinateLocation(location)} raw='${location?.matchedLine ?? "unreadable"}'); re-clicked center of ${GUARDIAN_OF_THE_RIFT_PORTAL_MARKER_COLOR_HEX} portal marker at (${clicked.x},${clicked.y}) local=(${retryPortalClickPoint.centerX},${retryPortalClickPoint.centerY}) bounds=(${retryPortal.minX},${retryPortal.minY})-${retryPortal.maxX},${retryPortal.maxY} pixels=${retryPortal.pixelCount}; waiting again before checking the orange mining marker (${formatTravelEstimate(travel)}, salmonValidationBuffer=${SALMON_PORTAL_TO_MINING_VALIDATION_BUFFER_TICKS} tick(s)).`,
+          `Salmon portal arrival tile ${FINAL_PORTAL_MINING_TILE_X},${FINAL_PORTAL_MINING_TILE_Y} is not confirmed yet (current tile=${formatGuardianCoordinateLocation(location)} raw='${location?.matchedLine ?? "unreadable"}'); re-clicked safe point of ${GUARDIAN_OF_THE_RIFT_PORTAL_MARKER_COLOR_HEX} portal marker at (${clicked.x},${clicked.y}) local=(${retryPortalClickPoint.centerX},${retryPortalClickPoint.centerY}) bounds=(${retryPortal.minX},${retryPortal.minY})-${retryPortal.maxX},${retryPortal.maxY} pixels=${retryPortal.pixelCount}; guardianBlockers=${retryPortalBlockers.length}; waiting again before checking the orange mining marker (${formatTravelEstimate(travel)}, salmonValidationBuffer=${SALMON_PORTAL_TO_MINING_VALIDATION_BUFFER_TICKS} tick(s)).`,
         ),
       );
       rememberMovementObservation("salmon-portal-to-mining", WORKFLOW_STEPS.MOVE_TO_FINAL_PORTAL, clickedAtMs, travel);
@@ -11392,7 +11590,46 @@ function runRecoverFinalPortalArrivalTick(
   const portalCandidates = detectGuardianOfTheRiftPortalMarkersInScreenshot(tickCapture.bitmap);
   const retryPortal = pickNearestGuardianOfTheRiftPortalMarker(portalCandidates, playerAnchor);
   if (!isAtFinalPortalMiningTile(location) && retryPortal) {
-    const retryPortalClickPoint = getSalmonPortalClickPoint(retryPortal);
+    const retryPortalBlockers = detectSalmonPortalGuardianBlockers(tickCapture.bitmap, retryPortal);
+    const retryPortalClickPoint = getSalmonPortalClickPointAvoidingBlockers(retryPortal, retryPortalBlockers);
+    if (!retryPortalClickPoint) {
+      const missingPortalMiningOrangeTicks = state.missingPortalMiningOrangeTicks + 1;
+      const repositionPoint = getSalmonPortalDirectionalRepositionPoint(retryPortal, retryPortalBlockers, playerAnchor, tickCapture.bitmap);
+      if (repositionPoint) {
+        const travel = estimateTravelWaitTicks(playerAnchor, repositionPoint);
+        const clicked = clickScreenPoint(captureBounds.x + repositionPoint.centerX, captureBounds.y + repositionPoint.centerY, captureBounds);
+        const clickedAtMs = Date.now();
+        warn(
+          stepMessage(
+            WORKFLOW_STEPS.RECOVER_FINAL_PORTAL_ARRIVAL,
+            `Salmon-arrival recovery sees retry portal marker overlapping guardian marker(s), and no safe pink click point was available. Clicked safe reposition point toward portal at (${clicked.x},${clicked.y}) local=(${repositionPoint.centerX},${repositionPoint.centerY}) before retry ${missingPortalMiningOrangeTicks}. Portal=${formatMarkerBounds(retryPortal)} blockers=${retryPortalBlockers.map(formatMarkerBounds).join("; ")} (${formatTravelEstimate(travel)}).`,
+          ),
+        );
+
+        return {
+          ...state,
+          finalPortalClickReadyAtMs: 0,
+          missingPortalMiningOrangeTicks,
+          actionLockUntilMs: clickedAtMs + SALMON_PORTAL_DIRECTIONAL_REPOSITION_LOCK_TICKS * GAME_TICK_MS,
+        };
+      }
+
+      const rotated = tapCameraKey(GUARDIAN_SALMON_PORTAL_CAMERA_ROTATE_KEY);
+      warn(
+        stepMessage(
+          WORKFLOW_STEPS.RECOVER_FINAL_PORTAL_ARRIVAL,
+          `Salmon-arrival recovery sees retry portal marker overlapping guardian marker(s), so the visual marker may be rendered over an unclickable guardian. ${rotated ? `Tapped '${GUARDIAN_SALMON_PORTAL_CAMERA_ROTATE_KEY}'` : `Could not tap '${GUARDIAN_SALMON_PORTAL_CAMERA_ROTATE_KEY}'`} before retry ${missingPortalMiningOrangeTicks}. Portal=${formatMarkerBounds(retryPortal)} blockers=${retryPortalBlockers.map(formatMarkerBounds).join("; ")}.`,
+        ),
+      );
+
+      return {
+        ...state,
+        finalPortalClickReadyAtMs: 0,
+        missingPortalMiningOrangeTicks,
+        actionLockUntilMs: nowMs + GUARDIAN_SALMON_PORTAL_CAMERA_ROTATE_LOCK_TICKS * GAME_TICK_MS,
+      };
+    }
+
     if (state.finalPortalClickReadyAtMs === 0) {
       const readyAtMs = nowMs + SALMON_PORTAL_PRE_CLICK_SETTLE_TICKS * GAME_TICK_MS;
       log(
@@ -11422,7 +11659,7 @@ function runRecoverFinalPortalArrivalTick(
     log(
         stepMessage(
           WORKFLOW_STEPS.MOVE_TO_FINAL_PORTAL,
-        `Salmon-arrival recovery did not confirm tile ${FINAL_PORTAL_MINING_TILE_X},${FINAL_PORTAL_MINING_TILE_Y} yet (current tile=${formatGuardianCoordinateLocation(location)} raw='${location?.matchedLine ?? "unreadable"}'); re-clicked center of ${GUARDIAN_OF_THE_RIFT_PORTAL_MARKER_COLOR_HEX} portal marker at (${clicked.x},${clicked.y}) local=(${retryPortalClickPoint.centerX},${retryPortalClickPoint.centerY}) bounds=(${retryPortal.minX},${retryPortal.minY})-${retryPortal.maxX},${retryPortal.maxY} pixels=${retryPortal.pixelCount}; waiting again before recovery checks (${formatTravelEstimate(travel)}, salmonValidationBuffer=${SALMON_PORTAL_TO_MINING_VALIDATION_BUFFER_TICKS} tick(s)).`,
+        `Salmon-arrival recovery did not confirm tile ${FINAL_PORTAL_MINING_TILE_X},${FINAL_PORTAL_MINING_TILE_Y} yet (current tile=${formatGuardianCoordinateLocation(location)} raw='${location?.matchedLine ?? "unreadable"}'); re-clicked safe point of ${GUARDIAN_OF_THE_RIFT_PORTAL_MARKER_COLOR_HEX} portal marker at (${clicked.x},${clicked.y}) local=(${retryPortalClickPoint.centerX},${retryPortalClickPoint.centerY}) bounds=(${retryPortal.minX},${retryPortal.minY})-${retryPortal.maxX},${retryPortal.maxY} pixels=${retryPortal.pixelCount}; guardianBlockers=${retryPortalBlockers.length}; waiting again before recovery checks (${formatTravelEstimate(travel)}, salmonValidationBuffer=${SALMON_PORTAL_TO_MINING_VALIDATION_BUFFER_TICKS} tick(s)).`,
       ),
     );
 

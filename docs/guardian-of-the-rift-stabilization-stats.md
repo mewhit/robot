@@ -114,11 +114,20 @@ Observed impact:
 
 - Salmon arrival confirmations tracked: 29
 - Salmon retry/not-confirmed signals: 64
+- Salmon portal double-click/re-click rate should be tracked separately from missed/disappeared portals. A re-click is a log line like `re-clicked center of FFFF5E7E portal marker`.
 - Portal click to mining-zone confirmation: 220.2s total
 - Average validation time: 7.6s
 - Worst validation time: 12.1s
 
 This is still a large time bucket, but part of it is real travel time.
+
+Current precise-click comparison:
+
+- `optimized-mining-workbench-travel-time`: 12 re-clicks / 81 initial salmon clicks = 14.8%.
+- `optimized-salmon-portal-precise-click`: 4 re-clicks / 29 initial salmon clicks = 13.8%.
+- Latest precise complete runs: 2 re-clicks / 23 initial salmon clicks = 8.7%.
+
+This suggests the precise salmon click may reduce double-clicks, but it has not yet proven better salmon confirmation rate. Keep this metric separate from salmon portal confirmations.
 
 ### 3. Altar camera return / red portal search (#6)
 
