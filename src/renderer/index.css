@@ -57,6 +57,18 @@
     @apply flex items-center justify-between p-2.5 border-b border-gray-200 bg-blue-50;
   }
 
+  .sidebar-actions {
+    @apply flex items-center gap-1.5;
+  }
+
+  .sidebar-action-btn {
+    @apply text-xs px-2 py-1 rounded border border-gray-300 bg-white text-slate-700 cursor-pointer hover:bg-slate-50 transition-colors;
+  }
+
+  .sidebar-action-btn-danger {
+    @apply border-red-300 text-red-700 hover:bg-red-50;
+  }
+
   .sidebar-title {
     @apply m-0 text-xs tracking-wide text-slate-600;
   }
@@ -610,13 +622,17 @@
     @apply mt-2.5 flex items-center justify-between gap-3 flex-wrap;
   }
 
-  .delay-setting {
-    @apply inline-flex items-center gap-2 text-xs text-slate-600;
-  }
+.delay-setting {
+  @apply inline-flex items-center gap-2 text-xs text-slate-600;
+}
 
-  .delay-setting input {
-    @apply w-28 border border-slate-300 rounded px-2 py-1.5 text-xs text-slate-900;
-  }
+.delay-setting-note {
+  @apply text-[11px] text-slate-500;
+}
+
+.delay-setting input {
+  @apply w-28 border border-slate-300 rounded px-2 py-1.5 text-xs text-slate-900;
+}
 
   .action-buttons {
     @apply mt-2.5 grid grid-cols-2 gap-2;

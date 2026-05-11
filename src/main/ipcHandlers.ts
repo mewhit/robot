@@ -6,11 +6,15 @@ import { AppState } from "./global-state";
 import {
   createFileInOutputFolder,
   renameFileInOutputFolder,
+  duplicateFileInOutputFolder,
   updateActiveCsvRow,
   deleteActiveCsvRow,
   insertActiveCsvRowAbove,
   insertActiveCsvRowBelow,
   renameActiveCsvRowStep,
+  moveActiveCsvRow,
+  moveActiveCsvRowToBottom,
+  moveActiveCsvRowToTop,
   setActiveFileFromRelativePath,
   sendOutputFolderState,
   ensureCsvFileInitialized,
@@ -38,6 +42,7 @@ import {
   sendReplayState,
   sendReplayRowState,
   sendReplayRepeatState,
+  sendReplayRepeatCountState,
   sendReplayDelayState,
   sendMarkerColorState,
 } from "./recordingManager";
@@ -85,6 +90,7 @@ export function setupIpcHandlers() {
     sendReplayState();
     sendReplayRowState();
     sendReplayRepeatState();
+    sendReplayRepeatCountState();
     sendReplayDelayState();
     sendMarkerColorState();
     sendAutomateBotState();
@@ -302,6 +308,15 @@ export function setupIpcHandlers() {
     sendReplayRepeatState();
   });
 
+  ipcMain.on(CHANNELS.SET_REPLAY_REPEAT_COUNT, (_event, repeatCount: number) => {
+    if (!Number.isFinite(repeatCount)) {
+      AppState.replayRepeatCount = 0;
+    } else {
+      AppState.replayRepeatCount = Math.max(0, Math.round(repeatCount));
+    }
+    sendReplayRepeatCountState();
+  });
+
   ipcMain.on(CHANNELS.SET_REPLAY_CLICK_DELAY_MS, (_event, delayMs: number) => {
     if (!Number.isFinite(delayMs)) {
       AppState.replayExtraDelayMs = 0;
@@ -354,6 +369,17 @@ export function setupIpcHandlers() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`Could not rename file: ${message}`);
+      return { ok: false, error: message };
+    }
+  });
+
+  ipcMain.handle(CHANNELS.DUPLICATE_FILE, (_event, relativePath: string) => {
+    try {
+      duplicateFileInOutputFolder(relativePath);
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Could not duplicate file: ${message}`);
       return { ok: false, error: message };
     }
   });
@@ -437,6 +463,42 @@ export function setupIpcHandlers() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`Could not delete csv row: ${message}`);
+      return { ok: false, error: message };
+    }
+  });
+
+  ipcMain.handle(
+    CHANNELS.MOVE_ACTIVE_CSV_ROW,
+    (_event, payload: { rowIndex: number; targetRowIndex: number; placement?: "before" | "after" }) => {
+      try {
+        moveActiveCsvRow(payload.rowIndex, payload.targetRowIndex, payload.placement);
+        return { ok: true };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`Could not move csv row: ${message}`);
+        return { ok: false, error: message };
+      }
+    },
+  );
+
+  ipcMain.handle(CHANNELS.MOVE_ACTIVE_CSV_ROW_TO_TOP, (_event, rowIndex: number) => {
+    try {
+      moveActiveCsvRowToTop(rowIndex);
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Could not move csv row to top: ${message}`);
+      return { ok: false, error: message };
+    }
+  });
+
+  ipcMain.handle(CHANNELS.MOVE_ACTIVE_CSV_ROW_TO_BOTTOM, (_event, rowIndex: number) => {
+    try {
+      moveActiveCsvRowToBottom(rowIndex);
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Could not move csv row to bottom: ${message}`);
       return { ok: false, error: message };
     }
   });

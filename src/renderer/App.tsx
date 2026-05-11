@@ -158,6 +158,7 @@ export default function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [isReplaying, setIsReplaying] = useState(false);
   const [isReplayRepeatEnabled, setIsReplayRepeatEnabled] = useState(false);
+  const [replayRepeatCount, setReplayRepeatCount] = useState(0);
   const [replayClickDelayMs, setReplayClickDelayMs] = useState(0);
   const [folderState, setFolderState] = useState<FolderState>({
     folderPath: "-",
@@ -168,8 +169,10 @@ export default function App() {
     files: [],
     tree: [],
   });
-  const [selectedCsvRowIndex, setSelectedCsvRowIndex] = useState<number | null>(null);
+  const [selectedCsvRowIndexes, setSelectedCsvRowIndexes] = useState<number[]>([]);
+  const [lastSelectedCsvRowIndex, setLastSelectedCsvRowIndex] = useState<number | null>(null);
   const [selectedFilePaths, setSelectedFilePaths] = useState<string[]>([]);
+  const [lastSelectedFilePath, setLastSelectedFilePath] = useState<string | null>(null);
   const [replayingCsvRowIndex, setReplayingCsvRowIndex] = useState<number | null>(null);
   const [rowForm, setRowForm] = useState({
     action: "",
@@ -311,6 +314,8 @@ export default function App() {
     const onRecordingState = (_: unknown, isRec: boolean) => setIsRecording(isRec);
     const onReplayingState = (_: unknown, isReplay: boolean) => setIsReplaying(isReplay);
     const onReplayRepeatState = (_: unknown, enabled: boolean) => setIsReplayRepeatEnabled(enabled);
+    const onReplayRepeatCountState = (_: unknown, count: number) =>
+      setReplayRepeatCount(Number.isFinite(count) ? Math.max(0, Math.round(count)) : 0);
     const onReplayDelayState = (_: unknown, delayMs: number) => {
       setReplayClickDelayMs(Number.isFinite(delayMs) ? Math.max(0, Math.round(delayMs)) : 0);
     };
@@ -319,15 +324,37 @@ export default function App() {
     };
     const onFolderState = (_: unknown, payload: FolderState) => {
       setFolderState(payload);
-      setSelectedFilePaths((current) => current.filter((path) => payload.files.includes(path)));
-      setSelectedCsvRowIndex((current) => {
-        if (payload.activeFileRows.length === 0) {
-          return null;
-        }
-        if (current === null) {
-          return null;
-        }
-        return payload.activeFileRows.some((row) => row.index === current) ? current : null;
+      const activeRowIndexes = new Set(payload.activeFileRows.map((row) => row.index));
+      setSelectedFilePaths((current) => {
+        const next = current.filter((path) => payload.files.includes(path));
+        setLastSelectedFilePath((currentLastSelectedPath) => {
+          if (next.length === 0) {
+            return null;
+          }
+
+          if (currentLastSelectedPath && next.includes(currentLastSelectedPath)) {
+            return currentLastSelectedPath;
+          }
+
+          return next[0] ?? null;
+        });
+
+        return next;
+      });
+      setSelectedCsvRowIndexes((current) => {
+        const next = current.filter((rowIndex) => activeRowIndexes.has(rowIndex));
+        setLastSelectedCsvRowIndex((currentLastSelectedCsvRowIndex) => {
+          if (next.length === 0) {
+            return null;
+          }
+
+          if (currentLastSelectedCsvRowIndex !== null && next.includes(currentLastSelectedCsvRowIndex)) {
+            return currentLastSelectedCsvRowIndex;
+          }
+
+          return next[next.length - 1] ?? null;
+        });
+        return next;
       });
     };
     const onMarkerColorState = (_: unknown, payload: MarkerColorState) => {
@@ -370,10 +397,11 @@ export default function App() {
       window.alert(message);
     };
 
-    ipcRenderer.on(CHANNELS.RECORDING_STATE, onRecordingState);
-    ipcRenderer.on(CHANNELS.REPLAYING_STATE, onReplayingState);
-    ipcRenderer.on(CHANNELS.REPLAY_REPEAT_STATE, onReplayRepeatState);
-    ipcRenderer.on(CHANNELS.REPLAY_DELAY_STATE, onReplayDelayState);
+      ipcRenderer.on(CHANNELS.RECORDING_STATE, onRecordingState);
+      ipcRenderer.on(CHANNELS.REPLAYING_STATE, onReplayingState);
+      ipcRenderer.on(CHANNELS.REPLAY_REPEAT_STATE, onReplayRepeatState);
+      ipcRenderer.on(CHANNELS.REPLAY_REPEAT_COUNT_STATE, onReplayRepeatCountState);
+      ipcRenderer.on(CHANNELS.REPLAY_DELAY_STATE, onReplayDelayState);
     ipcRenderer.on(CHANNELS.REPLAY_ROW_STATE, onReplayRowState);
     ipcRenderer.on(CHANNELS.MARKER_COLOR_STATE, onMarkerColorState);
     ipcRenderer.on(CHANNELS.AUTOMATE_BOT_STATE, onAutomateBotState);
@@ -431,6 +459,7 @@ export default function App() {
       ipcRenderer.removeListener(CHANNELS.RECORDING_STATE, onRecordingState);
       ipcRenderer.removeListener(CHANNELS.REPLAYING_STATE, onReplayingState);
       ipcRenderer.removeListener(CHANNELS.REPLAY_REPEAT_STATE, onReplayRepeatState);
+      ipcRenderer.removeListener(CHANNELS.REPLAY_REPEAT_COUNT_STATE, onReplayRepeatCountState);
       ipcRenderer.removeListener(CHANNELS.REPLAY_DELAY_STATE, onReplayDelayState);
       ipcRenderer.removeListener(CHANNELS.REPLAY_ROW_STATE, onReplayRowState);
       ipcRenderer.removeListener(CHANNELS.MARKER_COLOR_STATE, onMarkerColorState);
@@ -775,6 +804,13 @@ export default function App() {
     ipcRenderer.send(CHANNELS.SET_REPLAY_REPEAT, enabled);
   };
 
+  const handleReplayRepeatCountChange = (value: string) => {
+    const nextValue = Number(value);
+    const safeCount = Number.isFinite(nextValue) ? Math.max(0, Math.round(nextValue)) : 0;
+    setReplayRepeatCount(safeCount);
+    ipcRenderer.send(CHANNELS.SET_REPLAY_REPEAT_COUNT, safeCount);
+  };
+
   const handleReplayClickDelayChange = (value: string) => {
     const nextValue = Number(value);
     const safeDelay = Number.isFinite(nextValue) ? Math.max(0, Math.round(nextValue)) : 0;
@@ -801,23 +837,88 @@ export default function App() {
     }
   };
 
-  const handleContextMenu = useCallback((e: React.MouseEvent, relativePath: string, additive: boolean) => {
-    e.stopPropagation();
-    setCsvRowContextMenu(null);
+  const getNextSelectedFilePaths = useCallback(
+    (current: string[], relativePath: string, additive: boolean, withRange: boolean) => {
+      if (!relativePath) {
+        return current;
+      }
 
-    setSelectedFilePaths((current) => {
+      const targetIndex = folderState.files.indexOf(relativePath);
+      if (targetIndex === -1) {
+        return current;
+      }
+
+      if (withRange) {
+        const anchorIndex = lastSelectedFilePath === null ? -1 : folderState.files.indexOf(lastSelectedFilePath);
+        const baseIndex = anchorIndex === -1 ? targetIndex : anchorIndex;
+        const rangeStart = Math.min(baseIndex, targetIndex);
+        const rangeEnd = Math.max(baseIndex, targetIndex);
+        const range = folderState.files.slice(rangeStart, rangeEnd + 1);
+
+        if (additive) {
+          return Array.from(new Set([...current, ...range]));
+        }
+
+        return range;
+      }
+
       if (additive) {
         if (current.includes(relativePath)) {
           return current.filter((path) => path !== relativePath);
         }
+
         return [...current, relativePath];
       }
 
-      return current.includes(relativePath) ? current : [relativePath];
-    });
+      return [relativePath];
+    },
+    [folderState.files, lastSelectedFilePath],
+  );
 
-    setContextMenu({ x: e.clientX, y: e.clientY, relativePath });
-  }, []);
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent, relativePath: string, additive: boolean, withRange: boolean) => {
+      e.stopPropagation();
+      setCsvRowContextMenu(null);
+
+      setSelectedFilePaths((current) => getNextSelectedFilePaths(current, relativePath, additive, withRange));
+      setLastSelectedFilePath(relativePath);
+      ipcRenderer.send(CHANNELS.SET_ACTIVE_FILE, relativePath);
+      setContextMenu({ x: e.clientX, y: e.clientY, relativePath });
+    },
+    [getNextSelectedFilePaths],
+  );
+
+  const handleDeleteSelectedFiles = async () => {
+    if (selectedFilePaths.length === 0) return;
+    const label = `${selectedFilePaths.length} selected files`;
+    const confirmed = window.confirm(`Delete ${label}? This cannot be undone.`);
+    if (!confirmed) return;
+
+    for (const relativePath of selectedFilePaths) {
+      const result = await ipcRenderer.invoke(CHANNELS.DELETE_FILE, relativePath);
+      if (!result?.ok) {
+        window.alert(result?.error || `Unable to delete ${relativePath}.`);
+        return;
+      }
+    }
+
+    setSelectedFilePaths((current) => current.filter((path) => !selectedFilePaths.includes(path)));
+    setLastSelectedFilePath(null);
+  };
+
+  const handleDuplicateSelectedFiles = async () => {
+    if (selectedFilePaths.length === 0) return;
+    const confirmed = window.confirm(`Duplicate ${selectedFilePaths.length} selected files?`);
+    if (!confirmed) return;
+
+    for (const relativePath of selectedFilePaths) {
+      const result = await ipcRenderer.invoke(CHANNELS.DUPLICATE_FILE, relativePath);
+      if (!result?.ok) {
+        window.alert(result?.error || `Unable to duplicate ${relativePath}.`);
+        return;
+      }
+    }
+  };
 
   const startRename = useCallback((relativePath: string) => {
     const currentName = relativePath.split(/[/\\]/).pop() ?? "";
@@ -871,6 +972,9 @@ export default function App() {
     }
 
     setSelectedFilePaths((current) => current.filter((path) => !selectedTargets.includes(path)));
+    if (selectedTargets.includes(lastSelectedFilePath ?? "")) {
+      setLastSelectedFilePath(null);
+    }
   };
 
   const handleCsvRowContextMenu = useCallback((e: React.MouseEvent, rowIndex: number, stepName: string) => {
@@ -878,6 +982,51 @@ export default function App() {
     setContextMenu(null);
     setCsvRowContextMenu({ x: e.clientX, y: e.clientY, rowIndex, stepName });
   }, []);
+
+  const selectedCsvRowIndex = useMemo(
+    () => (selectedCsvRowIndexes.length > 0 ? selectedCsvRowIndexes[selectedCsvRowIndexes.length - 1] : null),
+    [selectedCsvRowIndexes],
+  );
+  const selectedCsvRow = useMemo(
+    () =>
+      selectedCsvRowIndex === null
+        ? null
+        : (folderState.activeFileRows.find((row) => row.index === selectedCsvRowIndex) ?? null),
+    [selectedCsvRowIndex, folderState.activeFileRows],
+  );
+
+  const handlePlaySelectedCsvRow = useCallback(async () => {
+    const targetIndex = selectedCsvRowIndexes.length > 0 ? selectedCsvRowIndexes[selectedCsvRowIndexes.length - 1] : null;
+    if (targetIndex === null) return;
+    const result = await ipcRenderer.invoke(CHANNELS.PLAY_CSV_ROW, targetIndex);
+    if (!result?.ok) {
+      window.alert(result?.error || "Unable to play row.");
+    }
+  }, [selectedCsvRowIndexes]);
+
+  const getMovedCsvRowIndex = (
+    sourceRowIndex: number,
+    targetRowIndex: number,
+    placement: "before" | "after",
+    totalRows: number,
+  ): number | null => {
+    if (totalRows <= 0) {
+      return null;
+    }
+
+    const normalizedSource = Math.max(0, Math.min(Math.floor(sourceRowIndex), totalRows - 1));
+    const normalizedTarget = Math.max(0, Math.min(Math.floor(targetRowIndex), totalRows - 1));
+
+    if (normalizedSource === normalizedTarget && placement === "before") {
+      return normalizedSource;
+    }
+
+    const insertBase = normalizedTarget + (placement === "after" ? 1 : 0);
+    const normalizedInsert = Math.min(Math.max(insertBase, 0), totalRows);
+    const targetIndex = normalizedSource < normalizedInsert ? normalizedInsert - 1 : normalizedInsert;
+
+    return Math.max(0, Math.min(Math.floor(targetIndex), totalRows - 1));
+  };
 
   const cancelCsvRowRename = useCallback(() => {
     setEditingCsvRowIndex(null);
@@ -897,6 +1046,50 @@ export default function App() {
       window.alert(result?.error || "Unable to rename step.");
     }
   }, [cancelCsvRowRename, editingCsvRowIndex, editingStepName]);
+
+  const handleCsvRowDragStart = useCallback((rowIndex: number) => {
+    setSelectedCsvRowIndexes((current) => {
+      return current.includes(rowIndex) ? current : [rowIndex];
+    });
+    setLastSelectedCsvRowIndex(rowIndex);
+  }, []);
+
+  const handleCsvRowDragMove = useCallback(
+    async (sourceRowIndex: number, targetRowIndex: number, placement: "before" | "after") => {
+      const rowCount = folderState.activeFileRows.length;
+      if (rowCount === 0) {
+        return;
+      }
+
+      const normalizedSource = Math.max(0, Math.min(Math.floor(sourceRowIndex), rowCount - 1));
+      const normalizedTarget = Math.max(0, Math.min(Math.floor(targetRowIndex), rowCount - 1));
+
+      if (normalizedSource === normalizedTarget && placement === "before") {
+        return;
+      }
+
+      const result = await ipcRenderer.invoke(CHANNELS.MOVE_ACTIVE_CSV_ROW, {
+        rowIndex: normalizedSource,
+        targetRowIndex: normalizedTarget,
+        placement,
+      });
+      if (!result?.ok) {
+        window.alert(result?.error || "Unable to move row.");
+        return;
+      }
+
+      const movedIndex = getMovedCsvRowIndex(normalizedSource, normalizedTarget, placement, rowCount);
+      if (movedIndex !== null) {
+        setSelectedCsvRowIndexes([movedIndex]);
+        setLastSelectedCsvRowIndex(movedIndex);
+      }
+    },
+    [folderState.activeFileRows.length, getMovedCsvRowIndex],
+  );
+
+  const handleCsvRowDragEnd = useCallback(() => {
+    setCsvRowContextMenu(null);
+  }, []);
 
   const handleRenameCsvRowStep = useCallback(() => {
     if (csvRowContextMenu === null) return;
@@ -955,27 +1148,127 @@ export default function App() {
     }
   }, [csvRowContextMenu, hideCsvRowContextMenu]);
 
+  const handleMoveCsvRowToTop = useCallback(async () => {
+    if (csvRowContextMenu === null) return;
+    const rowIndex = csvRowContextMenu.rowIndex;
+    hideCsvRowContextMenu();
+    const result = await ipcRenderer.invoke(CHANNELS.MOVE_ACTIVE_CSV_ROW_TO_TOP, rowIndex);
+    if (!result?.ok) {
+      window.alert(result?.error || "Unable to move row to top.");
+      return;
+    }
+
+    const rowCount = folderState.activeFileRows.length;
+    if (rowCount > 0) {
+      setSelectedCsvRowIndexes([0]);
+      setLastSelectedCsvRowIndex(0);
+    }
+  }, [csvRowContextMenu, folderState.activeFileRows.length, hideCsvRowContextMenu]);
+
+  const handleMoveCsvRowToBottom = useCallback(async () => {
+    if (csvRowContextMenu === null) return;
+    const rowIndex = csvRowContextMenu.rowIndex;
+    hideCsvRowContextMenu();
+    const result = await ipcRenderer.invoke(CHANNELS.MOVE_ACTIVE_CSV_ROW_TO_BOTTOM, rowIndex);
+    if (!result?.ok) {
+      window.alert(result?.error || "Unable to move row to bottom.");
+      return;
+    }
+
+    const lastIndex = folderState.activeFileRows.length - 1;
+    if (lastIndex >= 0) {
+      setSelectedCsvRowIndexes([lastIndex]);
+      setLastSelectedCsvRowIndex(lastIndex);
+    }
+  }, [csvRowContextMenu, folderState.activeFileRows.length, hideCsvRowContextMenu]);
+
   const handleFileClick = useCallback(
-    (relativePath: string, additive: boolean) => {
+    (relativePath: string, additive: boolean, withRange: boolean) => {
       hideContextMenu();
       cancelRename();
-      setSelectedCsvRowIndex(null);
-
-      if (additive) {
-        setSelectedFilePaths((current) => {
-          if (current.includes(relativePath)) {
-            return current.filter((path) => path !== relativePath);
-          }
-          return [...current, relativePath];
-        });
-        return;
-      }
-
-      setSelectedFilePaths([relativePath]);
+      setSelectedCsvRowIndexes([]);
+      setLastSelectedCsvRowIndex(null);
+      setSelectedFilePaths((current) => getNextSelectedFilePaths(current, relativePath, additive, withRange));
+      setLastSelectedFilePath(relativePath);
       ipcRenderer.send(CHANNELS.SET_ACTIVE_FILE, relativePath);
     },
-    [cancelRename, hideContextMenu],
+    [cancelRename, hideContextMenu, getNextSelectedFilePaths],
   );
+
+  const handleRowSelection = useCallback(
+    (rowIndex: number, additive: boolean, withRange: boolean) => {
+      if (!Number.isInteger(rowIndex) || rowIndex < 0) return;
+
+      setSelectedCsvRowIndexes((current) => {
+        const activeRowIndexes = new Set(folderState.activeFileRows.map((row) => row.index));
+        if (!activeRowIndexes.has(rowIndex)) {
+          return current;
+        }
+
+        const availableRows = current.filter((value) => activeRowIndexes.has(value));
+        let next: number[];
+
+        if (withRange) {
+          const anchor = lastSelectedCsvRowIndex === null ? rowIndex : lastSelectedCsvRowIndex;
+          const rangeStart = Math.min(anchor, rowIndex);
+          const rangeEnd = Math.max(anchor, rowIndex);
+          const inRangeRows = folderState.activeFileRows
+            .filter((row) => row.index >= rangeStart && row.index <= rangeEnd)
+            .map((row) => row.index);
+
+          next = additive ? Array.from(new Set([...availableRows, ...inRangeRows])) : inRangeRows;
+        } else if (additive) {
+          if (availableRows.includes(rowIndex)) {
+            next = availableRows.filter((currentRowIndex) => currentRowIndex !== rowIndex);
+          } else {
+            next = [...availableRows, rowIndex];
+          }
+        } else {
+          next = [rowIndex];
+        }
+
+        return next.sort((a, b) => a - b);
+      });
+
+      setLastSelectedCsvRowIndex(rowIndex);
+    },
+    [folderState.activeFileRows, lastSelectedCsvRowIndex],
+  );
+
+  const handleDuplicateSelectedCsvRows = async () => {
+    if (selectedCsvRowIndexes.length === 0) return;
+
+    const targets = [...selectedCsvRowIndexes].sort((a, b) => b - a);
+    const confirmed = window.confirm(`Duplicate ${targets.length} selected rows?`);
+    if (!confirmed) return;
+
+    for (const rowIndex of targets) {
+      const result = await ipcRenderer.invoke(CHANNELS.INSERT_ACTIVE_CSV_ROW_BELOW, rowIndex);
+      if (!result?.ok) {
+        window.alert(result?.error || `Unable to duplicate row ${rowIndex + 1}.`);
+        return;
+      }
+    }
+  };
+
+  const handleDeleteSelectedCsvRows = async () => {
+    if (selectedCsvRowIndexes.length === 0) return;
+
+    const label = `${selectedCsvRowIndexes.length} selected rows`;
+    const confirmed = window.confirm(`Delete ${label}? This cannot be undone.`);
+    if (!confirmed) return;
+
+    for (const rowIndex of [...selectedCsvRowIndexes].sort((a, b) => b - a)) {
+      const result = await ipcRenderer.invoke(CHANNELS.DELETE_ACTIVE_CSV_ROW, rowIndex);
+      if (!result?.ok) {
+        window.alert(result?.error || `Unable to delete row ${rowIndex + 1}.`);
+        return;
+      }
+    }
+
+    setSelectedCsvRowIndexes([]);
+    setLastSelectedCsvRowIndex(null);
+  };
 
   const contextMenuSelectedTargets = contextMenu
     ? selectedFilePaths.includes(contextMenu.relativePath)
@@ -983,12 +1276,6 @@ export default function App() {
       : [contextMenu.relativePath]
     : [];
   const canRenameContextTarget = contextMenuSelectedTargets.length === 1;
-
-  const selectedCsvRow =
-    selectedCsvRowIndex === null
-      ? null
-      : (folderState.activeFileRows.find((row) => row.index === selectedCsvRowIndex) ?? null);
-
   const mouseLocationText = cursorPos ? `X: ${cursorPos.x} Y: ${cursorPos.y}` : "X: -- Y: --";
 
   useEffect(() => {
@@ -1034,7 +1321,7 @@ export default function App() {
   }, []);
 
   const handleSaveRow = useCallback(async () => {
-    if (!selectedCsvRow) {
+    if (selectedCsvRowIndexes.length === 0 || !folderState.activeFileRows.length) {
       return;
     }
 
@@ -1071,30 +1358,44 @@ export default function App() {
 
     setIsSavingRow(true);
     try {
-      const result = await ipcRenderer.invoke(CHANNELS.UPDATE_ACTIVE_CSV_ROW, {
-        rowIndex: selectedCsvRow.index,
-        action: rowForm.action.trim(),
-        stepName: selectedCsvRow.stepName,
-        x,
-        y,
-        elapsedSeconds,
-        radius,
-        elapsedRange: rowForm.elapsedRange.trim() || "none",
-        xMin,
-        xMax,
-        yMin,
-        yMax,
-        elapsedMin,
-        elapsedMax,
-      });
+      const rowsByIndex = new Map(folderState.activeFileRows.map((row) => [row.index, row]));
+      const targets = [...selectedCsvRowIndexes].sort((a, b) => a - b);
 
-      if (!result?.ok) {
-        window.alert(result?.error || "Unable to save CSV row.");
+      for (const rowIndex of targets) {
+        const row = rowsByIndex.get(rowIndex);
+        if (!row) {
+          window.alert(`Row ${rowIndex + 1} is no longer available.`);
+          return;
+        }
+
+        const result = await ipcRenderer.invoke(CHANNELS.UPDATE_ACTIVE_CSV_ROW, {
+          rowIndex,
+          action: rowForm.action.trim(),
+          stepName: row.stepName,
+          x,
+          y,
+          elapsedSeconds,
+          radius,
+          elapsedRange: rowForm.elapsedRange.trim() || "none",
+          xMin,
+          xMax,
+          yMin,
+          yMax,
+          elapsedMin,
+          elapsedMax,
+        });
+
+        if (!result?.ok) {
+          window.alert(result?.error || `Unable to save row ${rowIndex + 1}.`);
+          return;
+        }
       }
     } finally {
       setIsSavingRow(false);
     }
   }, [
+    folderState.activeFileRows,
+    selectedCsvRowIndexes,
     rowForm.action,
     rowForm.elapsedMax,
     rowForm.elapsedMin,
@@ -1107,7 +1408,6 @@ export default function App() {
     rowForm.y,
     rowForm.yMax,
     rowForm.yMin,
-    selectedCsvRow,
   ]);
 
   const handleEditingNameKeyDown = useCallback(
@@ -1171,20 +1471,29 @@ export default function App() {
             isReplaying={isReplaying}
             isRecording={isRecording}
             isReplayRepeatEnabled={isReplayRepeatEnabled}
+            replayRepeatCount={replayRepeatCount}
             replayClickDelayMs={replayClickDelayMs}
             cursorPos={cursorPos}
             markerColorState={markerColorState}
+            selectedCsvRowIndexes={selectedCsvRowIndexes}
             selectedCsvRow={selectedCsvRow}
             rowForm={rowForm}
             isSavingRow={isSavingRow}
             onNewFile={() => void handleNewFile()}
             onFileClick={handleFileClick}
             onFileContextMenu={handleContextMenu}
+            onDuplicateSelectedFiles={() => void handleDuplicateSelectedFiles()}
+            onDeleteSelectedFiles={() => void handleDeleteSelectedFiles()}
             onEditingNameChange={setEditingName}
             onEditingNameKeyDown={handleEditingNameKeyDown}
             onEditingNameBlur={() => void submitRename()}
             onCsvRowContextMenu={handleCsvRowContextMenu}
-            onSelectedCsvRowChange={setSelectedCsvRowIndex}
+            onCsvRowDragStart={handleCsvRowDragStart}
+            onCsvRowDragMove={handleCsvRowDragMove}
+            onCsvRowDragEnd={handleCsvRowDragEnd}
+            onSelectedCsvRowChange={handleRowSelection}
+            onDuplicateSelectedCsvRows={() => void handleDuplicateSelectedCsvRows()}
+            onDeleteSelectedCsvRows={() => void handleDeleteSelectedCsvRows()}
             onEditingStepNameChange={setEditingStepName}
             onEditingStepNameSubmit={() => void submitCsvRowRename()}
             onEditingStepNameCancel={cancelCsvRowRename}
@@ -1193,9 +1502,11 @@ export default function App() {
             onStopReplay={handleStopReplay}
             onTestColorDetection={() => void handleTestColorDetection()}
             onReplayRepeatChange={handleReplayRepeatChange}
+            onReplayRepeatCountChange={handleReplayRepeatCountChange}
             onReplayClickDelayChange={handleReplayClickDelayChange}
             onRowFormChange={handleRowFormChange}
             onSaveRow={() => void handleSaveRow()}
+            onPlaySelectedCsvRow={() => void handlePlaySelectedCsvRow()}
           />
         ) : activeView === "automateBot" ? (
           <AutomateBot
@@ -1320,6 +1631,12 @@ export default function App() {
           </div>
           <div className="context-item" onClick={() => void handleRenameCsvRowStep()}>
             Rename Step
+          </div>
+          <div className="context-item" onClick={() => void handleMoveCsvRowToTop()}>
+            Push to Top
+          </div>
+          <div className="context-item" onClick={() => void handleMoveCsvRowToBottom()}>
+            Push to Bottom
           </div>
           <div className="context-item" onClick={() => void handleInsertStepAbove()}>
             Step above

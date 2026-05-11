@@ -20,7 +20,6 @@ export const DEFAULT_OUTPUT_FILE_NAME = "clicks.csv";
 export const OVERLAY_SOURCE_FILE = ".overlay-window.cs";
 export const OVERLAY_EXE_FILE = ".overlay-window.exe";
 export const REPLAY_FOCUS_DELAY_MS = 600;
-
 // Replay
 export const REPLAY_KEY_PRESS_MS = 60;
 

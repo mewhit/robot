@@ -175,6 +175,13 @@ export async function replayActiveCsv(options?: { fromUi?: boolean; fromRowIndex
   const startIndex = options?.fromRowIndex ?? 0;
   const initialRows = startIndex > 0 ? allRows.filter((r) => r.index >= startIndex) : allRows;
   let isFirstCycle = true;
+  const maxCycles =
+    AppState.replayRepeatEnabled && AppState.replayRepeatCount > 0
+      ? AppState.replayRepeatCount
+      : AppState.replayRepeatEnabled
+        ? null
+        : 1;
+  let cycleCount = 0;
 
   AppState.replayStopRequested = false;
   AppState.replaying = true;
@@ -189,7 +196,7 @@ export async function replayActiveCsv(options?: { fromUi?: boolean; fromRowIndex
   console.log(`Replay started: ${AppState.outputFilePath} (${initialRows.length} rows)`);
 
   try {
-    while (!AppState.replayStopRequested) {
+    while (!AppState.replayStopRequested && (maxCycles === null || cycleCount < maxCycles)) {
       const rows = isFirstCycle ? initialRows : allRows;
       isFirstCycle = false;
 
@@ -203,6 +210,11 @@ export async function replayActiveCsv(options?: { fromUi?: boolean; fromRowIndex
         sendReplayRowState();
 
         const delayMs = Math.max(0, getReplayDelaySeconds(row) * 1000);
+
+        if (AppState.replayStopRequested) {
+          console.log("Replay stopped.");
+          break;
+        }
 
         if (row.action.startsWith("Key:")) {
           await wait(delayMs);
@@ -237,13 +249,16 @@ export async function replayActiveCsv(options?: { fromUi?: boolean; fromRowIndex
             robot.mouseClick("right");
           }
         }
+
       }
 
-      if (!AppState.replayRepeatEnabled || AppState.replayStopRequested) {
+      cycleCount += 1;
+      if (AppState.replayStopRequested || (maxCycles !== null && cycleCount >= maxCycles)) {
         break;
       }
 
-      console.log("Replay cycle complete, restarting because repeat is enabled.");
+      const nextCycleLabel = maxCycles === null ? "infinite" : `${cycleCount + 1}/${maxCycles}`;
+      console.log(`Replay cycle complete, restarting for cycle ${nextCycleLabel}.`);
     }
 
     if (!AppState.replayStopRequested) {

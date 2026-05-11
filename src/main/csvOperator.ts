@@ -1,6 +1,15 @@
 import * as fs from "fs";
 import * as path from "path";
-import { dialog, app, BrowserWindow, screen, type BrowserWindowConstructorOptions, type Rectangle } from "electron";
+import {
+  dialog,
+  app,
+  BrowserWindow,
+  Menu,
+  MenuItemConstructorOptions,
+  screen,
+  type BrowserWindowConstructorOptions,
+  type Rectangle,
+} from "electron";
 import { AppState } from "./global-state";
 import {
   ensureOutputFolder,
@@ -390,6 +399,30 @@ export function createFileInOutputFolder(fileName: string) {
   sendOutputFolderState();
 }
 
+export function duplicateFileInOutputFolder(relativePath: string) {
+  const sourcePath = resolveInsideOutputFolder(relativePath);
+  if (!fs.existsSync(sourcePath) || fs.statSync(sourcePath).isDirectory()) {
+    throw new Error("File does not exist");
+  }
+
+  const directory = path.dirname(sourcePath);
+  const parsed = path.parse(sourcePath);
+  const extension = parsed.ext || ".csv";
+  let copyIndex = 1;
+  let targetBase = `${parsed.name}-copy${extension}`;
+  if (fs.existsSync(path.join(directory, targetBase))) {
+    do {
+      copyIndex += 1;
+      targetBase = `${parsed.name}-copy-${copyIndex}${extension}`;
+    } while (fs.existsSync(path.join(directory, targetBase)));
+  }
+
+  const targetPath = path.join(directory, targetBase);
+  fs.copyFileSync(sourcePath, targetPath);
+  console.log(`Duplicated file: ${sourcePath} -> ${targetPath}`);
+  sendOutputFolderState();
+}
+
 export function updateActiveCsvRow(payload: {
   rowIndex: number;
   action: string;
@@ -583,6 +616,72 @@ export function insertActiveCsvRowBelow(rowIndex: number) {
   sendOutputFolderState();
 }
 
+export function moveActiveCsvRow(rowIndex: number, targetRowIndex: number, placement: "before" | "after" = "before") {
+  if (!Number.isInteger(rowIndex) || rowIndex < 0 || !Number.isInteger(targetRowIndex) || targetRowIndex < 0) {
+    throw new Error("Invalid row index");
+  }
+
+  if (!fs.existsSync(AppState.outputFilePath) || fs.statSync(AppState.outputFilePath).isDirectory()) {
+    throw new Error("Active file not found");
+  }
+
+  const content = fs.readFileSync(AppState.outputFilePath, "utf8");
+  const lines = content.split(/\r?\n/);
+  const dataLineIndexes = listDataLineIndexes(content);
+  const totalRows = dataLineIndexes.length;
+
+  if (rowIndex >= totalRows || totalRows === 0) {
+    throw new Error("Row index out of range");
+  }
+
+  if (targetRowIndex >= totalRows) {
+    targetRowIndex = totalRows - 1;
+  }
+
+  if (rowIndex === targetRowIndex && placement === "before") {
+    return;
+  }
+
+  if (placement === "after" && targetRowIndex === totalRows - 1) {
+    targetRowIndex = totalRows - 1;
+  }
+
+  const sourceLineIndex = dataLineIndexes[rowIndex];
+  const sourceLine = lines[sourceLineIndex];
+  if (sourceLine === undefined) {
+    throw new Error("Row index out of range");
+  }
+
+  const targetBaseLineIndex = dataLineIndexes[targetRowIndex];
+  const targetLineIndex = targetBaseLineIndex + (placement === "after" ? 1 : 0);
+
+  lines.splice(sourceLineIndex, 1);
+  let insertLineIndex = targetLineIndex;
+
+  if (sourceLineIndex < insertLineIndex) {
+    insertLineIndex -= 1;
+  }
+
+  const safeInsertLineIndex = Math.max(0, Math.min(insertLineIndex, lines.length));
+  lines.splice(safeInsertLineIndex, 0, sourceLine);
+  fs.writeFileSync(AppState.outputFilePath, lines.join("\n"), "utf8");
+  sendOutputFolderState();
+}
+
+export function moveActiveCsvRowToTop(rowIndex: number) {
+  moveActiveCsvRow(rowIndex, 0, "before");
+}
+
+export function moveActiveCsvRowToBottom(rowIndex: number) {
+  const content = fs.readFileSync(AppState.outputFilePath, "utf8");
+  const dataLineIndexes = listDataLineIndexes(content);
+  if (dataLineIndexes.length === 0) {
+    return;
+  }
+
+  moveActiveCsvRow(rowIndex, dataLineIndexes.length - 1, "after");
+}
+
 export function renameFileInOutputFolder(relativePath: string, newName: string) {
   const currentPath = resolveInsideOutputFolder(relativePath);
   if (!fs.existsSync(currentPath) || fs.statSync(currentPath).isDirectory()) {
@@ -720,6 +819,10 @@ export function createWindow() {
     void window.loadFile(rendererBuildPath);
   }
 
+  if (isDev) {
+    window.webContents.openDevTools({ mode: "detach" });
+  }
+
   window.on("close", () => {
     if (saveTimer) {
       clearTimeout(saveTimer);
@@ -734,7 +837,8 @@ export function createWindow() {
 }
 
 export function buildAppMenu() {
-  const menu = [
+  const isDev = !app.isPackaged;
+  const menu: MenuItemConstructorOptions[] = [
     {
       label: "File",
       submenu: [
@@ -763,6 +867,18 @@ export function buildAppMenu() {
     },
   ];
 
-  const builtMenu = require("electron").Menu.buildFromTemplate(menu);
-  require("electron").Menu.setApplicationMenu(builtMenu);
+  if (isDev) {
+    menu.push({
+      label: "View",
+      submenu: [
+        {
+          role: "toggleDevTools" as const,
+          accelerator: process.platform === "darwin" ? "Cmd+Option+I" : "Ctrl+Shift+I",
+        },
+      ],
+    });
+  }
+
+  const builtMenu = Menu.buildFromTemplate(menu);
+  Menu.setApplicationMenu(builtMenu);
 }

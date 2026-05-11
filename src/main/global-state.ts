@@ -17,6 +17,7 @@ export class AppState {
   static replaying = false;
   static replayStopRequested = false;
   static replayRepeatEnabled = false;
+  static replayRepeatCount = 0;
   static replayExtraDelayMs = 0;
   static currentReplayRowIndex: number | null = null;
   static lastClickTime: number | null = null;

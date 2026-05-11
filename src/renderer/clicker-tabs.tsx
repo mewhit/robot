@@ -44,6 +44,7 @@ type RowFormState = {
 type ClickerTabsProps = {
   folderState: FolderState;
   selectedFilePaths: string[];
+  selectedCsvRowIndexes: number[];
   editingRelativePath: string | null;
   editingName: string;
   editingCsvRowIndex: number | null;
@@ -53,6 +54,7 @@ type ClickerTabsProps = {
   isReplaying: boolean;
   isRecording: boolean;
   isReplayRepeatEnabled: boolean;
+  replayRepeatCount: number;
   replayClickDelayMs: number;
   cursorPos: {
     x: number;
@@ -64,13 +66,20 @@ type ClickerTabsProps = {
   rowForm: RowFormState;
   isSavingRow: boolean;
   onNewFile: () => void;
-  onFileClick: (path: string, additive: boolean) => void;
-  onFileContextMenu: (e: React.MouseEvent, path: string, additive: boolean) => void;
+  onFileClick: (path: string, additive: boolean, withRange: boolean) => void;
+  onFileContextMenu: (e: React.MouseEvent, path: string, additive: boolean, withRange: boolean) => void;
+  onDuplicateSelectedFiles: () => void;
+  onDeleteSelectedFiles: () => void;
   onEditingNameChange: (value: string) => void;
   onEditingNameKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void;
   onEditingNameBlur: () => void;
   onCsvRowContextMenu: (e: React.MouseEvent, rowIndex: number, stepName: string) => void;
-  onSelectedCsvRowChange: (rowIndex: number) => void;
+  onCsvRowDragStart: (rowIndex: number) => void;
+  onCsvRowDragMove: (fromRowIndex: number, targetRowIndex: number, placement: "before" | "after") => void;
+  onCsvRowDragEnd: () => void;
+  onSelectedCsvRowChange: (rowIndex: number, additive: boolean, withRange: boolean) => void;
+  onDuplicateSelectedCsvRows: () => void;
+  onDeleteSelectedCsvRows: () => void;
   onEditingStepNameChange: (value: string) => void;
   onEditingStepNameSubmit: () => void;
   onEditingStepNameCancel: () => void;
@@ -79,9 +88,11 @@ type ClickerTabsProps = {
   onStopReplay: () => void;
   onTestColorDetection: () => void;
   onReplayRepeatChange: (enabled: boolean) => void;
+  onReplayRepeatCountChange: (value: string) => void;
   onReplayClickDelayChange: (value: string) => void;
   onRowFormChange: (field: keyof RowFormState, value: string) => void;
   onSaveRow: () => void;
+  onPlaySelectedCsvRow: () => void;
 };
 
 function TreeNode({
@@ -101,8 +112,8 @@ function TreeNode({
   selectedFilePaths: string[];
   editingRelativePath: string | null;
   editingName: string;
-  onFileClick: (path: string, additive: boolean) => void;
-  onContextMenu: (e: React.MouseEvent, path: string, additive: boolean) => void;
+  onFileClick: (path: string, additive: boolean, withRange: boolean) => void;
+  onContextMenu: (e: React.MouseEvent, path: string, additive: boolean, withRange: boolean) => void;
   onEditingNameChange: (value: string) => void;
   onEditingNameKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void;
   onEditingNameBlur: () => void;
@@ -112,18 +123,21 @@ function TreeNode({
   const isFileSelected = !node.isDirectory && selectedFilePaths.includes(node.relativePath);
 
   return (
-    <li>
-      <div
-        className={`tree-item${isActiveFile ? " active" : ""}${isFileSelected ? " file-selected" : ""}`}
-        onClick={(e) => {
-          if (!node.isDirectory) onFileClick(node.relativePath, e.ctrlKey || e.metaKey);
-        }}
-        onContextMenu={(e) => {
-          if (!node.isDirectory) {
-            e.preventDefault();
-            onContextMenu(e, node.relativePath, e.ctrlKey || e.metaKey);
-          }
-        }}
+      <li>
+        <div
+          className={`tree-item${isActiveFile ? " active" : ""}${isFileSelected ? " file-selected" : ""}`}
+          onMouseDown={(e) => {
+            if (node.isDirectory) return;
+            if (e.button !== 0) return;
+
+            onFileClick(node.relativePath, e.ctrlKey || e.metaKey, e.shiftKey);
+          }}
+          onContextMenu={(e) => {
+            if (!node.isDirectory) {
+              e.preventDefault();
+              onContextMenu(e, node.relativePath, e.ctrlKey || e.metaKey, e.shiftKey);
+            }
+          }}
       >
         {node.isDirectory ? "[DIR] " : "[FILE] "}
         {isEditing ? (
@@ -175,6 +189,7 @@ export default function ClickerTabs(props: ClickerTabsProps) {
   const {
     folderState,
     selectedFilePaths,
+    selectedCsvRowIndexes,
     editingRelativePath,
     editingName,
     editingCsvRowIndex,
@@ -184,6 +199,7 @@ export default function ClickerTabs(props: ClickerTabsProps) {
     isReplaying,
     isRecording,
     isReplayRepeatEnabled,
+    replayRepeatCount,
     replayClickDelayMs,
     cursorPos,
     markerColorState,
@@ -193,11 +209,18 @@ export default function ClickerTabs(props: ClickerTabsProps) {
     onNewFile,
     onFileClick,
     onFileContextMenu,
+    onDuplicateSelectedFiles,
+    onDeleteSelectedFiles,
     onEditingNameChange,
     onEditingNameKeyDown,
     onEditingNameBlur,
-    onCsvRowContextMenu,
-    onSelectedCsvRowChange,
+  onCsvRowContextMenu,
+  onCsvRowDragStart,
+  onCsvRowDragMove,
+  onCsvRowDragEnd,
+  onSelectedCsvRowChange,
+    onDuplicateSelectedCsvRows,
+    onDeleteSelectedCsvRows,
     onEditingStepNameChange,
     onEditingStepNameSubmit,
     onEditingStepNameCancel,
@@ -206,9 +229,11 @@ export default function ClickerTabs(props: ClickerTabsProps) {
     onStopReplay,
     onTestColorDetection,
     onReplayRepeatChange,
+    onReplayRepeatCountChange,
     onReplayClickDelayChange,
     onRowFormChange,
     onSaveRow,
+    onPlaySelectedCsvRow,
   } = props;
 
   return (
@@ -216,16 +241,40 @@ export default function ClickerTabs(props: ClickerTabsProps) {
       <aside className="sidebar">
         <div className="sidebar-head">
           <h2 className="sidebar-title">EXPLORER</h2>
-          <button
-            className="new-file-btn"
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onNewFile();
-            }}
-          >
-            New File
-          </button>
+          <div className="sidebar-actions">
+            <button
+              className="sidebar-action-btn"
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDuplicateSelectedFiles();
+              }}
+              disabled={selectedFilePaths.length === 0}
+            >
+              Duplicate
+            </button>
+            <button
+              className="sidebar-action-btn sidebar-action-btn-danger"
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDeleteSelectedFiles();
+              }}
+              disabled={selectedFilePaths.length === 0}
+            >
+              Delete
+            </button>
+            <button
+              className="new-file-btn"
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onNewFile();
+              }}
+            >
+              New File
+            </button>
+          </div>
         </div>
         <ul className="tree">
           {folderState.tree.length === 0 ? (
@@ -252,6 +301,30 @@ export default function ClickerTabs(props: ClickerTabsProps) {
       <aside className="sidebar csv-panel">
         <div className="sidebar-head">
           <h2 className="sidebar-title">STEPS</h2>
+          <div className="sidebar-actions">
+            <button
+              className="sidebar-action-btn"
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDuplicateSelectedCsvRows();
+              }}
+              disabled={selectedCsvRowIndexes.length === 0}
+            >
+              Duplicate
+            </button>
+            <button
+              className="sidebar-action-btn sidebar-action-btn-danger"
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDeleteSelectedCsvRows();
+              }}
+              disabled={selectedCsvRowIndexes.length === 0}
+            >
+              Delete
+            </button>
+          </div>
         </div>
         <ul className="tree">
           {folderState.activeFileRows.length === 0 ? (
@@ -262,11 +335,47 @@ export default function ClickerTabs(props: ClickerTabsProps) {
               return (
                 <li
                   key={`row-${row.index}`}
-                  className={`tree-item csv-line${selectedCsvRowIndex === row.index ? " selected" : ""}${
+                  className={`tree-item csv-line${selectedCsvRowIndexes.includes(row.index) ? " selected" : ""}${
                     isReplaying && replayingCsvRowIndex === row.index ? " replaying" : ""
                   }`}
-                  onClick={() => {
-                    if (!isEditingThisRow) onSelectedCsvRowChange(row.index);
+                  draggable={!isEditingThisRow}
+                  onDragStart={(e) => {
+                    e.stopPropagation();
+                    if (isEditingThisRow) {
+                      return;
+                    }
+                    e.dataTransfer.effectAllowed = "move";
+                    e.dataTransfer.setData("text/plain", String(row.index));
+                    onCsvRowDragStart(row.index);
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "move";
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    const sourceRowIndex = Number(e.dataTransfer.getData("text/plain"));
+                    if (!Number.isInteger(sourceRowIndex)) {
+                      return;
+                    }
+
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const placement: "before" | "after" =
+                      e.clientY > rect.top + rect.height / 2 ? "after" : "before";
+
+                    if (sourceRowIndex !== row.index) {
+                      onCsvRowDragMove(sourceRowIndex, row.index, placement);
+                    }
+                  }}
+                  onDragEnd={() => {
+                    onCsvRowDragEnd();
+                  }}
+                  onMouseDown={(e) => {
+                    if (isEditingThisRow || e.button !== 0) {
+                      return;
+                    }
+
+                    onSelectedCsvRowChange(row.index, e.ctrlKey || e.metaKey, e.shiftKey);
                   }}
                   onContextMenu={(e) => {
                     e.preventDefault();
@@ -338,7 +447,9 @@ export default function ClickerTabs(props: ClickerTabsProps) {
             <>
               <div className="edit-groups">
                 <div className="edit-line">
-                  <strong>Action</strong>
+                  <strong>
+                    Action{selectedCsvRowIndexes.length > 1 ? ` (${selectedCsvRowIndexes.length} selected)` : ""}
+                  </strong>
                   <input value={rowForm.action} onChange={(e) => onRowFormChange("action", e.target.value)} />
                 </div>
                 <div className="group-separator" />
@@ -444,8 +555,15 @@ export default function ClickerTabs(props: ClickerTabsProps) {
                     </label>
                   </div>
                 </div>
+                <button type="button" onClick={onPlaySelectedCsvRow}>
+                  Click
+                </button>
                 <button type="button" onClick={onSaveRow} disabled={isSavingRow}>
-                  {isSavingRow ? "Saving..." : "Save Row"}
+                  {isSavingRow
+                    ? "Saving..."
+                    : selectedCsvRowIndexes.length > 1
+                      ? `Save ${selectedCsvRowIndexes.length} rows`
+                      : "Save Row"}
                 </button>
               </div>
             </>
@@ -465,6 +583,18 @@ export default function ClickerTabs(props: ClickerTabsProps) {
               disabled={isRecording}
             />
             Repeat replay
+          </label>
+          <label className="delay-setting">
+            <span>Repeat count</span>
+            <span className="delay-setting-note">(0 = infinite)</span>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              value={replayRepeatCount}
+              onChange={(e) => onReplayRepeatCountChange(e.target.value)}
+              disabled={isRecording}
+            />
           </label>
           <label className="delay-setting">
             <span>Click delay (ms)</span>

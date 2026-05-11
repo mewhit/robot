@@ -17,6 +17,10 @@ export function sendReplayRepeatState() {
   AppState.mainWindow?.webContents.send(CHANNELS.REPLAY_REPEAT_STATE, AppState.replayRepeatEnabled);
 }
 
+export function sendReplayRepeatCountState() {
+  AppState.mainWindow?.webContents.send(CHANNELS.REPLAY_REPEAT_COUNT_STATE, AppState.replayRepeatCount);
+}
+
 export function sendReplayDelayState() {
   AppState.mainWindow?.webContents.send(CHANNELS.REPLAY_DELAY_STATE, AppState.replayExtraDelayMs);
 }
