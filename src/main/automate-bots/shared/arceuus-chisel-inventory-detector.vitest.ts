@@ -13,6 +13,11 @@ import type { RobotBitmap } from "./ocr-engine";
 
 function loadPngBitmap(filePath: string): Promise<RobotBitmap> {
   return new Promise((resolve, reject) => {
+    if (!fs.existsSync(filePath)) {
+      reject(new Error(`File not found: ${filePath}`));
+      return;
+    }
+
     const png = new PNG();
     fs.createReadStream(filePath)
       .pipe(png)
@@ -68,9 +73,23 @@ describe("Arceuus chisel inventory detector", () => {
         chisel: true,
       },
       {
-        path: "test-images/runescrafting/arceuus/1335x1549-2k-125-blood-rune-and-dark-essence-fragment-and-dense-essence-block-and-chisel.png",
-        dense: true,
-        darkBlock: false,
+        path: "test-images/runescrafting/arceuus/1335x1549-2k-125-blood-rune-and-dark-essence-fragments-and-dark-essence-block-and-chisel.png",
+        dense: false,
+        darkBlock: true,
+        darkFragment: true,
+        chisel: true,
+      },
+      {
+        path: "test-images/runescrafting/arceuus/1335x1548-2k-125-blood-rune-and-dark-essence-fragments-and-dark-essence-block-and-chisel-2.png",
+        dense: false,
+        darkBlock: true,
+        darkFragment: true,
+        chisel: true,
+      },
+      {
+        path: "test-images/runescrafting/arceuus/1298x1549-2k-125-blood-rune-and-dark-essence-fragments-and-dark-essence-block-and-chisel-2.png",
+        dense: false,
+        darkBlock: true,
         darkFragment: true,
         chisel: true,
       },
@@ -125,8 +144,12 @@ describe("Arceuus chisel inventory detector", () => {
     expect(startAtReturnBlue).toBe(false);
   });
 
-  test("starts Step 12 when inventory has dark essence blocks and fragments", async () => {
-    const bitmap = await loadPngBitmap("test-images/runescrafting/arceuus/1335x1549-2k-125-blood-rune-and-dark-essence-fragment-and-dense-essence-block-and-chisel.png");
+  test.each([
+    "test-images/runescrafting/arceuus/1335x1549-2k-125-blood-rune-and-dark-essence-fragments-and-dark-essence-block-and-chisel.png",
+    "test-images/runescrafting/arceuus/1335x1548-2k-125-blood-rune-and-dark-essence-fragments-and-dark-essence-block-and-chisel-2.png",
+    "test-images/runescrafting/arceuus/1298x1549-2k-125-blood-rune-and-dark-essence-fragments-and-dark-essence-block-and-chisel-2.png",
+  ])("starts Step 12 when inventory has dark essence blocks and fragments: %s", async (screenshotPath) => {
+    const bitmap = await loadPngBitmap(screenshotPath);
     const essenceTemplates = await loadArceuusEssenceIconTemplates();
     const detection = detectArceuusEssenceInventory(bitmap, essenceTemplates, { blockClassificationMode: "dark" });
     const startAtStep12FollowAnother =

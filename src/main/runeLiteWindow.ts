@@ -1,13 +1,28 @@
 import { windowManager, Window } from "node-window-manager";
 import { screen } from "electron";
+import {
+  AutomateBotId,
+  MINING_GUILD_COAL_ORE_BOT_ID,
+  MINING_GUILD_MITHRIL_ORE_BOT_ID,
+  RUNECRAFTING_ARCEUUS_BLOOD_RUNE_BOT_ID,
+  RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID,
+} from "./automate-bots/definitions";
 
 export type RuneLiteWindowInfo = { x: number; y: number; width: number; height: number };
+type RuneLiteTargetCaptureSize = { width: number; height: number };
 
 const DEFAULT_AUTOMATION_RUNELITE_BOUNDS: RuneLiteWindowInfo = {
   x: 0,
   y: 0,
   width: 1280,
   height: 720,
+};
+
+const TESTED_CAPTURE_SIZE_BY_BOT_ID: Partial<Record<AutomateBotId, RuneLiteTargetCaptureSize>> = {
+  [MINING_GUILD_COAL_ORE_BOT_ID]: { width: 1298, height: 1549 },
+  [MINING_GUILD_MITHRIL_ORE_BOT_ID]: { width: 1600, height: 1549 },
+  [RUNECRAFTING_ARCEUUS_BLOOD_RUNE_BOT_ID]: { width: 1335, height: 1549 },
+  [RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID]: { width: 1298, height: 1549 },
 };
 
 function getWindowsDPIScalingFactor(): number {
@@ -20,6 +35,40 @@ function getWindowsDPIScalingFactor(): number {
     console.warn(`Could not detect DPI scaling, using 1x:`, error);
     return 1;
   }
+}
+
+function getWindowDisplayScaleFactor(bounds: RuneLiteWindowInfo): number {
+  try {
+    const display = screen.getDisplayMatching({
+      x: bounds.x,
+      y: bounds.y,
+      width: Math.max(1, bounds.width),
+      height: Math.max(1, bounds.height),
+    });
+    return Number.isFinite(display.scaleFactor) && display.scaleFactor > 0 ? display.scaleFactor : 1;
+  } catch (error) {
+    console.warn("Could not detect RuneLite display scale, using 1x:", error);
+    return 1;
+  }
+}
+
+function getValidRuneLiteWindowBounds(window: Window): RuneLiteWindowInfo | null {
+  const bounds = window.getBounds();
+  const x = Number(bounds.x);
+  const y = Number(bounds.y);
+  const width = Number(bounds.width);
+  const height = Number(bounds.height);
+
+  if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
+    return null;
+  }
+
+  return {
+    x: Math.round(x),
+    y: Math.round(y),
+    width: Math.round(width),
+    height: Math.round(height),
+  };
 }
 
 export function findRuneLiteWindow(): Window | null {
@@ -65,20 +114,20 @@ export function findRuneLiteWindow(): Window | null {
   return bestMatch?.window ?? null;
 }
 
-function getAutomationRuneLiteWindowBounds(): RuneLiteWindowInfo {
+function parseRuneLiteForceBounds(): RuneLiteWindowInfo | null {
   const raw = process.env.RUNELITE_FORCE_BOUNDS?.trim();
   if (!raw) {
-    return DEFAULT_AUTOMATION_RUNELITE_BOUNDS;
+    return null;
   }
 
   const values = raw.split(",").map((part) => Number(part.trim()));
   if (values.length !== 4 || values.some((value) => !Number.isFinite(value))) {
-    return DEFAULT_AUTOMATION_RUNELITE_BOUNDS;
+    return null;
   }
 
   const [x, y, width, height] = values;
   if (width <= 0 || height <= 0) {
-    return DEFAULT_AUTOMATION_RUNELITE_BOUNDS;
+    return null;
   }
 
   return {
@@ -86,6 +135,30 @@ function getAutomationRuneLiteWindowBounds(): RuneLiteWindowInfo {
     y: Math.round(y),
     width: Math.round(width),
     height: Math.round(height),
+  };
+}
+
+function getAutomationRuneLiteWindowBounds(): RuneLiteWindowInfo {
+  return parseRuneLiteForceBounds() ?? DEFAULT_AUTOMATION_RUNELITE_BOUNDS;
+}
+
+function getTestedRuneLiteBoundsForBot(window: Window, botId: string): RuneLiteWindowInfo | null {
+  const targetCaptureSize = TESTED_CAPTURE_SIZE_BY_BOT_ID[botId as AutomateBotId];
+  if (!targetCaptureSize) {
+    return null;
+  }
+
+  const currentBounds = getValidRuneLiteWindowBounds(window);
+  if (!currentBounds) {
+    return null;
+  }
+
+  const scaleFactor = getWindowDisplayScaleFactor(currentBounds);
+  return {
+    x: currentBounds.x,
+    y: currentBounds.y,
+    width: Math.max(1, Math.round(targetCaptureSize.width / scaleFactor)),
+    height: Math.max(1, Math.round(targetCaptureSize.height / scaleFactor)),
   };
 }
 
@@ -115,6 +188,42 @@ export function getRuneLite(): Window | null {
 
   // Use raw bounds directly without DPI scaling
   // robotjs captures at pixel level, DPI scaling causes coordinate mismatch
+
+  return runeLiteWindow;
+}
+
+export function alignRuneLiteWindowBoundsForAutomateBot(botId: string): Window | null {
+  if (process.platform !== "win32") {
+    return findRuneLiteWindow();
+  }
+
+  const runeLiteWindow = getRuneLite();
+  if (!runeLiteWindow) {
+    return null;
+  }
+
+  const forcedBounds = parseRuneLiteForceBounds();
+  const targetBounds = forcedBounds ?? getTestedRuneLiteBoundsForBot(runeLiteWindow, botId);
+  if (!targetBounds) {
+    return runeLiteWindow;
+  }
+
+  try {
+    const beforeBounds = getValidRuneLiteWindowBounds(runeLiteWindow);
+    runeLiteWindow.setBounds(targetBounds);
+    const afterBounds = getValidRuneLiteWindowBounds(runeLiteWindow);
+    const targetCaptureSize = TESTED_CAPTURE_SIZE_BY_BOT_ID[botId as AutomateBotId];
+    const targetText = forcedBounds
+      ? "RUNELITE_FORCE_BOUNDS"
+      : targetCaptureSize
+        ? `testedCapture=${targetCaptureSize.width}x${targetCaptureSize.height}`
+        : "default";
+    console.log(
+      `RuneLite bounds aligned for bot=${botId} source=${targetText} before=${beforeBounds ? `${beforeBounds.width}x${beforeBounds.height}@${beforeBounds.x},${beforeBounds.y}` : "unknown"} after=${afterBounds ? `${afterBounds.width}x${afterBounds.height}@${afterBounds.x},${afterBounds.y}` : "unknown"}.`,
+    );
+  } catch (error) {
+    console.error(`Could not align RuneLite bounds for bot=${botId}:`, error);
+  }
 
   return runeLiteWindow;
 }

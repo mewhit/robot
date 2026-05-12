@@ -51,12 +51,14 @@ type PreparedTemplate = ArceuusEssenceIconTemplate & {
 
 const TEMPLATE_SAMPLE_STRIDE = 3;
 const SEARCH_STEP_PX = 2;
+const FRAGMENT_SEARCH_STEP_PX = 1;
 const MIN_MATCH_SCORE_BY_KIND: Record<ArceuusEssenceIconKind, number> = {
   "dense-essence-block": 0.95,
   "dark-essence-block": 0.94,
   "dark-essence-fragments": 0.94,
 };
 const MAX_MATCHES_PER_KIND = 28;
+const STRONG_DARK_BLOCK_SCORE = 0.98;
 const INVENTORY_LEFT_RATIO = 0.72;
 const INVENTORY_TOP_RATIO = 0.70;
 const INVENTORY_RIGHT_RATIO = 0.99;
@@ -168,7 +170,7 @@ function suppressWeakFragmentsInStrongDarkBlockInventory(
   fragments: ArceuusEssenceIconMatch[],
   darkBlocks: readonly ArceuusEssenceIconMatch[],
 ): ArceuusEssenceIconMatch[] {
-  const strongDarkBlockCount = darkBlocks.filter((block) => block.score >= 0.98).length;
+  const strongDarkBlockCount = darkBlocks.filter((block) => block.score >= STRONG_DARK_BLOCK_SCORE).length;
   if (strongDarkBlockCount < 5) {
     return fragments;
   }
@@ -188,9 +190,10 @@ function detectTemplateMatches(
   const matches: ArceuusEssenceIconMatch[] = [];
   const maxY = roi.y + roi.height - template.bitmap.height;
   const maxX = roi.x + roi.width - template.bitmap.width;
+  const searchStep = template.kind === "dark-essence-fragments" ? FRAGMENT_SEARCH_STEP_PX : SEARCH_STEP_PX;
 
-  for (let y = roi.y; y <= maxY; y += SEARCH_STEP_PX) {
-    for (let x = roi.x; x <= maxX; x += SEARCH_STEP_PX) {
+  for (let y = roi.y; y <= maxY; y += searchStep) {
+    for (let x = roi.x; x <= maxX; x += searchStep) {
       const averageColorError = scoreTemplateAt(template, bitmap, x, y);
       const score = clamp(1 - averageColorError / 255, 0, 1);
       if (score < MIN_MATCH_SCORE_BY_KIND[template.kind]) {
@@ -220,16 +223,20 @@ export function detectArceuusEssenceInventory(
   options: ArceuusEssenceInventoryDetectionOptions = {},
 ): ArceuusEssenceInventoryDetection {
   const searchRoi = resolveInventorySearchRoi(bitmap);
-  const matches = suppressOverlappingMatches(
-    templates.flatMap((template) => detectTemplateMatches(prepareTemplate(template), bitmap, searchRoi)),
-  );
-  let denseBlocks = matches.filter((match) => match.kind === "dense-essence-block");
-  let darkBlocks = matches.filter((match) => match.kind === "dark-essence-block");
-  let darkFragments = matches.filter((match) => match.kind === "dark-essence-fragments");
+  const matches = templates.flatMap((template) => detectTemplateMatches(prepareTemplate(template), bitmap, searchRoi));
+  let denseBlocks = suppressOverlappingMatches(matches.filter((match) => match.kind === "dense-essence-block"));
+  let darkBlocks = suppressOverlappingMatches(matches.filter((match) => match.kind === "dark-essence-block"));
+  let darkFragments = suppressOverlappingMatches(matches.filter((match) => match.kind === "dark-essence-fragments"));
 
   darkFragments = suppressWeakFragmentsInStrongDarkBlockInventory(darkFragments, darkBlocks);
 
-  if ((options.blockClassificationMode ?? "auto") === "auto" && darkFragments.length > 0 && darkBlocks.length > 0) {
+  const hasStrongDarkBlocks = darkBlocks.some((block) => block.score >= STRONG_DARK_BLOCK_SCORE);
+  if (
+    (options.blockClassificationMode ?? "auto") === "auto" &&
+    darkFragments.length > 0 &&
+    darkBlocks.length > 0 &&
+    !hasStrongDarkBlocks
+  ) {
     if (denseBlocks.length === 0) {
       denseBlocks = darkBlocks.map((match) => ({ ...match, kind: "dense-essence-block" }));
     }

@@ -31,7 +31,7 @@ import { readStartupPlayerTileCalibration } from "./automate-bots/shared/startup
 import { startAutomateBotLogSession, stopAutomateBotLogSession } from "./automateBotLogs";
 import { CHANNELS } from "./ipcChannels";
 import { getSavedSelectedAutomateBotId, setSavedSelectedAutomateBotId } from "./csvOperator";
-import { getRuneLite } from "./runeLiteWindow";
+import { alignRuneLiteWindowBoundsForAutomateBot, getRuneLite } from "./runeLiteWindow";
 
 const botStartHandlers = new Map<string, () => void>([
   [AGILITY_BOT_ID, onAgilityBotStart],
@@ -56,11 +56,11 @@ function getAutomateBotVersionName(botId: string): string | undefined {
   return AUTOMATE_BOTS.find((bot) => bot.id === botId)?.versionName;
 }
 
-function cacheStartupPlayerTileCalibration(): void {
+function cacheStartupPlayerTileCalibration(botId: string): void {
   AppState.automateBotStartupRawTilePx = null;
 
   try {
-    const window = getRuneLite();
+    const window = alignRuneLiteWindowBoundsForAutomateBot(botId) ?? getRuneLite();
     if (!window) {
       return;
     }
@@ -150,7 +150,7 @@ export function startSelectedAutomateBot(source: "f4" | "ui") {
   flushOcrDebugDirectory();
 
   startAutomateBotLogSession(selectedBotId, source, getAutomateBotVersionName(selectedBotId));
-  cacheStartupPlayerTileCalibration();
+  cacheStartupPlayerTileCalibration(selectedBotId);
   AppState.automateBotRunning = true;
   sendAutomateBotState();
   selectedBotStartHandler();
@@ -179,7 +179,7 @@ export function startAutomateBotFromStep(stepId: string) {
   flushOcrDebugDirectory();
 
   startAutomateBotLogSession(matchedBotId, "ui", getAutomateBotVersionName(matchedBotId));
-  cacheStartupPlayerTileCalibration();
+  cacheStartupPlayerTileCalibration(matchedBotId);
   AppState.selectedAutomateBotId = matchedBotId;
   setSavedSelectedAutomateBotId(matchedBotId);
   AppState.automateBotRunning = true;

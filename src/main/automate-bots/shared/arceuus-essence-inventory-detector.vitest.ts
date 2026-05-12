@@ -52,12 +52,31 @@ describe("Arceuus essence inventory detector", () => {
   });
 
   test("classifies dense block and dark fragment screenshot in auto mode", async () => {
-    const bitmap = await loadPngBitmap("test-images/runescrafting/arceuus/1335x1549-2k-125-blood-rune-and-dark-essence-fragment-and-dense-essence-block-and-chisel.png");
+    const bitmap = await loadPngBitmap("test-images/runescrafting/arceuus/1335x1549-2k-125-blood-rune-and-dark-essense-fragments-and-dense-essence-block-and-chisel.png");
     const templates = await loadArceuusEssenceIconTemplates();
     const detection = detectArceuusEssenceInventory(bitmap, templates);
 
     expect(detection.denseBlocks.length).toBeGreaterThan(0);
     expect(detection.darkFragments.length).toBeGreaterThan(0);
     expect(detection.darkBlocks).toHaveLength(0);
+  });
+
+  test("classifies dark essence blocks and fragments screenshot in auto mode", async () => {
+    const templates = await loadArceuusEssenceIconTemplates();
+    const screenshotPaths = [
+      "test-images/runescrafting/arceuus/1335x1549-2k-125-blood-rune-and-dark-essence-fragments-and-dark-essence-block-and-chisel.png",
+      "test-images/runescrafting/arceuus/1335x1548-2k-125-blood-rune-and-dark-essence-fragments-and-dark-essence-block-and-chisel-2.png",
+      "test-images/runescrafting/arceuus/1298x1549-2k-125-blood-rune-and-dark-essence-fragments-and-dark-essence-block-and-chisel-2.png",
+    ];
+
+    for (const screenshotPath of screenshotPaths) {
+      const bitmap = await loadPngBitmap(screenshotPath);
+      const detection = detectArceuusEssenceInventory(bitmap, templates);
+
+      expect(detection.denseBlocks, screenshotPath).toHaveLength(0);
+      expect(detection.darkBlocks.length, screenshotPath).toBeGreaterThan(0);
+      expect(detection.darkFragments.length, screenshotPath).toBeGreaterThan(0);
+      expect(detection.isDarkEssenceConfirmed, screenshotPath).toBe(true);
+    }
   });
 });
