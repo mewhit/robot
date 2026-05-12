@@ -85,10 +85,18 @@ import {
 } from "./shared/guardian-of-the-rift-panel-detector";
 import { getGuardianOfTheRiftOverlayMode } from "./shared/guardian-of-the-rift-overlay-mode";
 import { detectGuardianOfTheRiftTimer } from "./shared/guardian-of-the-rift-timer-detector";
-import { detectInventoryCount, saveBitmapWithInventoryCountDebug } from "./shared/inventory-count-detector";
+import {
+  detectInventoryFreeSpace as detectInventoryCount,
+  saveBitmapWithInventoryFreeSpaceDebug as saveBitmapWithInventoryCountDebug,
+} from "./shared/inventory-free-space";
 import { detectMiningBoxStatusInScreenshot, type MiningBoxStatusDetection } from "./shared/mining-box-status-detector";
 import type { RobotBitmap } from "./shared/ocr-engine";
 import { detectBestPlayerBoxInScreenshot, type PlayerBox } from "./shared/player-box-detector";
+import {
+  clickScreenPoint as sharedClickScreenPoint,
+  clickScreenPointImmediate as sharedClickScreenPointImmediate,
+  getSafeScreenPoint as sharedGetSafeScreenPoint,
+} from "./shared/robot-clicker";
 
 type BotPhase =
   | "pick-uncharged-cell"
@@ -3948,20 +3956,7 @@ function detectAllGreenObjects(bitmap: RobotBitmap, minPixels: number = GREEN_MI
 }
 
 function getSafeScreenPoint(screenX: number, screenY: number, captureBounds: ScreenCaptureBounds): { x: number; y: number } {
-  const requestedX = Math.round(screenX);
-  const requestedY = Math.round(screenY);
-  const safeX = clamp(
-    requestedX,
-    captureBounds.x + CLICK_SAFE_EDGE_MARGIN_PX,
-    captureBounds.x + captureBounds.width - 1 - CLICK_SAFE_EDGE_MARGIN_PX,
-  );
-  const safeY = clamp(
-    requestedY,
-    captureBounds.y + CLICK_SAFE_EDGE_MARGIN_PX,
-    captureBounds.y + captureBounds.height - 1 - CLICK_SAFE_EDGE_MARGIN_PX,
-  );
-
-  return { x: safeX, y: safeY };
+  return sharedGetSafeScreenPoint(screenX, screenY, captureBounds, CLICK_SAFE_EDGE_MARGIN_PX);
 }
 
 function sleepSyncMs(ms: number): void {
@@ -3973,18 +3968,16 @@ function sleepSyncMs(ms: number): void {
 }
 
 function clickScreenPointImmediate(screenX: number, screenY: number, captureBounds: ScreenCaptureBounds): { x: number; y: number } {
-  const safePoint = getSafeScreenPoint(screenX, screenY, captureBounds);
-  moveMouse(safePoint.x, safePoint.y);
-  mouseClick("left", false);
-  return safePoint;
+  return sharedClickScreenPointImmediate(screenX, screenY, captureBounds, {
+    safeEdgeMarginPx: CLICK_SAFE_EDGE_MARGIN_PX,
+  });
 }
 
 function clickScreenPoint(screenX: number, screenY: number, captureBounds: ScreenCaptureBounds): { x: number; y: number } {
-  const safePoint = getSafeScreenPoint(screenX, screenY, captureBounds);
-  moveMouse(safePoint.x, safePoint.y);
-  sleepSyncMs(OBJECT_PRE_CLICK_MOUSE_SETTLE_MS);
-  mouseClick("left", false);
-  return safePoint;
+  return sharedClickScreenPoint(screenX, screenY, captureBounds, {
+    safeEdgeMarginPx: CLICK_SAFE_EDGE_MARGIN_PX,
+    settleMs: OBJECT_PRE_CLICK_MOUSE_SETTLE_MS,
+  });
 }
 
 async function clickDepositScreenPoint(

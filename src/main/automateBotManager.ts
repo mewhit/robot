@@ -9,6 +9,7 @@ import {
 import { onMotherlodeMineBotStart } from "./automate-bots/motherlode-mine-bot";
 import { onMotherlodeMineBotV2Start } from "./automate-bots/motherlode-mine-bot-v2";
 import { onMotherlodeMineBotV3Start } from "./automate-bots/motherlode-mine-bot-v3";
+import { onRunecraftingArceuusBloodRuneBotStart } from "./automate-bots/runecrafting-arceuus-blood-rune-bot";
 import { onRunecraftingGuardianOfTheRiftBotStart } from "./automate-bots/runecrafting-guardian-of-the-rift-bot";
 import {
   AUTOMATE_BOTS,
@@ -21,19 +22,16 @@ import {
   MINING_MOTHERLODE_MINE_BOT_ID,
   MINING_MOTHERLODE_MINE_V2_BOT_ID,
   MINING_MOTHERLODE_MINE_V3_BOT_ID,
+  RUNECRAFTING_ARCEUUS_BLOOD_RUNE_BOT_ID,
   RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID,
   isAutomateBotId,
 } from "./automate-bots/definitions";
 import { flushOcrDebugDirectory } from "./automate-bots/shared/ocr-engine";
-import {
-  formatStartupPlayerTileCalibrationLog,
-  readStartupPlayerTileCalibration,
-} from "./automate-bots/shared/startup-calibration";
+import { readStartupPlayerTileCalibration } from "./automate-bots/shared/startup-calibration";
 import { startAutomateBotLogSession, stopAutomateBotLogSession } from "./automateBotLogs";
 import { CHANNELS } from "./ipcChannels";
 import { getSavedSelectedAutomateBotId, setSavedSelectedAutomateBotId } from "./csvOperator";
 import { getRuneLite } from "./runeLiteWindow";
-import * as logger from "./logger";
 
 const botStartHandlers = new Map<string, () => void>([
   [AGILITY_BOT_ID, onAgilityBotStart],
@@ -44,6 +42,7 @@ const botStartHandlers = new Map<string, () => void>([
   [MINING_MOTHERLODE_MINE_BOT_ID, onMotherlodeMineBotStart],
   [MINING_MOTHERLODE_MINE_V2_BOT_ID, onMotherlodeMineBotV2Start],
   [MINING_MOTHERLODE_MINE_V3_BOT_ID, onMotherlodeMineBotV3Start],
+  [RUNECRAFTING_ARCEUUS_BLOOD_RUNE_BOT_ID, onRunecraftingArceuusBloodRuneBotStart],
   [RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID, onRunecraftingGuardianOfTheRiftBotStart],
 ]);
 
@@ -57,14 +56,12 @@ function getAutomateBotVersionName(botId: string): string | undefined {
   return AUTOMATE_BOTS.find((bot) => bot.id === botId)?.versionName;
 }
 
-function logStartupPlayerTileCalibration(botId: string): void {
-  const botName = getAutomateBotName(botId);
+function cacheStartupPlayerTileCalibration(): void {
   AppState.automateBotStartupRawTilePx = null;
 
   try {
     const window = getRuneLite();
     if (!window) {
-      logger.warn(`Automate Bot (${botName}): startup calibration unavailable - RuneLite window not found.`);
       return;
     }
 
@@ -76,7 +73,6 @@ function logStartupPlayerTileCalibration(botId: string): void {
 
     const calibration = readStartupPlayerTileCalibration(window);
     if (!calibration) {
-      logger.warn(`Automate Bot (${botName}): startup calibration unavailable - invalid RuneLite window bounds.`);
       return;
     }
 
@@ -84,17 +80,8 @@ function logStartupPlayerTileCalibration(botId: string): void {
       calibration.rawTilePx !== null && Number.isFinite(calibration.rawTilePx) && calibration.rawTilePx > 0
         ? calibration.rawTilePx
         : null;
-
-    const message = formatStartupPlayerTileCalibrationLog(botName, calibration);
-    if (calibration.playerTile && calibration.playerBox) {
-      logger.log(message);
-      return;
-    }
-
-    logger.warn(message);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    logger.warn(`Automate Bot (${botName}): startup calibration failed - ${message}`);
+    AppState.automateBotStartupRawTilePx = null;
   }
 }
 
@@ -163,7 +150,7 @@ export function startSelectedAutomateBot(source: "f4" | "ui") {
   flushOcrDebugDirectory();
 
   startAutomateBotLogSession(selectedBotId, source, getAutomateBotVersionName(selectedBotId));
-  logStartupPlayerTileCalibration(selectedBotId);
+  cacheStartupPlayerTileCalibration();
   AppState.automateBotRunning = true;
   sendAutomateBotState();
   selectedBotStartHandler();
@@ -192,7 +179,7 @@ export function startAutomateBotFromStep(stepId: string) {
   flushOcrDebugDirectory();
 
   startAutomateBotLogSession(matchedBotId, "ui", getAutomateBotVersionName(matchedBotId));
-  logStartupPlayerTileCalibration(matchedBotId);
+  cacheStartupPlayerTileCalibration();
   AppState.selectedAutomateBotId = matchedBotId;
   setSavedSelectedAutomateBotId(matchedBotId);
   AppState.automateBotRunning = true;

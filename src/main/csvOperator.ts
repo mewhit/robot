@@ -26,6 +26,10 @@ import {
   normalizeGuardianOfTheRiftConfig,
   type GuardianOfTheRiftConfig,
 } from "./automate-bots/guardian-of-the-rift-config";
+import {
+  normalizeArceuusBloodRuneConfig,
+  type ArceuusBloodRuneConfig,
+} from "./automate-bots/arceuus-blood-rune-config";
 
 const WINDOW_CONFIG_FILE_NAME = "window-config.json";
 const DEFAULT_WINDOW_WIDTH = 1280;
@@ -42,6 +46,7 @@ type WindowConfig = {
   screenshotSavePath?: string;
   screenshotNameSuffix?: string;
   selectedAutomateBotId?: string;
+  arceuusBloodRuneConfig?: ArceuusBloodRuneConfig;
   guardianOfTheRiftConfig?: GuardianOfTheRiftConfig;
   colossalPouchFullFillCountSinceRepair?: number;
 };
@@ -97,6 +102,14 @@ function normalizeSavedGuardianOfTheRiftConfig(value: unknown): GuardianOfTheRif
   return normalizeGuardianOfTheRiftConfig(value);
 }
 
+function normalizeSavedArceuusBloodRuneConfig(value: unknown): ArceuusBloodRuneConfig | undefined {
+  if (typeof value === "undefined") {
+    return undefined;
+  }
+
+  return normalizeArceuusBloodRuneConfig(value);
+}
+
 function toValidWindowConfig(raw: unknown): WindowConfig | null {
   if (!raw || typeof raw !== "object") {
     return null;
@@ -125,6 +138,7 @@ function toValidWindowConfig(raw: unknown): WindowConfig | null {
     screenshotSavePath: normalizeScreenshotSavePath(candidate.screenshotSavePath),
     screenshotNameSuffix: normalizeScreenshotNameSuffix(candidate.screenshotNameSuffix),
     selectedAutomateBotId: normalizeSelectedAutomateBotId(candidate.selectedAutomateBotId),
+    arceuusBloodRuneConfig: normalizeSavedArceuusBloodRuneConfig(candidate.arceuusBloodRuneConfig),
     guardianOfTheRiftConfig: normalizeSavedGuardianOfTheRiftConfig(candidate.guardianOfTheRiftConfig),
     colossalPouchFullFillCountSinceRepair: normalizeColossalPouchFullFillCount(candidate.colossalPouchFullFillCountSinceRepair),
   };
@@ -209,6 +223,7 @@ function writeWindowConfig(window: BrowserWindow) {
     screenshotSavePath: currentConfig?.screenshotSavePath,
     screenshotNameSuffix: currentConfig?.screenshotNameSuffix,
     selectedAutomateBotId: currentConfig?.selectedAutomateBotId,
+    arceuusBloodRuneConfig: currentConfig?.arceuusBloodRuneConfig,
     guardianOfTheRiftConfig: currentConfig?.guardianOfTheRiftConfig,
     colossalPouchFullFillCountSinceRepair: currentConfig?.colossalPouchFullFillCountSinceRepair,
   };
@@ -253,6 +268,10 @@ export function getSavedSelectedAutomateBotId(): string {
 
 export function getSavedGuardianOfTheRiftConfig(): GuardianOfTheRiftConfig {
   return normalizeGuardianOfTheRiftConfig(readWindowConfig()?.guardianOfTheRiftConfig);
+}
+
+export function getSavedArceuusBloodRuneConfig(): ArceuusBloodRuneConfig {
+  return normalizeArceuusBloodRuneConfig(readWindowConfig()?.arceuusBloodRuneConfig);
 }
 
 export function getSavedColossalPouchFullFillCountSinceRepair(): number {
@@ -315,6 +334,17 @@ export function setSavedGuardianOfTheRiftConfig(nextConfig: GuardianOfTheRiftCon
   const payload: WindowConfig = {
     ...existing,
     guardianOfTheRiftConfig: normalizeGuardianOfTheRiftConfig(nextConfig),
+  };
+
+  const configPath = getWindowConfigPath();
+  fs.writeFileSync(configPath, JSON.stringify(payload, null, 2), "utf8");
+}
+
+export function setSavedArceuusBloodRuneConfig(nextConfig: ArceuusBloodRuneConfig) {
+  const existing = readWindowConfig() ?? getWindowConfigFallback();
+  const payload: WindowConfig = {
+    ...existing,
+    arceuusBloodRuneConfig: normalizeArceuusBloodRuneConfig(nextConfig),
   };
 
   const configPath = getWindowConfigPath();
@@ -817,10 +847,6 @@ export function createWindow() {
     void window.loadURL(devServerUrl);
   } else {
     void window.loadFile(rendererBuildPath);
-  }
-
-  if (isDev) {
-    window.webContents.openDevTools({ mode: "detach" });
   }
 
   window.on("close", () => {

@@ -12,6 +12,8 @@ export const CHANNELS = {
   SET_SCREENSHOT_SAVE_PATH: "set-screenshot-save-path",
   SET_SCREENSHOT_NAME_SUFFIX: "set-screenshot-name-suffix",
   GET_DEBUG_FOLDER_FILES: "get-debug-folder-files",
+  GET_ARCEUUS_BLOOD_RUNE_CONFIG: "get-arceuus-blood-rune-config",
+  SET_ARCEUUS_BLOOD_RUNE_CONFIG: "set-arceuus-blood-rune-config",
   GET_GUARDIAN_OF_THE_RIFT_CONFIG: "get-guardian-of-the-rift-config",
   SET_GUARDIAN_OF_THE_RIFT_CONFIG: "set-guardian-of-the-rift-config",
   GET_GUARDIAN_OF_THE_RIFT_COLOSSAL_POUCH_FILL_COUNT:

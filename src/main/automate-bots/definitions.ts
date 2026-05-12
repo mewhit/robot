@@ -6,6 +6,7 @@ export const MINING_GUILD_MITHRIL_ORE_BOT_ID = "mining-guild-mithril-ore";
 export const MINING_MOTHERLODE_MINE_BOT_ID = "mining-motherlode-mine";
 export const MINING_MOTHERLODE_MINE_V2_BOT_ID = "mining-motherlode-mine-v2";
 export const MINING_MOTHERLODE_MINE_V3_BOT_ID = "mining-motherlode-mine-v3";
+export const RUNECRAFTING_ARCEUUS_BLOOD_RUNE_BOT_ID = "runecrafting-arceuus-blood-rune";
 export const RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID = "runecrafting-guardian-of-the-rift";
 
 export type AutomateBotId =
@@ -17,6 +18,7 @@ export type AutomateBotId =
   | typeof MINING_MOTHERLODE_MINE_BOT_ID
   | typeof MINING_MOTHERLODE_MINE_V2_BOT_ID
   | typeof MINING_MOTHERLODE_MINE_V3_BOT_ID
+  | typeof RUNECRAFTING_ARCEUUS_BLOOD_RUNE_BOT_ID
   | typeof RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID;
 
 export type AutomateBotDefinition = {
@@ -65,6 +67,12 @@ export const AUTOMATE_BOTS: AutomateBotDefinition[] = [
     id: MINING_MOTHERLODE_MINE_V3_BOT_ID,
     name: "Motherlode Mine V3 (engine)",
     group: "Mining",
+  },
+  {
+    id: RUNECRAFTING_ARCEUUS_BLOOD_RUNE_BOT_ID,
+    name: "Arceuus (Blood Rune)",
+    group: "Runecrafting",
+    versionName: "dense-runestone-mining-v1",
   },
   {
     id: RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID,

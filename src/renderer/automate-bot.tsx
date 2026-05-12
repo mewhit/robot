@@ -23,6 +23,8 @@ type AutomateBotProps = {
   isSelectedTaskRunning: boolean;
   currentStepId: string | null;
   logLines: string[];
+  showArceuusBloodRuneConfig: boolean;
+  arceuusBloodRuneAgilityLevel: number;
   showGuardianOfTheRiftConfig: boolean;
   guardianOfTheRiftElements: readonly GuardianOfTheRiftActiveElement[];
   guardianOfTheRiftConfig: GuardianOfTheRiftConfig;
@@ -30,6 +32,7 @@ type AutomateBotProps = {
   onSelectTaskNode: (id: string) => void;
   onToggleSelectedTaskRun: (taskNodeId?: string) => void;
   onStepContextMenu: (e: React.MouseEvent, stepId: string, stepName: string) => void;
+  onArceuusBloodRuneAgilityLevelChange: (level: number) => void;
   onGuardianOfTheRiftElementEnabledChange: (element: GuardianOfTheRiftActiveElement, enabled: boolean) => void;
   onGuardianOfTheRiftUseAgilityCourseChange: (enabled: boolean) => void;
   onGuardianOfTheRiftRunecraftLevelChange: (level: number) => void;
@@ -299,6 +302,8 @@ export default function AutomateBot(props: AutomateBotProps) {
     isSelectedTaskRunning,
     currentStepId,
     logLines,
+    showArceuusBloodRuneConfig,
+    arceuusBloodRuneAgilityLevel,
     showGuardianOfTheRiftConfig,
     guardianOfTheRiftElements,
     guardianOfTheRiftConfig,
@@ -306,6 +311,7 @@ export default function AutomateBot(props: AutomateBotProps) {
     onSelectTaskNode,
     onToggleSelectedTaskRun,
     onStepContextMenu,
+    onArceuusBloodRuneAgilityLevelChange,
     onGuardianOfTheRiftElementEnabledChange,
   onGuardianOfTheRiftUseAgilityCourseChange,
   onGuardianOfTheRiftRunecraftLevelChange,
@@ -361,6 +367,23 @@ export default function AutomateBot(props: AutomateBotProps) {
             ))
           )}
         </ul>
+        {showArceuusBloodRuneConfig && (
+          <div className="automatebot-config-panel">
+            <h3 className="automatebot-config-title">Arceuus Blood Rune</h3>
+            <label className="automatebot-toggle-row">
+              <span className="automatebot-toggle-label">Agility level</span>
+              <input
+                type="number"
+                min={1}
+                max={99}
+                step={1}
+                value={arceuusBloodRuneAgilityLevel}
+                onChange={(e) => onArceuusBloodRuneAgilityLevelChange(Number(e.target.value))}
+              />
+              <span className="automatebot-toggle-value">{arceuusBloodRuneAgilityLevel}/99</span>
+            </label>
+          </div>
+        )}
         {showGuardianOfTheRiftConfig && (
           <div className="automatebot-config-panel">
             <h3 className="automatebot-config-title">Guardian of the Rift</h3>

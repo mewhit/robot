@@ -7,8 +7,15 @@ import type { GuardianOfTheRiftRunStatsSnapshot } from "../main/guardianOfTheRif
 import {
   AUTOMATE_BOTS,
   DEFAULT_AUTOMATE_BOT_ID,
+  RUNECRAFTING_ARCEUUS_BLOOD_RUNE_BOT_ID,
   RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID,
 } from "../main/automate-bots/definitions";
+import {
+  createDefaultArceuusBloodRuneConfig,
+  normalizeArceuusBloodRuneAgilityLevel,
+  normalizeArceuusBloodRuneConfig,
+  type ArceuusBloodRuneConfig,
+} from "../main/automate-bots/arceuus-blood-rune-config";
 import {
   GUARDIAN_OF_THE_RIFT_ACTIVE_ELEMENTS,
   createDefaultGuardianOfTheRiftConfig,
@@ -214,6 +221,9 @@ export default function App() {
   const [debugNotice, setDebugNotice] = useState<{ text: string; tone: "success" | "error" } | null>(null);
   const [screenshotSavePath, setScreenshotSavePath] = useState("");
   const [screenshotNameSuffix, setScreenshotNameSuffix] = useState("");
+  const [arceuusBloodRuneConfig, setArceuusBloodRuneConfig] = useState<ArceuusBloodRuneConfig>(() =>
+    createDefaultArceuusBloodRuneConfig(),
+  );
   const [guardianOfTheRiftConfig, setGuardianOfTheRiftConfig] = useState<GuardianOfTheRiftConfig>(() =>
     createDefaultGuardianOfTheRiftConfig(),
   );
@@ -424,6 +434,19 @@ export default function App() {
         }
         setScreenshotSavePath(typeof result.path === "string" ? result.path : "");
         setScreenshotNameSuffix(typeof result.suffix === "string" ? result.suffix : "");
+      })
+      .catch(() => {
+        // Ignore non-critical config read failures.
+      });
+
+    void ipcRenderer
+      .invoke(CHANNELS.GET_ARCEUUS_BLOOD_RUNE_CONFIG)
+      .then((result: { ok?: boolean; config?: ArceuusBloodRuneConfig }) => {
+        if (!result?.ok || !result.config) {
+          return;
+        }
+
+        setArceuusBloodRuneConfig(normalizeArceuusBloodRuneConfig(result.config));
       })
       .catch(() => {
         // Ignore non-critical config read failures.
@@ -684,6 +707,21 @@ export default function App() {
     },
     [],
   );
+
+  const handleArceuusBloodRuneAgilityLevelChange = useCallback((level: number) => {
+    setArceuusBloodRuneConfig((prev) => {
+      const next: ArceuusBloodRuneConfig = {
+        ...prev,
+        agilityLevel: normalizeArceuusBloodRuneAgilityLevel(level),
+      };
+
+      void ipcRenderer.invoke(CHANNELS.SET_ARCEUUS_BLOOD_RUNE_CONFIG, next).catch(() => {
+        // Ignore non-critical config write failures.
+      });
+
+      return next;
+    });
+  }, []);
 
   const handleGuardianOfTheRiftUseAgilityCourseChange = useCallback((enabled: boolean) => {
     setGuardianOfTheRiftConfig((prev) => {
@@ -1517,6 +1555,8 @@ export default function App() {
             isSelectedTaskRunning={isSelectedTaskRunning}
             currentStepId={currentStepId}
             logLines={automateBotLogLines}
+            showArceuusBloodRuneConfig={selectedTaskNodeId === RUNECRAFTING_ARCEUUS_BLOOD_RUNE_BOT_ID}
+            arceuusBloodRuneAgilityLevel={arceuusBloodRuneConfig.agilityLevel}
             showGuardianOfTheRiftConfig={selectedTaskNodeId === RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}
             guardianOfTheRiftElements={GUARDIAN_OF_THE_RIFT_ACTIVE_ELEMENTS}
             guardianOfTheRiftConfig={guardianOfTheRiftConfig}
@@ -1524,6 +1564,7 @@ export default function App() {
             onSelectTaskNode={setSelectedTaskNodeId}
             onToggleSelectedTaskRun={(taskNodeId) => void handleToggleSelectedTaskRun(taskNodeId)}
             onStepContextMenu={handleStepContextMenu}
+            onArceuusBloodRuneAgilityLevelChange={handleArceuusBloodRuneAgilityLevelChange}
             onGuardianOfTheRiftElementEnabledChange={handleGuardianOfTheRiftElementEnabledChange}
             onGuardianOfTheRiftUseAgilityCourseChange={handleGuardianOfTheRiftUseAgilityCourseChange}
             onGuardianOfTheRiftRunecraftLevelChange={handleGuardianOfTheRiftRunecraftLevelChange}

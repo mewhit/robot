@@ -20,13 +20,19 @@ import {
   ensureCsvFileInitialized,
   getSavedScreenshotNameSuffix,
   getSavedScreenshotSavePath,
+  getSavedArceuusBloodRuneConfig,
   getSavedGuardianOfTheRiftConfig,
   getSavedColossalPouchFullFillCountSinceRepair,
   setSavedScreenshotNameSuffix,
   setSavedScreenshotSavePath,
+  setSavedArceuusBloodRuneConfig,
   setSavedGuardianOfTheRiftConfig,
   setSavedColossalPouchFullFillCountSinceRepair,
 } from "./csvOperator";
+import {
+  normalizeArceuusBloodRuneConfig,
+  type ArceuusBloodRuneConfig,
+} from "./automate-bots/arceuus-blood-rune-config";
 import {
   normalizeGuardianOfTheRiftConfig,
   type GuardianOfTheRiftConfig,
@@ -239,6 +245,30 @@ export function setupIpcHandlers() {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`Could not read debug folder: ${message}`);
       return { ok: true, files: [] };
+    }
+  });
+
+  ipcMain.handle(CHANNELS.GET_ARCEUUS_BLOOD_RUNE_CONFIG, () => {
+    try {
+      return {
+        ok: true,
+        config: getSavedArceuusBloodRuneConfig(),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Could not get Arceuus Blood Rune config: ${message}`);
+      return { ok: false, error: message };
+    }
+  });
+
+  ipcMain.handle(CHANNELS.SET_ARCEUUS_BLOOD_RUNE_CONFIG, (_event, config: ArceuusBloodRuneConfig) => {
+    try {
+      setSavedArceuusBloodRuneConfig(normalizeArceuusBloodRuneConfig(config));
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Could not save Arceuus Blood Rune config: ${message}`);
+      return { ok: false, error: message };
     }
   });
 
