@@ -407,11 +407,11 @@ export default function App() {
       window.alert(message);
     };
 
-      ipcRenderer.on(CHANNELS.RECORDING_STATE, onRecordingState);
-      ipcRenderer.on(CHANNELS.REPLAYING_STATE, onReplayingState);
-      ipcRenderer.on(CHANNELS.REPLAY_REPEAT_STATE, onReplayRepeatState);
-      ipcRenderer.on(CHANNELS.REPLAY_REPEAT_COUNT_STATE, onReplayRepeatCountState);
-      ipcRenderer.on(CHANNELS.REPLAY_DELAY_STATE, onReplayDelayState);
+    ipcRenderer.on(CHANNELS.RECORDING_STATE, onRecordingState);
+    ipcRenderer.on(CHANNELS.REPLAYING_STATE, onReplayingState);
+    ipcRenderer.on(CHANNELS.REPLAY_REPEAT_STATE, onReplayRepeatState);
+    ipcRenderer.on(CHANNELS.REPLAY_REPEAT_COUNT_STATE, onReplayRepeatCountState);
+    ipcRenderer.on(CHANNELS.REPLAY_DELAY_STATE, onReplayDelayState);
     ipcRenderer.on(CHANNELS.REPLAY_ROW_STATE, onReplayRowState);
     ipcRenderer.on(CHANNELS.MARKER_COLOR_STATE, onMarkerColorState);
     ipcRenderer.on(CHANNELS.AUTOMATE_BOT_STATE, onAutomateBotState);
@@ -1034,7 +1034,8 @@ export default function App() {
   );
 
   const handlePlaySelectedCsvRow = useCallback(async () => {
-    const targetIndex = selectedCsvRowIndexes.length > 0 ? selectedCsvRowIndexes[selectedCsvRowIndexes.length - 1] : null;
+    const targetIndex =
+      selectedCsvRowIndexes.length > 0 ? selectedCsvRowIndexes[selectedCsvRowIndexes.length - 1] : null;
     if (targetIndex === null) return;
     const result = await ipcRenderer.invoke(CHANNELS.PLAY_CSV_ROW, targetIndex);
     if (!result?.ok) {

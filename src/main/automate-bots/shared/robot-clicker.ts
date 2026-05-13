@@ -7,7 +7,7 @@ export type ScreenPoint = {
 };
 
 export const DEFAULT_PRE_CLICK_MOUSE_SETTLE_MS = 50;
-const DEFAULT_SAFE_EDGE_MARGIN_PX = 3;
+const DEFAULT_SAFE_EDGE_MARGIN_PX = 10;
 const syncSleepBuffer = new Int32Array(new SharedArrayBuffer(4));
 
 function clamp(value: number, min: number, max: number): number {

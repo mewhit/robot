@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { detectOverlayBoxInScreenshot } from "./coordinate-box-detector";
+import { CoordinateOverlayDetectionOptions, detectOverlayBoxInScreenshot } from "./coordinate-box-detector";
 import type { RobotBitmap } from "./ocr-engine";
 import { saveBitmap } from "./save-bitmap";
 
@@ -96,14 +96,18 @@ function createTopLeftCoordinateOverlayBitmapView(bitmap: RobotBitmap): RobotBit
   };
 }
 
-export function detectCoordinateOverlayBox(bitmap: RobotBitmap, windowsScalePercent: number) {
+export function detectCoordinateOverlayBox(
+  bitmap: RobotBitmap,
+  windowsScalePercent: number,
+  options: CoordinateOverlayDetectionOptions = {},
+) {
   const scanBitmap = createTopLeftCoordinateOverlayBitmapView(bitmap);
-  const fastDetection = detectOverlayBoxInScreenshot(scanBitmap, windowsScalePercent);
+  const fastDetection = detectOverlayBoxInScreenshot(scanBitmap, windowsScalePercent, options);
   if (fastDetection || scanBitmap === bitmap) {
     return fastDetection;
   }
 
-  return detectOverlayBoxInScreenshot(bitmap, windowsScalePercent);
+  return detectOverlayBoxInScreenshot(bitmap, windowsScalePercent, options);
 }
 
 export function readCoordinateOverlayLocation(bitmap: RobotBitmap, windowsScalePercent: number): CoordinateOverlayLocation | null {

@@ -295,12 +295,16 @@ export function findNearestBoxByAnchor<T extends CenteredLocalBox>(
 
   const anchorX = anchor?.x ?? Math.round(viewport.width / 2);
   const anchorY = anchor?.y ?? Math.round(viewport.height / 2);
+  const candidateBoxes = anchor
+    ? boxes.filter((box) => anchorX < box.x || anchorX > box.x + box.width - 1 || anchorY < box.y || anchorY > box.y + box.height - 1)
+    : boxes;
+  const searchableBoxes = candidateBoxes.length > 0 ? candidateBoxes : boxes;
 
   let best: T | null = null;
   let bestEdgeDistance = Number.POSITIVE_INFINITY;
   let bestCenterDistance = Number.POSITIVE_INFINITY;
 
-  for (const box of boxes) {
+  for (const box of searchableBoxes) {
     const nearestX = clamp(anchorX, box.x, box.x + box.width - 1);
     const nearestY = clamp(anchorY, box.y, box.y + box.height - 1);
     const edgeDx = anchorX - nearestX;

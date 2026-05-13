@@ -73,6 +73,13 @@ describe("Arceuus chisel inventory detector", () => {
         chisel: true,
       },
       {
+        path: "test-images/runescrafting/arceuus/1335x1548-2k-125-dark-essence-block-outlined.png",
+        dense: false,
+        darkBlock: true,
+        darkFragment: false,
+        chisel: true,
+      },
+      {
         path: "test-images/runescrafting/arceuus/1335x1549-2k-125-blood-rune-and-dark-essence-fragments-and-dark-essence-block-and-chisel.png",
         dense: false,
         darkBlock: true,
@@ -183,6 +190,27 @@ describe("Arceuus chisel inventory detector", () => {
     expect(detection.darkFragments).toHaveLength(0);
     expect(startAtStep6ReturnBlue).toBe(true);
     expect(startAtStep12FollowAnother).toBe(false);
+  });
+
+  test("detects green-outlined dark essence blocks as fixed inventory slots", async () => {
+    const bitmap = await loadPngBitmap("test-images/runescrafting/arceuus/1335x1548-2k-125-dark-essence-block-outlined.png");
+    const essenceTemplates = await loadArceuusEssenceIconTemplates();
+    const chiselTemplate = await loadArceuusChiselIconTemplate();
+    const essence = detectArceuusEssenceInventory(bitmap, essenceTemplates, { blockClassificationMode: "dark" });
+    const chisel = detectArceuusChiselInventory(bitmap, chiselTemplate);
+    const outlinedDarkBlocks = essence.darkBlocks.filter((match) => match.source === "inventory-green-outline");
+    const bottomRightChisel = chisel.chisels.reduce((best, match) => {
+      if (!best || match.centerY > best.centerY || (match.centerY === best.centerY && match.centerX > best.centerX)) {
+        return match;
+      }
+      return best;
+    }, null as (typeof chisel.chisels)[number] | null);
+
+    expect(chisel.hasChisel).toBe(true);
+    expect(bottomRightChisel).not.toBeNull();
+    expect(outlinedDarkBlocks.length).toBeGreaterThanOrEqual(20);
+    expect(outlinedDarkBlocks.some((match) => bottomRightChisel && Math.abs(match.centerY - bottomRightChisel.centerY) <= 23)).toBe(true);
+    expect(essence.denseBlocks).toHaveLength(0);
   });
 
   test("starts mining again when inventory only has dark essence fragments", async () => {

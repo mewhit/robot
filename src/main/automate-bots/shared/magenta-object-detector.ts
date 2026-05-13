@@ -18,7 +18,8 @@ export type MagentaObjectDetection = {
 const MIN_PIXELS_DEFAULT = 120;
 
 function isStrictMagentaPixel(r: number, g: number, b: number): boolean {
-  return r >= 231 && g <= 40 && b >= 231;
+  const magentaLevel = (r + b) / 2;
+  return magentaLevel >= 150 && g <= 130 && r - g >= 45 && b - g >= 45 && Math.abs(r - b) <= 80;
 }
 
 export function detectLargestMagentaObject(bitmap: RobotBitmap, minPixels: number = MIN_PIXELS_DEFAULT): MagentaObjectDetection | null {

@@ -12,6 +12,10 @@ export type OverlayBox = {
   matchedLine: string;
 };
 
+export type CoordinateOverlayDetectionOptions = {
+  requireRuneLiteCoordinatePattern?: boolean;
+};
+
 type CoordinateCandidate = {
   x: number;
   y: number;
@@ -1620,6 +1624,7 @@ function detectOverlayBoxWithMask(
 export function detectOverlayBoxInScreenshot(
   bitmap: RobotBitmap,
   windowsScalePercent: number = 100,
+  options: CoordinateOverlayDetectionOptions = {},
 ): OverlayBox | null {
   const defaultMask = buildWhiteTextMask(bitmap);
   const coordinateMask = buildCoordinateOverlayTextMask(bitmap);
@@ -1724,6 +1729,8 @@ export function detectOverlayBoxInScreenshot(
       matchedLine: runeLiteCoordinateCandidate.line,
       score: Math.max(bestDetection.score, runeLiteCoordinateCandidate.score),
     };
+  } else if (options.requireRuneLiteCoordinatePattern) {
+    return null;
   }
 
   const { score: _score, ...result } = bestDetection;

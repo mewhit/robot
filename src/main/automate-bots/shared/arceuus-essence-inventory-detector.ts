@@ -21,6 +21,7 @@ export type ArceuusEssenceIconMatch = {
   centerY: number;
   score: number;
   averageColorError: number;
+  source?: "template" | "inventory-green-outline";
 };
 
 export type ArceuusEssenceInventoryDetection = {
@@ -63,6 +64,12 @@ const INVENTORY_LEFT_RATIO = 0.72;
 const INVENTORY_TOP_RATIO = 0.70;
 const INVENTORY_RIGHT_RATIO = 0.99;
 const INVENTORY_BOTTOM_RATIO = 0.97;
+const OUTLINED_INVENTORY_LEFT_RATIO = 0.45;
+const OUTLINED_INVENTORY_MIN_GREEN_PIXELS_PER_SLOT = 45;
+const OUTLINED_INVENTORY_SLOT_SCAN_RADIUS_PX = 22;
+const OUTLINED_INVENTORY_COMPONENT_MIN_PIXELS = 12;
+const OUTLINED_INVENTORY_CENTER_CLUSTER_TOLERANCE_PX = 16;
+const OUTLINED_INVENTORY_SLOT_SIZE_PX = 20;
 
 const DEFAULT_TEMPLATE_PATHS: Record<ArceuusEssenceIconKind, string> = {
   "dense-essence-block": "test-images/icon/dense essence block.png",
@@ -210,11 +217,176 @@ function detectTemplateMatches(
         centerY: Math.round(y + template.bitmap.height / 2),
         score,
         averageColorError,
+        source: "template",
       });
     }
   }
 
   return suppressOverlappingMatches(matches);
+}
+
+function isGreenInventoryOutlinePixel(pixel: { r: number; g: number; b: number; a: number }): boolean {
+  return pixel.a > 0 && pixel.g >= 125 && pixel.g - Math.max(pixel.r, pixel.b) >= 30;
+}
+
+function resolveOutlinedInventorySearchRoi(bitmap: RobotBitmap): { x: number; y: number; width: number; height: number } {
+  const x = clamp(Math.round(bitmap.width * OUTLINED_INVENTORY_LEFT_RATIO), 0, bitmap.width - 1);
+  const y = clamp(Math.round(bitmap.height * INVENTORY_TOP_RATIO), 0, bitmap.height - 1);
+  const maxX = clamp(Math.round(bitmap.width * INVENTORY_RIGHT_RATIO), x, bitmap.width - 1);
+  const maxY = clamp(Math.round(bitmap.height * INVENTORY_BOTTOM_RATIO), y, bitmap.height - 1);
+  return { x, y, width: maxX - x + 1, height: maxY - y + 1 };
+}
+
+function clusterCenters(values: readonly number[]): number[] {
+  const sorted = [...values].sort((a, b) => a - b);
+  const clusters: Array<{ sum: number; count: number; center: number }> = [];
+
+  for (const value of sorted) {
+    const cluster = clusters[clusters.length - 1];
+    if (cluster && Math.abs(value - cluster.center) <= OUTLINED_INVENTORY_CENTER_CLUSTER_TOLERANCE_PX) {
+      cluster.sum += value;
+      cluster.count += 1;
+      cluster.center = cluster.sum / cluster.count;
+    } else {
+      clusters.push({ sum: value, count: 1, center: value });
+    }
+  }
+
+  return clusters.map((cluster) => Math.round(cluster.center));
+}
+
+function countGreenPixelsNearSlot(bitmap: RobotBitmap, centerX: number, centerY: number): number {
+  let greenPixels = 0;
+  const minX = clamp(centerX - OUTLINED_INVENTORY_SLOT_SCAN_RADIUS_PX, 0, bitmap.width - 1);
+  const maxX = clamp(centerX + OUTLINED_INVENTORY_SLOT_SCAN_RADIUS_PX, 0, bitmap.width - 1);
+  const minY = clamp(centerY - OUTLINED_INVENTORY_SLOT_SCAN_RADIUS_PX, 0, bitmap.height - 1);
+  const maxY = clamp(centerY + OUTLINED_INVENTORY_SLOT_SCAN_RADIUS_PX, 0, bitmap.height - 1);
+
+  for (let y = minY; y <= maxY; y += 1) {
+    for (let x = minX; x <= maxX; x += 1) {
+      if (isGreenInventoryOutlinePixel(readPixel(bitmap, x, y))) {
+        greenPixels += 1;
+      }
+    }
+  }
+
+  return greenPixels;
+}
+
+function detectOutlinedDarkEssenceBlocks(bitmap: RobotBitmap): ArceuusEssenceIconMatch[] {
+  const roi = resolveOutlinedInventorySearchRoi(bitmap);
+  const maskWidth = roi.width;
+  const maskHeight = roi.height;
+  const mask = new Uint8Array(maskWidth * maskHeight);
+
+  for (let y = 0; y < maskHeight; y += 1) {
+    for (let x = 0; x < maskWidth; x += 1) {
+      if (isGreenInventoryOutlinePixel(readPixel(bitmap, roi.x + x, roi.y + y))) {
+        mask[y * maskWidth + x] = 1;
+      }
+    }
+  }
+
+  const seen = new Uint8Array(mask.length);
+  const queueX: number[] = [];
+  const queueY: number[] = [];
+  const slotCenterXValues: number[] = [];
+  const slotCenterYValues: number[] = [];
+
+  for (let startY = 0; startY < maskHeight; startY += 1) {
+    for (let startX = 0; startX < maskWidth; startX += 1) {
+      const startIndex = startY * maskWidth + startX;
+      if (!mask[startIndex] || seen[startIndex]) {
+        continue;
+      }
+
+      let minX = startX;
+      let maxX = startX;
+      let minY = startY;
+      let maxY = startY;
+      let pixelCount = 0;
+      queueX.length = 0;
+      queueY.length = 0;
+      queueX.push(startX);
+      queueY.push(startY);
+      seen[startIndex] = 1;
+
+      for (let queueIndex = 0; queueIndex < queueX.length; queueIndex += 1) {
+        const x = queueX[queueIndex];
+        const y = queueY[queueIndex];
+        pixelCount += 1;
+        minX = Math.min(minX, x);
+        maxX = Math.max(maxX, x);
+        minY = Math.min(minY, y);
+        maxY = Math.max(maxY, y);
+
+        const neighbors = [
+          [x + 1, y],
+          [x - 1, y],
+          [x, y + 1],
+          [x, y - 1],
+        ] as const;
+        for (const [neighborX, neighborY] of neighbors) {
+          if (neighborX < 0 || neighborY < 0 || neighborX >= maskWidth || neighborY >= maskHeight) {
+            continue;
+          }
+
+          const neighborIndex = neighborY * maskWidth + neighborX;
+          if (mask[neighborIndex] && !seen[neighborIndex]) {
+            seen[neighborIndex] = 1;
+            queueX.push(neighborX);
+            queueY.push(neighborY);
+          }
+        }
+      }
+
+      if (pixelCount < OUTLINED_INVENTORY_COMPONENT_MIN_PIXELS) {
+        continue;
+      }
+
+      const width = maxX - minX + 1;
+      const height = maxY - minY + 1;
+      const centerX = roi.x + Math.round((minX + maxX) / 2);
+      const centerY = roi.y + Math.round((minY + maxY) / 2);
+      if (width >= 20) {
+        slotCenterXValues.push(centerX);
+      }
+      if (height >= 20) {
+        slotCenterYValues.push(centerY);
+      }
+    }
+  }
+
+  const slotCenterXs = clusterCenters(slotCenterXValues).slice(0, 4);
+  const slotCenterYs = clusterCenters(slotCenterYValues).slice(0, 7);
+  if (slotCenterXs.length === 0 || slotCenterYs.length === 0) {
+    return [];
+  }
+
+  const matches: ArceuusEssenceIconMatch[] = [];
+  for (const centerY of slotCenterYs) {
+    for (const centerX of slotCenterXs) {
+      const greenPixelCount = countGreenPixelsNearSlot(bitmap, centerX, centerY);
+      if (greenPixelCount < OUTLINED_INVENTORY_MIN_GREEN_PIXELS_PER_SLOT) {
+        continue;
+      }
+
+      matches.push({
+        kind: "dark-essence-block",
+        x: centerX - Math.round(OUTLINED_INVENTORY_SLOT_SIZE_PX / 2),
+        y: centerY - Math.round(OUTLINED_INVENTORY_SLOT_SIZE_PX / 2),
+        width: OUTLINED_INVENTORY_SLOT_SIZE_PX,
+        height: OUTLINED_INVENTORY_SLOT_SIZE_PX,
+        centerX,
+        centerY,
+        score: 1,
+        averageColorError: 0,
+        source: "inventory-green-outline",
+      });
+    }
+  }
+
+  return matches;
 }
 
 export function detectArceuusEssenceInventory(
@@ -224,8 +396,12 @@ export function detectArceuusEssenceInventory(
 ): ArceuusEssenceInventoryDetection {
   const searchRoi = resolveInventorySearchRoi(bitmap);
   const matches = templates.flatMap((template) => detectTemplateMatches(prepareTemplate(template), bitmap, searchRoi));
+  const outlinedDarkBlocks = detectOutlinedDarkEssenceBlocks(bitmap);
   let denseBlocks = suppressOverlappingMatches(matches.filter((match) => match.kind === "dense-essence-block"));
-  let darkBlocks = suppressOverlappingMatches(matches.filter((match) => match.kind === "dark-essence-block"));
+  let darkBlocks = suppressOverlappingMatches([
+    ...outlinedDarkBlocks,
+    ...matches.filter((match) => match.kind === "dark-essence-block"),
+  ]);
   let darkFragments = suppressOverlappingMatches(matches.filter((match) => match.kind === "dark-essence-fragments"));
 
   darkFragments = suppressWeakFragmentsInStrongDarkBlockInventory(darkFragments, darkBlocks);
@@ -298,7 +474,7 @@ export function formatArceuusEssenceInventoryDetection(detection: ArceuusEssence
 export function formatArceuusEssenceInventoryDetectionDetails(detection: ArceuusEssenceInventoryDetection): string {
   const formatMatches = (matches: ArceuusEssenceIconMatch[]): string =>
     matches
-      .map((match) => `(${match.centerX},${match.centerY})=${match.score.toFixed(3)}`)
+      .map((match) => `(${match.centerX},${match.centerY})=${match.score.toFixed(3)}${match.source ? `/${match.source}` : ""}`)
       .join("; ") || "none";
   return `denseCoords=${formatMatches(detection.denseBlocks)} darkCoords=${formatMatches(detection.darkBlocks)} fragmentCoords=${formatMatches(detection.darkFragments)}`;
 }

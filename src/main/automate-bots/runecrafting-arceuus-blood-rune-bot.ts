@@ -137,13 +137,18 @@ type BotState = {
   pendingReturnBlueCameraTurnAtMs: number;
   pendingReturnBlueCameraTurnKey: string | null;
   pendingReturnBlueCameraTurnStage: "green" | "red" | null;
+  pendingReturnToMiningCameraTurnAtMs: number;
+  pendingReturnToMiningCameraTurnKey: string | null;
+  pendingReturnToMiningCameraTurnReason: string | null;
   lastReturnTravelChiselAtMs: number;
   returnBlueGreenCameraTurned: boolean;
   returnBlueRedCameraTurned: boolean;
   lastClickedRunestone: RememberedRunestone | null;
   lastDarkEssenceBlock: ArceuusEssenceIconMatch | null;
   rememberedChisel: ArceuusChiselInventoryMatch | null;
+  chiselClickSequenceIndex: number;
   bloodAltarCraftConfirmed: boolean;
+  bloodAltarFinalClickPending: boolean;
   returnToMiningStage: "red" | "agility-73" | "green" | "blue-1" | "blue-2" | "agility";
 };
 
@@ -186,6 +191,8 @@ const STARTUP_INVENTORY_KEY = "escape";
 const POST_CLICK_LOCK_MS = 1_200;
 const FAST_RETRY_MS = 200;
 const MISSING_LOG_INTERVAL_TICKS = 5;
+const STEP3_NO_BLUE_FALLBACK_ATTEMPTS = 10;
+const STEP13_INITIAL_CRAFT_RECLICK_ATTEMPTS = 5;
 const INVENTORY_DEBUG_INTERVAL_TICKS = 10;
 const STARTUP_CAMERA_NORTH_KEY = "n";
 const STARTUP_CAMERA_PITCH_UP_KEY = "w";
@@ -201,12 +208,18 @@ const PLAYER_TRAVEL_SPEED_TILES_PER_TICK = 2;
 const TRAVEL_MIN_TICKS = 1;
 const TRAVEL_EXTRA_WAIT_TICKS = 1;
 const AGILITY_52_COURSE_EXTRA_WAIT_TICKS = 7;
+const FIRST_AGILITY_52_COURSE_EXTRA_WAIT_TICKS = 1;
 const AGILITY_72_COURSE_EXTRA_WAIT_TICKS = 3;
 const TRAVEL_TILE_PX_MIN = 24;
 const TRAVEL_TILE_PX_MAX = 96;
 const TRAVEL_ACTION_KEY = "k";
+const STEP3_MISSING_BLUE_CAMERA_KEYS = ["k", "n"] as const;
+const STEP6_MISSING_BLUE_CAMERA_KEYS = ["m", "k"] as const;
 const STEP6_RETURN_BLUE_CAMERA_KEY = "j";
-const STEP6_TOP_RIGHT_BLUE_CAMERA_KEY = "m";
+const STEP6_RETURN_BLUE_SECOND_CAMERA_KEY = "a";
+const STEP6_MIN_BLUE_DISTANCE_TILE_RATIO = 0.8;
+const STEP6_MIN_BLUE_DISTANCE_PX_MIN = 32;
+const STEP6_MIN_BLUE_DISTANCE_PX_MAX = 54;
 const RETURN_BLUE_GREEN_CAMERA_KEY = "j";
 const RETURN_BLUE_RED_CAMERA_KEY = "k";
 const RETURN_TO_MINING_RED_CAMERA_KEY = "j";
@@ -226,15 +239,21 @@ const STEP12_MOVEMENT_TOP_SCREEN_Y_RATIO = 0.38;
 const STEP12_MOVEMENT_AXIS_DOMINANCE_DISTANCE_TILES = 10;
 const STEP12_MOVEMENT_AXIS_DOMINANCE_RATIO = 0.82;
 const STEP12_MOVEMENT_MAX_EXTRA_WAIT_TICKS = 3;
-const RETURN_TRAVEL_CHISEL_INTERVAL_MS = GAME_TICK_MS;
-const RETURN_TRAVEL_CHISEL_CLICK_DELAY_MS = 2 * BOT_TICK_MS;
-const INVENTORY_SAME_SLOT_TOLERANCE_PX = 8;
+const RETURN_TRAVEL_CHISEL_INTERVAL_MS = BOT_TICK_MS;
+const RETURN_TRAVEL_CHISEL_CLICK_SEQUENCE = ["chisel", "dark-block", "dark-block", "chisel", "chisel", "dark-block"] as const;
+const INVENTORY_GRID_COLUMNS = 4;
+const INVENTORY_GRID_ROWS = 7;
+const INVENTORY_SLOT_WIDTH_PX = 54;
+const INVENTORY_SLOT_HEIGHT_PX = 45;
+const INVENTORY_SLOT_ROW_TOLERANCE_PX = Math.round(INVENTORY_SLOT_HEIGHT_PX * 0.5);
+const DARK_ESSENCE_BLOCK_SLOT_CENTER_OFFSET_Y_PX = 0;
+const INVENTORY_CLICK_BUFFER_MS = 50;
 const LOW_LEVEL_BLUE_CAMERA_TURN_DELAY_TICKS = 2;
 const BIG_MAGENTA_MIN_PIXELS = 250;
 const ARCEUUS_BLOOD_RUNE_STACK_SLOTS = 1;
 
 let isLoopRunning = false;
-const structuredLogger = createStructuredBotLogger(BOT_NAME, { includeBotPrefix: false, maxStep: 13 });
+const structuredLogger = createStructuredBotLogger(BOT_NAME, { includeBotPrefix: false, maxStep: 14 });
 
 function phaseLabel(phase: BotPhase | "startup"): string {
   switch (phase) {
@@ -422,6 +441,24 @@ function tapCameraKey(key: string, phase: BotPhase | "startup", reason: string):
   return result;
 }
 
+function getAlternatingCameraKey(keys: readonly string[], attempt: number): string {
+  return keys[Math.max(0, attempt - 1) % keys.length] ?? keys[0] ?? TRAVEL_ACTION_KEY;
+}
+
+function prepareStep6ReturnBlueCamera(phase: BotPhase | "startup", reasonPrefix: string): boolean {
+  const firstRotated = tapCameraKey(
+    STEP6_RETURN_BLUE_CAMERA_KEY,
+    phase,
+    `${reasonPrefix}; first rotate with ${STEP6_RETURN_BLUE_CAMERA_KEY}`,
+  );
+  const secondRotated = tapCameraKey(
+    STEP6_RETURN_BLUE_SECOND_CAMERA_KEY,
+    phase,
+    `${reasonPrefix}; second rotate with ${STEP6_RETURN_BLUE_SECOND_CAMERA_KEY}`,
+  );
+  return firstRotated || secondRotated;
+}
+
 async function holdCameraKey(key: string, holdMs: number): Promise<boolean> {
   let keyDown = false;
 
@@ -479,13 +516,18 @@ function createInitialState(
     pendingReturnBlueCameraTurnAtMs: 0,
     pendingReturnBlueCameraTurnKey: null,
     pendingReturnBlueCameraTurnStage: null,
+    pendingReturnToMiningCameraTurnAtMs: 0,
+    pendingReturnToMiningCameraTurnKey: null,
+    pendingReturnToMiningCameraTurnReason: null,
     lastReturnTravelChiselAtMs: 0,
     returnBlueGreenCameraTurned: false,
     returnBlueRedCameraTurned: false,
     lastClickedRunestone: null,
     lastDarkEssenceBlock: null,
     rememberedChisel: startupOverride?.rememberedChisel ?? null,
+    chiselClickSequenceIndex: 0,
     bloodAltarCraftConfirmed: false,
+    bloodAltarFinalClickPending: false,
     returnToMiningStage: "red",
   };
 }
@@ -669,21 +711,60 @@ function pickBottomRightDarkEssenceBlock(matches: readonly ArceuusEssenceIconMat
   return best;
 }
 
-function isSameInventorySlot(a: ArceuusEssenceIconMatch, b: ArceuusEssenceIconMatch): boolean {
-  return (
-    Math.abs(a.centerX - b.centerX) <= INVENTORY_SAME_SLOT_TOLERANCE_PX &&
-    Math.abs(a.centerY - b.centerY) <= INVENTORY_SAME_SLOT_TOLERANCE_PX
-  );
+function getDarkEssenceInventorySlotPoint(match: ArceuusEssenceIconMatch): LocalPoint {
+  return {
+    x: match.centerX,
+    y: match.centerY + DARK_ESSENCE_BLOCK_SLOT_CENTER_OFFSET_Y_PX,
+  };
+}
+
+function getChiselInventorySlotPoint(chisel: ArceuusChiselInventoryMatch): LocalPoint {
+  return {
+    x: chisel.centerX,
+    y: chisel.centerY,
+  };
+}
+
+function pickRightmostDarkEssenceBlockOnChiselSlotRow(
+  matches: readonly ArceuusEssenceIconMatch[],
+  chisel: ArceuusChiselInventoryMatch,
+): ArceuusEssenceIconMatch | null {
+  let best: ArceuusEssenceIconMatch | null = null;
+  let bestX = Number.NEGATIVE_INFINITY;
+  let bestDeltaY = Number.POSITIVE_INFINITY;
+  let bestY = Number.NEGATIVE_INFINITY;
+  const chiselSlot = getChiselInventorySlotPoint(chisel);
+
+  for (const match of matches) {
+    const matchSlot = getDarkEssenceInventorySlotPoint(match);
+    const deltaY = Math.abs(matchSlot.y - chiselSlot.y);
+    if (deltaY > INVENTORY_SLOT_ROW_TOLERANCE_PX) {
+      continue;
+    }
+
+    if (
+      matchSlot.x > bestX ||
+      (matchSlot.x === bestX && deltaY < bestDeltaY) ||
+      (matchSlot.x === bestX && deltaY === bestDeltaY && matchSlot.y > bestY)
+    ) {
+      best = match;
+      bestX = matchSlot.x;
+      bestDeltaY = deltaY;
+      bestY = matchSlot.y;
+    }
+  }
+
+  return best;
 }
 
 function pickChiselDarkEssenceBlock(
   matches: readonly ArceuusEssenceIconMatch[],
-  lastDarkEssenceBlock: ArceuusEssenceIconMatch | null,
-): { target: ArceuusEssenceIconMatch | null; source: "same-slot" | "bottom-right" | "none" } {
-  if (lastDarkEssenceBlock) {
-    const sameSlot = matches.find((match) => isSameInventorySlot(match, lastDarkEssenceBlock));
-    if (sameSlot) {
-      return { target: sameSlot, source: "same-slot" };
+  chisel: ArceuusChiselInventoryMatch | null,
+): { target: ArceuusEssenceIconMatch | null; source: "chisel-row" | "bottom-right" | "none" } {
+  if (chisel) {
+    const chiselRowTarget = pickRightmostDarkEssenceBlockOnChiselSlotRow(matches, chisel);
+    if (chiselRowTarget) {
+      return { target: chiselRowTarget, source: "chisel-row" };
     }
   }
 
@@ -696,7 +777,7 @@ function formatArceuusEssenceIconMatch(match: ArceuusEssenceIconMatch | null): s
     return "none";
   }
 
-  return `${match.kind} center=(${match.centerX},${match.centerY}) size=${match.width}x${match.height} score=${match.score.toFixed(3)}`;
+  return `${match.kind} center=(${match.centerX},${match.centerY}) size=${match.width}x${match.height} score=${match.score.toFixed(3)} source=${match.source ?? "template"}`;
 }
 
 function formatArceuusChiselMatch(match: ArceuusChiselInventoryMatch | null): string {
@@ -705,6 +786,22 @@ function formatArceuusChiselMatch(match: ArceuusChiselInventoryMatch | null): st
   }
 
   return `center=(${match.centerX},${match.centerY}) size=${match.width}x${match.height} score=${match.score.toFixed(3)}`;
+}
+
+function clickInventoryScreenPoint(
+  screenX: number,
+  screenY: number,
+  captureBounds: ScreenCaptureBounds,
+): ReturnType<typeof clickScreenPoint> {
+  const clicked = clickScreenPoint(screenX, screenY, captureBounds, {
+    settleMs: INVENTORY_CLICK_BUFFER_MS,
+  });
+  sleepSyncMs(INVENTORY_CLICK_BUFFER_MS);
+  return clicked;
+}
+
+function getNextChiselClickSequenceIndex(index: number): number {
+  return (index + 1) % RETURN_TRAVEL_CHISEL_CLICK_SEQUENCE.length;
 }
 
 function pickBottomRightChisel(matches: readonly ArceuusChiselInventoryMatch[]): ArceuusChiselInventoryMatch | null {
@@ -835,7 +932,13 @@ function transitionToYellowMarkerSelection(state: BotState, nowMs: number): BotS
   };
 }
 
-function runMiningTick(state: BotState, nowMs: number, tickCapture: TickCapture, captureBounds: ScreenCaptureBounds): BotState {
+function runMiningTick(
+  state: BotState,
+  nowMs: number,
+  tickCapture: TickCapture,
+  captureBounds: ScreenCaptureBounds,
+  fallbackTilePx: number,
+): BotState {
   if (state.phase !== "mining" || nowMs < state.actionLockUntilMs) {
     return state;
   }
@@ -927,16 +1030,29 @@ function runMiningTick(state: BotState, nowMs: number, tickCapture: TickCapture,
     x: clicked.x - captureBounds.x,
     y: clicked.y - captureBounds.y,
   };
+  const travel = estimateTravelTicks({
+    screenPoint: clicked,
+    captureBounds,
+    playerBox,
+    fallbackTilePx,
+    minTilePx: TRAVEL_TILE_PX_MIN,
+    maxTilePx: TRAVEL_TILE_PX_MAX,
+    playerSpeedTilesPerTick: PLAYER_TRAVEL_SPEED_TILES_PER_TICK,
+    extraTicks: TRAVEL_EXTRA_WAIT_TICKS,
+    minTicks: TRAVEL_MIN_TICKS,
+  });
+  const clickedAtMs = Date.now();
+  const travelLockMs = Math.max(POST_CLICK_LOCK_MS, ticksToMs(travel.etaTicks, GAME_TICK_MS));
 
   log(
-    miningPhaseLog(stateWithInventory, `${depletedCurrentRunestone ? "Current runestone is red; switched to" : "Clicked"} active dense runestone at (${clicked.x},${clicked.y}) local=(${clickedLocalPoint.x},${clickedLocalPoint.y}); target=${formatRunestone(target)} miningStatus=${miningStatus.status} freeSlots=${inventory.freeSlots}.`),
+    miningPhaseLog(stateWithInventory, `${depletedCurrentRunestone ? "Current runestone is red; switched to" : "Clicked"} active dense runestone at (${clicked.x},${clicked.y}) local=(${clickedLocalPoint.x},${clickedLocalPoint.y}); target=${formatRunestone(target)} miningStatus=${miningStatus.status} freeSlots=${inventory.freeSlots}; ${formatTravelEstimate(travel)} lock=${travelLockMs}ms.`),
   );
 
   return {
     ...stateWithInventory,
     lastClickedRunestone: rememberClickedRunestone(target, clickedLocalPoint),
     missingRunestoneTicks: 0,
-    actionLockUntilMs: Date.now() + POST_CLICK_LOCK_MS,
+    actionLockUntilMs: clickedAtMs + travelLockMs,
   };
 }
 
@@ -948,8 +1064,8 @@ function formatBlueOutline(outline: BlueOutlineDetection): string {
   return `${outline.tier} center=(${outline.centerX},${outline.centerY}) size=${outline.width}x${outline.height} pixels=${outline.pixelCount} rgb=(${Math.round(outline.averageR)},${Math.round(outline.averageG)},${Math.round(outline.averageB)}) lum=${outline.luminance.toFixed(1)}`;
 }
 
-function isRightOrTopBlueOutline(outline: BlueOutlineDetection, bitmap: Pick<RobotBitmap, "width" | "height">): boolean {
-  return outline.centerX >= Math.round(bitmap.width * 0.5) || outline.centerY <= Math.round(bitmap.height * 0.42);
+function isTopBlueOutlineFromAnchor(outline: BlueOutlineDetection, anchor: LocalPoint): boolean {
+  return outline.centerY <= anchor.y;
 }
 
 function pickFarthestTopBlueOutlineFromAnchor(
@@ -1009,21 +1125,46 @@ function isStep6DarkBlueOutline(outline: BlueOutlineDetection): boolean {
   return outline.tier === "trail" && outline.averageR <= 35 && outline.averageG <= 35 && outline.averageB >= 220;
 }
 
-function isStep6TopOrRightBlueOutline(outline: BlueOutlineDetection, anchor: LocalPoint): boolean {
-  return outline.centerY <= anchor.y || outline.centerX >= anchor.x;
+function isStep6TopBlueOutline(outline: BlueOutlineDetection, anchor: LocalPoint): boolean {
+  return outline.centerY <= anchor.y;
 }
 
-function getStep6TopRightPriority(outline: BlueOutlineDetection, anchor: LocalPoint): number {
-  const isTop = outline.centerY <= anchor.y;
-  const isRight = outline.centerX >= anchor.x;
-  if (isTop && isRight) {
-    return 3;
-  }
-
-  return isTop ? 2 : isRight ? 1 : 0;
+function getStep6TopBluePriority(outline: BlueOutlineDetection, anchor: LocalPoint): number {
+  return outline.centerX >= anchor.x ? 2 : 1;
 }
 
-function pickStep6TopRightBlueOutline(
+function isPointInsideBlueOutline(outline: BlueOutlineDetection, point: LocalPoint): boolean {
+  return (
+    point.x >= outline.x &&
+    point.x <= outline.x + outline.width - 1 &&
+    point.y >= outline.y &&
+    point.y <= outline.y + outline.height - 1
+  );
+}
+
+function getStep6BlueDistancePx(outline: BlueOutlineDetection, anchor: LocalPoint): number {
+  return Math.max(Math.abs(outline.centerX - anchor.x), Math.abs(outline.centerY - anchor.y));
+}
+
+function getStep6MinBlueDistancePx(fallbackTilePx: number): number {
+  return Math.round(
+    clamp(
+      fallbackTilePx * STEP6_MIN_BLUE_DISTANCE_TILE_RATIO,
+      STEP6_MIN_BLUE_DISTANCE_PX_MIN,
+      STEP6_MIN_BLUE_DISTANCE_PX_MAX,
+    ),
+  );
+}
+
+function isStep6BlueTooCloseToPlayer(
+  outline: BlueOutlineDetection,
+  anchor: LocalPoint,
+  minDistancePx: number,
+): boolean {
+  return isPointInsideBlueOutline(outline, anchor) || getStep6BlueDistancePx(outline, anchor) < minDistancePx;
+}
+
+function pickStep6TopBlueOutline(
   detections: readonly BlueOutlineDetection[],
   anchor: LocalPoint,
 ): BlueOutlineDetection | null {
@@ -1035,7 +1176,7 @@ function pickStep6TopRightBlueOutline(
   let bestPixelCount = Number.NEGATIVE_INFINITY;
 
   for (const detection of detections) {
-    const priority = getStep6TopRightPriority(detection, anchor);
+    const priority = getStep6TopBluePriority(detection, anchor);
     if (
       priority > bestPriority ||
       (priority === bestPriority && detection.centerY < bestY) ||
@@ -1061,6 +1202,54 @@ function pickStep6TopRightBlueOutline(
 
 function formatMagentaObject(magenta: MagentaObjectDetection): string {
   return `center=(${magenta.centerX},${magenta.centerY}) size=${magenta.width}x${magenta.height} pixels=${magenta.pixelCount}`;
+}
+
+function isStep13GreenOutlineNearMagenta(magenta: MagentaObjectDetection, greenTile: Step12ColorTile): boolean {
+  const paddingPx = 96;
+  return !(
+    greenTile.x > magenta.maxX + paddingPx ||
+    greenTile.x + greenTile.width - 1 < magenta.minX - paddingPx ||
+    greenTile.y > magenta.maxY + paddingPx ||
+    greenTile.y + greenTile.height - 1 < magenta.minY - paddingPx
+  );
+}
+
+function pickLargestStep13GreenOutlineNearMagenta(
+  magenta: MagentaObjectDetection,
+  greenTiles: readonly Step12ColorTile[],
+): Step12ColorTile | null {
+  let best: Step12ColorTile | null = null;
+  let bestPixels = Number.NEGATIVE_INFINITY;
+
+  for (const tile of greenTiles) {
+    if (tile.status !== "green" || !isStep13GreenOutlineNearMagenta(magenta, tile)) {
+      continue;
+    }
+
+    if (tile.pixelCount > bestPixels) {
+      best = tile;
+      bestPixels = tile.pixelCount;
+    }
+  }
+
+  return best;
+}
+
+function pickLowerStep13MagentaClickLocalPoint(
+  magenta: MagentaObjectDetection,
+  greenOutline: Step12ColorTile | null,
+): { centerX: number; centerY: number } {
+  const minX = greenOutline ? Math.min(magenta.minX, greenOutline.x) : magenta.minX;
+  const maxX = greenOutline ? Math.max(magenta.maxX, greenOutline.x + greenOutline.width - 1) : magenta.maxX;
+  const minY = greenOutline ? Math.min(magenta.minY, greenOutline.y) : magenta.minY;
+  const maxY = greenOutline ? Math.max(magenta.maxY, greenOutline.y + greenOutline.height - 1) : magenta.maxY;
+  const width = maxX - minX + 1;
+  const height = maxY - minY + 1;
+
+  return {
+    centerX: Math.round(minX + width * 0.5),
+    centerY: Math.min(maxY, minY + Math.round(height * 0.82)),
+  };
 }
 
 function formatTravelEstimate(travel: TravelEstimate): string {
@@ -1173,6 +1362,10 @@ function getAgilityCourseExtraWaitTicks(agilityLevel: number): number {
   return AGILITY_52_COURSE_EXTRA_WAIT_TICKS;
 }
 
+function getFirstAgilityCourseExtraWaitTicks(state: Pick<BotState, "agilityLevel" | "completedReturnTrips">): number {
+  return state.completedReturnTrips === 0 && state.agilityLevel < 69 ? FIRST_AGILITY_52_COURSE_EXTRA_WAIT_TICKS : 0;
+}
+
 function transitionToBlueTileFollow(
   state: BotState,
   clickedAtMs: number,
@@ -1204,6 +1397,9 @@ function transitionToPostMagentaInventoryCheck(state: BotState, clickedAtMs: num
     pendingReturnBlueCameraTurnAtMs: 0,
     pendingReturnBlueCameraTurnKey: null,
     pendingReturnBlueCameraTurnStage: null,
+    pendingReturnToMiningCameraTurnAtMs: 0,
+    pendingReturnToMiningCameraTurnKey: null,
+    pendingReturnToMiningCameraTurnReason: null,
     returnBlueGreenCameraTurned: false,
     returnBlueRedCameraTurned: false,
     lastDarkEssenceBlock: null,
@@ -1233,6 +1429,9 @@ function transitionToFollowAnotherBlueAfterSecondMagenta(
     pendingReturnBlueCameraTurnAtMs: 0,
     pendingReturnBlueCameraTurnKey: null,
     pendingReturnBlueCameraTurnStage: null,
+    pendingReturnToMiningCameraTurnAtMs: 0,
+    pendingReturnToMiningCameraTurnKey: null,
+    pendingReturnToMiningCameraTurnReason: null,
     returnBlueGreenCameraTurned: false,
     returnBlueRedCameraTurned: false,
     lastDarkEssenceBlock: bottomRightDarkBlock,
@@ -1316,7 +1515,7 @@ function runSelectYellowMarkerTick(
     minTilePx: TRAVEL_TILE_PX_MIN,
     maxTilePx: TRAVEL_TILE_PX_MAX,
     playerSpeedTilesPerTick: PLAYER_TRAVEL_SPEED_TILES_PER_TICK,
-    extraTicks: getAgilityCourseExtraWaitTicks(state.agilityLevel),
+    extraTicks: getAgilityCourseExtraWaitTicks(state.agilityLevel) + getFirstAgilityCourseExtraWaitTicks(state),
     minTicks: TRAVEL_MIN_TICKS,
   });
 
@@ -1401,20 +1600,43 @@ function runFollowBlueTilesTick(
 
   const blueOutlines = detectBlueOutlines(tickCapture.bitmap);
   const trailBlueOutlines = blueOutlines.filter((outline) => outline.tier === "trail");
-  const directionalBlueOutlines = trailBlueOutlines.filter((outline) => isRightOrTopBlueOutline(outline, tickCapture.bitmap));
   const playerAnchor = { x: playerBox.centerX, y: playerBox.centerY };
-  const target = pickFarthestBlueOutlineFromAnchor(directionalBlueOutlines, playerAnchor);
+  const topBlueOutlines = trailBlueOutlines.filter((outline) => isTopBlueOutlineFromAnchor(outline, playerAnchor));
+  const target = pickFarthestBlueOutlineFromAnchor(topBlueOutlines, playerAnchor);
   if (!target) {
     const missingBlueOutlineTicks = state.missingBlueOutlineTicks + 1;
+    if (blueOutlines.length === 0 && missingBlueOutlineTicks >= STEP3_NO_BLUE_FALLBACK_ATTEMPTS) {
+      warn(
+        followBluePhaseLog(
+          state,
+          `No blue outline detected after ${missingBlueOutlineTicks} Step 3 attempts; falling back to Step 2 to retry the agility yellow marker click.`,
+        ),
+      );
+      return transitionToYellowMarkerSelection(
+        {
+          ...state,
+          missingBlueOutlineTicks: 0,
+          missingMagentaTicks: 0,
+        },
+        nowMs,
+      );
+    }
+
+    const cameraKey = getAlternatingCameraKey(STEP3_MISSING_BLUE_CAMERA_KEYS, missingBlueOutlineTicks);
+    const rotated = tapCameraKey(
+      cameraKey,
+      "follow-blue-tiles",
+      `no usable Step 3 top blue outline found; rotate camera with ${cameraKey} before retry`,
+    );
     if (missingBlueOutlineTicks === 1 || missingBlueOutlineTicks % MISSING_LOG_INTERVAL_TICKS === 0) {
-      warn(followBluePhaseLog(state, `No right/top trail blue outlined tile found yet while searching for big magenta object. Magenta missing ticks=${state.missingMagentaTicks + 1}. allBlue=${blueOutlines.map(formatBlueOutline).join("; ") || "none"}.`));
+      warn(followBluePhaseLog(state, `No top trail blue outlined tile found yet while searching for big magenta object. camera${cameraKey.toUpperCase()}=${rotated ? "yes" : "no"}; Magenta missing ticks=${state.missingMagentaTicks + 1}. topBlue=${topBlueOutlines.map(formatBlueOutline).join("; ") || "none"} allBlue=${blueOutlines.map(formatBlueOutline).join("; ") || "none"}.`));
     }
 
     return {
       ...state,
       missingBlueOutlineTicks,
       missingMagentaTicks: state.missingMagentaTicks + 1,
-      actionLockUntilMs: nowMs + FAST_RETRY_MS,
+      actionLockUntilMs: rotated ? cameraActionLockUntil(nowMs) : nowMs + FAST_RETRY_MS,
     };
   }
 
@@ -1427,7 +1649,7 @@ function runFollowBlueTilesTick(
     state.completedReturnTrips > 0 ? "Step 10 follow-blue" : "Step 3 follow-blue",
     clicked,
     captureBounds,
-    `farthest right/top blue outline click #${state.blueTravelClicks + 1}`,
+    `farthest top blue outline click #${state.blueTravelClicks + 1}`,
   );
   const clickedAtMs = Date.now();
   const travel = estimateTravelTicks({
@@ -1457,7 +1679,7 @@ function runFollowBlueTilesTick(
     pendingLowLevelBlueCameraTurnAtMs > 0 ? Math.min(travelLockUntilMs, pendingLowLevelBlueCameraTurnAtMs) : travelLockUntilMs;
 
   log(
-    followBluePhaseLog(state, `Clicked farthest right/top blue outlined tile #${state.blueTravelClicks + 1} at (${clicked.x},${clicked.y}); player=(${playerBox.centerX},${playerBox.centerY}); candidates=${directionalBlueOutlines.length}/${blueOutlines.length}; target=${formatBlueOutline(target)}; cameraTurnScheduled=${pendingLowLevelBlueCameraTurnAtMs > 0 ? `${Math.ceil((pendingLowLevelBlueCameraTurnAtMs - clickedAtMs) / GAME_TICK_MS)} tick(s)` : "no"}; ${formatTravelEstimate(travel)}.`),
+    followBluePhaseLog(state, `Clicked farthest top blue outlined tile #${state.blueTravelClicks + 1} at (${clicked.x},${clicked.y}); player=(${playerBox.centerX},${playerBox.centerY}); topCandidates=${topBlueOutlines.length}/${trailBlueOutlines.length}; target=${formatBlueOutline(target)}; cameraTurnScheduled=${pendingLowLevelBlueCameraTurnAtMs > 0 ? `${Math.ceil((pendingLowLevelBlueCameraTurnAtMs - clickedAtMs) / GAME_TICK_MS)} tick(s)` : "no"}; ${formatTravelEstimate(travel)}.`),
   );
 
   return {
@@ -1539,11 +1761,7 @@ function runCheckAfterMagentaTick(
       `Dark essence block confirmed after magenta; savedBottomRight=${formatArceuusEssenceIconMatch(bottomRightDarkBlock)} freeSlots=${inventory.freeSlots}. Entering Step 6 blue return with chisel enabled during travel.`,
     ),
   );
-  const cameraPrepared = tapCameraKey(
-    STEP6_RETURN_BLUE_CAMERA_KEY,
-    "return-blue-tiles",
-    "enter Step 6 return-blue; rotate camera toward dark blue tiles",
-  );
+  const cameraPrepared = prepareStep6ReturnBlueCamera("return-blue-tiles", "enter Step 6 return-blue; rotate camera toward dark blue tiles");
 
   return {
     ...stateWithInventory,
@@ -1552,6 +1770,7 @@ function runCheckAfterMagentaTick(
     missingBlueOutlineTicks: 0,
     missingReturnYellowMarkerTicks: 0,
     lastDarkEssenceBlock: bottomRightDarkBlock,
+    chiselClickSequenceIndex: 0,
     actionLockUntilMs: cameraPrepared ? cameraActionLockUntil(nowMs) : nowMs + FAST_RETRY_MS,
   };
 }
@@ -1576,12 +1795,16 @@ function transitionBackToMiningAfterReturnShortcut(
     pendingReturnBlueCameraTurnAtMs: 0,
     pendingReturnBlueCameraTurnKey: null,
     pendingReturnBlueCameraTurnStage: null,
+    pendingReturnToMiningCameraTurnAtMs: 0,
+    pendingReturnToMiningCameraTurnKey: null,
+    pendingReturnToMiningCameraTurnReason: null,
     returnBlueGreenCameraTurned: false,
     returnBlueRedCameraTurned: false,
     lastClickedRunestone: null,
     lastDarkEssenceBlock: null,
     rememberedChisel: state.rememberedChisel,
     bloodAltarCraftConfirmed: false,
+    bloodAltarFinalClickPending: false,
     miningCameraPrepared: false,
     actionLockUntilMs: clickedAtMs + ticksToMs(travel.etaTicks, GAME_TICK_MS),
   };
@@ -1618,11 +1841,15 @@ function transitionToReturnToMiningAfterBloodAltarCraft(
     pendingReturnBlueCameraTurnAtMs: 0,
     pendingReturnBlueCameraTurnKey: null,
     pendingReturnBlueCameraTurnStage: null,
+    pendingReturnToMiningCameraTurnAtMs: 0,
+    pendingReturnToMiningCameraTurnKey: null,
+    pendingReturnToMiningCameraTurnReason: null,
     returnBlueGreenCameraTurned: false,
     returnBlueRedCameraTurned: false,
     lastDarkEssenceBlock: null,
     rememberedChisel: state.rememberedChisel,
     bloodAltarCraftConfirmed: false,
+    bloodAltarFinalClickPending: false,
     returnToMiningStage: "red",
     miningCameraPrepared: false,
     pendingLowLevelBlueCameraTurnAtMs: 0,
@@ -1654,6 +1881,9 @@ function transitionToMiningAfterStep14Return(
     pendingReturnBlueCameraTurnAtMs: 0,
     pendingReturnBlueCameraTurnKey: null,
     pendingReturnBlueCameraTurnStage: null,
+    pendingReturnToMiningCameraTurnAtMs: 0,
+    pendingReturnToMiningCameraTurnKey: null,
+    pendingReturnToMiningCameraTurnReason: null,
     lastReturnTravelChiselAtMs: 0,
     returnBlueGreenCameraTurned: false,
     returnBlueRedCameraTurned: false,
@@ -1661,6 +1891,7 @@ function transitionToMiningAfterStep14Return(
     lastDarkEssenceBlock: null,
     rememberedChisel: state.rememberedChisel,
     bloodAltarCraftConfirmed: false,
+    bloodAltarFinalClickPending: false,
     returnToMiningStage: "red",
     miningCameraPrepared: false,
     pendingLowLevelBlueCameraTurnAtMs: 0,
@@ -1689,10 +1920,14 @@ function transitionToBloodAltarCraftValidation(
     pendingReturnBlueCameraTurnAtMs: 0,
     pendingReturnBlueCameraTurnKey: null,
     pendingReturnBlueCameraTurnStage: null,
+    pendingReturnToMiningCameraTurnAtMs: 0,
+    pendingReturnToMiningCameraTurnKey: null,
+    pendingReturnToMiningCameraTurnReason: null,
     lastReturnTravelChiselAtMs: 0,
     lastDarkEssenceBlock: null,
     rememberedChisel: state.rememberedChisel,
     bloodAltarCraftConfirmed: false,
+    bloodAltarFinalClickPending: false,
     actionLockUntilMs: clickedAtMs + ticksToMs(travel.waitTicks, GAME_TICK_MS),
   };
 }
@@ -1730,22 +1965,6 @@ function runReturnTravelChiselTick(
   const essenceDetection = detectArceuusEssenceInventory(tickCapture.bitmap, essenceIconTemplates, {
     blockClassificationMode: "dark",
   });
-  const darkBlockTarget = pickChiselDarkEssenceBlock(essenceDetection.darkBlocks, state.lastDarkEssenceBlock);
-  if (!darkBlockTarget.target) {
-    if (state.lastDarkEssenceBlock) {
-      log(
-        returnBluePhaseLog(
-          `Step 6 travel chisel finished; no dark essence blocks remain. Last saved=${formatArceuusEssenceIconMatch(state.lastDarkEssenceBlock)}.`,
-        ),
-      );
-    }
-
-    return {
-      ...state,
-      lastDarkEssenceBlock: null,
-    };
-  }
-
   const chiselDetection = state.rememberedChisel
     ? null
     : detectArceuusChiselInventory(tickCapture.bitmap, chiselIconTemplate);
@@ -1755,6 +1974,24 @@ function runReturnTravelChiselTick(
   const chiselDetectionText = chiselDetection
     ? `${formatArceuusChiselInventoryDetection(chiselDetection)} ${formatArceuusChiselInventoryDetectionDetails(chiselDetection)}`
     : `chisel=startup-reference rememberedChisel=${formatArceuusChiselMatch(state.rememberedChisel)}`;
+  const darkBlockTarget = pickChiselDarkEssenceBlock(essenceDetection.darkBlocks, chisel);
+  if (!darkBlockTarget.target) {
+    if (state.lastDarkEssenceBlock) {
+      log(
+        returnBluePhaseLog(
+          `Step 6 travel chisel finished; no dark essence blocks remain on the chisel row/fallback target. Last saved=${formatArceuusEssenceIconMatch(state.lastDarkEssenceBlock)} chisel=${formatArceuusChiselMatch(chisel)}.`,
+        ),
+      );
+    }
+
+    return {
+      ...state,
+      rememberedChisel: chisel ?? state.rememberedChisel,
+      lastDarkEssenceBlock: null,
+      chiselClickSequenceIndex: 0,
+    };
+  }
+
   if (!chisel) {
     warn(
       returnBluePhaseLog(
@@ -1769,23 +2006,20 @@ function runReturnTravelChiselTick(
     };
   }
 
-  const clickedChisel = clickScreenPoint(captureBounds.x + chisel.centerX, captureBounds.y + chisel.centerY, captureBounds);
-  sleepSyncMs(RETURN_TRAVEL_CHISEL_CLICK_DELAY_MS);
-  const clickedDarkBlock = clickScreenPoint(
-    captureBounds.x + darkBlockTarget.target.centerX,
-    captureBounds.y + darkBlockTarget.target.centerY,
-    captureBounds,
-  );
-  logSimulatedClick("Step 6 return-blue", clickedChisel, captureBounds, "travel chisel");
+  const sequenceIndex = state.chiselClickSequenceIndex % RETURN_TRAVEL_CHISEL_CLICK_SEQUENCE.length;
+  const sequenceAction = RETURN_TRAVEL_CHISEL_CLICK_SEQUENCE[sequenceIndex];
+  const clickTarget = sequenceAction === "chisel" ? chisel : darkBlockTarget.target;
+  const clicked = clickInventoryScreenPoint(captureBounds.x + clickTarget.centerX, captureBounds.y + clickTarget.centerY, captureBounds);
+  const clickedAtMs = Date.now();
   logSimulatedClick(
     "Step 6 return-blue",
-    clickedDarkBlock,
+    clicked,
     captureBounds,
-    `travel ${darkBlockTarget.source} dark essence block after ${RETURN_TRAVEL_CHISEL_CLICK_DELAY_MS}ms delay`,
+    sequenceAction === "chisel" ? "travel chisel sequence chisel" : `travel ${darkBlockTarget.source} dark essence block sequence`,
   );
   log(
     returnBluePhaseLog(
-      `Step 6 travel chisel action: clickedChisel=(${chisel.centerX},${chisel.centerY}) source=${chiselSource} score=${chisel.score.toFixed(3)} ${chiselDetectionText} rememberedChisel=${formatArceuusChiselMatch(state.rememberedChisel)} then waited ${RETURN_TRAVEL_CHISEL_CLICK_DELAY_MS}ms before darkBlock=${formatArceuusEssenceIconMatch(darkBlockTarget.target)} source=${darkBlockTarget.source} darkBlocks=${essenceDetection.darkBlocks.length} ${formatArceuusEssenceInventoryDetectionDetails(essenceDetection)}.`,
+      `Step 6 travel chisel sequence: action=${sequenceAction} sequenceIndex=${sequenceIndex}/${RETURN_TRAVEL_CHISEL_CLICK_SEQUENCE.length - 1} clicked=(${clickTarget.centerX},${clickTarget.centerY}) chisel=(${chisel.centerX},${chisel.centerY}) source=${chiselSource} score=${chisel.score.toFixed(3)} ${chiselDetectionText} rememberedChisel=${formatArceuusChiselMatch(state.rememberedChisel)} darkBlock=${formatArceuusEssenceIconMatch(darkBlockTarget.target)} source=${darkBlockTarget.source} inventoryGrid=${INVENTORY_GRID_COLUMNS}x${INVENTORY_GRID_ROWS} slot=${INVENTORY_SLOT_WIDTH_PX}x${INVENTORY_SLOT_HEIGHT_PX}px darkSlotYOffset=${DARK_ESSENCE_BLOCK_SLOT_CENTER_OFFSET_Y_PX}px slotRowTolerance=${INVENTORY_SLOT_ROW_TOLERANCE_PX}px inventoryBuffer=${INVENTORY_CLICK_BUFFER_MS}ms darkBlocks=${essenceDetection.darkBlocks.length} ${formatArceuusEssenceInventoryDetectionDetails(essenceDetection)}.`,
     ),
   );
 
@@ -1793,7 +2027,8 @@ function runReturnTravelChiselTick(
     ...state,
     lastDarkEssenceBlock: darkBlockTarget.target,
     rememberedChisel: chisel,
-    lastReturnTravelChiselAtMs: nowMs,
+    chiselClickSequenceIndex: getNextChiselClickSequenceIndex(sequenceIndex),
+    lastReturnTravelChiselAtMs: clickedAtMs,
   };
 }
 
@@ -1868,7 +2103,14 @@ function runReturnBlueTilesTick(
 
   if (state.phase === "return-blue-tiles") {
     const step6BlueOutlines = blueOutlines.filter(isStep6DarkBlueOutline);
-    const step6TopRightBlueOutlines = step6BlueOutlines.filter((outline) => isStep6TopOrRightBlueOutline(outline, playerAnchor));
+    const step6TopBlueOutlines = step6BlueOutlines.filter((outline) => isStep6TopBlueOutline(outline, playerAnchor));
+    const step6MinBlueDistancePx = getStep6MinBlueDistancePx(fallbackTilePx);
+    const step6TooCloseBlueOutlines = step6TopBlueOutlines.filter((outline) =>
+      isStep6BlueTooCloseToPlayer(outline, playerAnchor, step6MinBlueDistancePx),
+    );
+    const step6ClickableTopBlueOutlines = step6TopBlueOutlines.filter(
+      (outline) => !isStep6BlueTooCloseToPlayer(outline, playerAnchor, step6MinBlueDistancePx),
+    );
     const ignoredRoyalBlueOutlines = blueOutlines.filter((outline) => outline.tier === "step-12");
     const markers = detectArceuusYellowMarkers(tickCapture.bitmap);
     const returnYellowMarker = pickArceuusYellowMarkerForAgilityLevel(markers, state.agilityLevel, playerAnchor, tickCapture.bitmap);
@@ -1882,18 +2124,19 @@ function runReturnBlueTilesTick(
       return transitionToReturnYellowShortcut(state, nowMs);
     }
 
-    const target = pickStep6TopRightBlueOutline(step6TopRightBlueOutlines, playerAnchor);
+    const target = pickStep6TopBlueOutline(step6ClickableTopBlueOutlines, playerAnchor);
     if (!target) {
-      const rotated = tapCameraKey(
-        STEP6_TOP_RIGHT_BLUE_CAMERA_KEY,
-        "return-blue-tiles",
-        "Step 6 has no top/right dark pure-blue return tile; rotate camera before retry",
-      );
       const missingBlueOutlineTicks = state.missingBlueOutlineTicks + 1;
+      const cameraKey = getAlternatingCameraKey(STEP6_MISSING_BLUE_CAMERA_KEYS, missingBlueOutlineTicks);
+      const rotated = tapCameraKey(
+        cameraKey,
+        "return-blue-tiles",
+        `no usable Step 6 top dark pure-blue tile found; rotate camera with ${cameraKey} before retry`,
+      );
       if (missingBlueOutlineTicks === 1 || missingBlueOutlineTicks % MISSING_LOG_INTERVAL_TICKS === 0) {
         warn(
           returnBluePhaseLog(
-            `No Step 6 top/right dark pure-blue tile (#0000FF) found and no return agility marker is visible. camera${STEP6_TOP_RIGHT_BLUE_CAMERA_KEY.toUpperCase()}=${rotated ? "yes" : "no"}; topRightPureBlue=${step6TopRightBlueOutlines.map(formatBlueOutline).join("; ") || "none"} pureBlue=${step6BlueOutlines.map(formatBlueOutline).join("; ") || "none"} royalBlueIgnored=${ignoredRoyalBlueOutlines.map(formatBlueOutline).join("; ") || "none"} allBlue=${blueOutlines.map(formatBlueOutline).join("; ") || "none"}. Yellow=${markers.map(formatYellowMarker).join("; ") || "none"}. MagentaIgnored=${magenta ? formatMagentaObject(magenta) : "none"}.`,
+            `No usable Step 6 top dark pure-blue tile (#0000FF) found and no return agility marker is visible; camera${cameraKey.toUpperCase()}=${rotated ? "yes" : "no"}. minDistance=${step6MinBlueDistancePx}px clickableTop=${step6ClickableTopBlueOutlines.map(formatBlueOutline).join("; ") || "none"} tooCloseTop=${step6TooCloseBlueOutlines.map((outline) => `${formatBlueOutline(outline)} dist=${getStep6BlueDistancePx(outline, playerAnchor)}px containsPlayer=${isPointInsideBlueOutline(outline, playerAnchor) ? "yes" : "no"}`).join("; ") || "none"} topPureBlue=${step6TopBlueOutlines.map(formatBlueOutline).join("; ") || "none"} pureBlue=${step6BlueOutlines.map(formatBlueOutline).join("; ") || "none"} royalBlueIgnored=${ignoredRoyalBlueOutlines.map(formatBlueOutline).join("; ") || "none"} allBlue=${blueOutlines.map(formatBlueOutline).join("; ") || "none"}. Yellow=${markers.map(formatYellowMarker).join("; ") || "none"}. MagentaIgnored=${magenta ? formatMagentaObject(magenta) : "none"}.`,
           ),
         );
       }
@@ -1916,7 +2159,7 @@ function runReturnBlueTilesTick(
     logSimulatedClick("Step 6 return-blue", clicked, captureBounds, "dark pure-blue tile #0000FF during return; chisel allowed during travel");
     log(
       returnBluePhaseLog(
-        `Step 6 return-blue: clicked top/right dark pure-blue tile (#0000FF) at (${clicked.x},${clicked.y}); player=(${playerBox.centerX},${playerBox.centerY}); blueTarget=${formatBlueOutline(target)}; topRightPureBlueCandidates=${step6TopRightBlueOutlines.length}/${step6BlueOutlines.length}; royalBlueIgnored=${ignoredRoyalBlueOutlines.length}; magenta=none; chiselDuringTravel=yes; ${formatStep12TravelWaitEstimate(travel)}.`,
+        `Step 6 return-blue: clicked top dark pure-blue tile (#0000FF) at (${clicked.x},${clicked.y}); player=(${playerBox.centerX},${playerBox.centerY}); blueTarget=${formatBlueOutline(target)}; targetDistance=${getStep6BlueDistancePx(target, playerAnchor)}px minDistance=${step6MinBlueDistancePx}px topPureBlueCandidates=${step6ClickableTopBlueOutlines.length}/${step6TopBlueOutlines.length}/${step6BlueOutlines.length}; tooCloseIgnored=${step6TooCloseBlueOutlines.length}; rightPreferred=${target.centerX >= playerAnchor.x ? "yes" : "no"}; royalBlueIgnored=${ignoredRoyalBlueOutlines.length}; magenta=none; chiselDuringTravel=yes; ${formatStep12TravelWaitEstimate(travel)}.`,
       ),
     );
 
@@ -2247,6 +2490,7 @@ function clickStep14RouteTarget(
   fallbackTilePx: number,
   description: string,
   nextStage: BotState["returnToMiningStage"],
+  cameraTurnAfterArrival: { key: string; reason: string } | null = null,
 ): BotState {
   const clickPoint = pickBoxInteractionScreenPoint(target, captureBounds, {
     innerRatio: 0.45,
@@ -2260,13 +2504,14 @@ function clickStep14RouteTarget(
     captureBounds,
     fallbackTilePx,
   );
+  const pendingCameraTurnAtMs = cameraTurnAfterArrival ? getReturnBlueCameraTurnReadyAtMs(clickedAtMs, travel) : 0;
 
   logSimulatedClick("Step 14 return-to-mining", clicked, captureBounds, description);
   log(
     returnToMiningPhaseLog(
       `Clicked ${description} at (${clicked.x},${clicked.y}); player=(${playerBox.centerX},${playerBox.centerY}); target=${
         "status" in target ? formatStep12ColorTile(target) : formatBlueOutline(target)
-      }; nextStage=${nextStage}; ${formatStep12TravelWaitEstimate(travel)}.`,
+      }; nextStage=${nextStage}; cameraTurn=${cameraTurnAfterArrival ? `scheduled ${cameraTurnAfterArrival.key} after arrival` : "no"}; ${formatStep12TravelWaitEstimate(travel)}.`,
     ),
   );
 
@@ -2275,7 +2520,10 @@ function clickStep14RouteTarget(
     returnToMiningStage: nextStage,
     missingBlueOutlineTicks: 0,
     missingMagentaTicks: 0,
-    actionLockUntilMs: clickedAtMs + ticksToMs(travel.waitTicks, GAME_TICK_MS),
+    pendingReturnToMiningCameraTurnAtMs: pendingCameraTurnAtMs,
+    pendingReturnToMiningCameraTurnKey: cameraTurnAfterArrival?.key ?? null,
+    pendingReturnToMiningCameraTurnReason: cameraTurnAfterArrival?.reason ?? null,
+    actionLockUntilMs: pendingCameraTurnAtMs > 0 ? pendingCameraTurnAtMs : clickedAtMs + ticksToMs(travel.waitTicks, GAME_TICK_MS),
   };
 }
 
@@ -2291,6 +2539,27 @@ function runReturnToMiningTick(
   }
 
   setAutomateBotCurrentStep(STEP_RETURN_TO_MINING_ID);
+
+  if (
+    state.pendingReturnToMiningCameraTurnAtMs > 0 &&
+    state.pendingReturnToMiningCameraTurnKey &&
+    nowMs >= state.pendingReturnToMiningCameraTurnAtMs
+  ) {
+    const key = state.pendingReturnToMiningCameraTurnKey;
+    const rotated = tapCameraKey(
+      key,
+      "return-to-mining",
+      state.pendingReturnToMiningCameraTurnReason ?? `Step 14 scheduled camera turn with ${key}`,
+    );
+
+    return {
+      ...state,
+      pendingReturnToMiningCameraTurnAtMs: 0,
+      pendingReturnToMiningCameraTurnKey: null,
+      pendingReturnToMiningCameraTurnReason: null,
+      actionLockUntilMs: rotated ? cameraActionLockUntil(nowMs) : nowMs + FAST_RETRY_MS,
+    };
+  }
 
   const playerBox = detectBestPlayerBoxInScreenshot(tickCapture.bitmap);
   if (!playerBox) {
@@ -2314,6 +2583,37 @@ function runReturnToMiningTick(
   const playerAnchor = { x: playerBox.centerX, y: playerBox.centerY };
 
   if (state.returnToMiningStage === "red") {
+    const greenTile = pickTopStep12ColorTile(colorTiles, "green");
+    if (greenTile) {
+      if (state.agilityLevel >= 73) {
+        log(
+          returnToMiningPhaseLog(
+            `Top green return tile visible during red route; agilityLevel=${state.agilityLevel} so checking agility-73 yellow marker before clicking green. greenTile=${formatStep12ColorTile(greenTile)}.`,
+          ),
+        );
+        return {
+          ...state,
+          returnToMiningStage: "agility-73",
+          missingBlueOutlineTicks: 0,
+          actionLockUntilMs: nowMs + FAST_RETRY_MS,
+        };
+      }
+
+      return clickStep14RouteTarget(
+        state,
+        greenTile,
+        playerBox,
+        captureBounds,
+        fallbackTilePx,
+        "top green return tile visible during red route",
+        "green",
+        {
+          key: RETURN_TO_MINING_GREEN_CAMERA_KEY,
+          reason: "arrived after Step 14 green return tile click; rotating camera with k before continuing route",
+        },
+      );
+    }
+
     const redTile = pickTopStep12ColorTile(colorTiles, "red");
     if (redTile) {
       return clickStep14RouteTarget(state, redTile, playerBox, captureBounds, fallbackTilePx, "top red return tile", "red");
@@ -2376,37 +2676,132 @@ function runReturnToMiningTick(
   }
 
   if (state.returnToMiningStage === "green") {
+    const routeBlueOutlines = blueOutlines.filter((outline) => outline.tier === "step-12");
+    const fallbackBlueOutlines = routeBlueOutlines.length > 0 ? routeBlueOutlines : blueOutlines;
+    const targetBlue = pickFarthestTopBlueOutlineFromAnchor(fallbackBlueOutlines, playerAnchor);
+    if (targetBlue) {
+      return clickStep14RouteTarget(
+        state,
+        targetBlue,
+        playerBox,
+        captureBounds,
+        fallbackTilePx,
+        "first blue return tile after green route",
+        "blue-2",
+        {
+          key: RETURN_TO_MINING_BLUE_CAMERA_KEY,
+          reason: "arrived after Step 14 first blue return tile click; rotating camera with j before second blue",
+        },
+      );
+    }
+
     const greenTile = pickTopStep12ColorTile(colorTiles, "green");
     if (greenTile) {
-      return clickStep14RouteTarget(state, greenTile, playerBox, captureBounds, fallbackTilePx, "top green return tile", "green");
+      return clickStep14RouteTarget(
+        state,
+        greenTile,
+        playerBox,
+        captureBounds,
+        fallbackTilePx,
+        "top green return tile",
+        "green",
+      );
     }
 
     const rotated = tapCameraKey(
       RETURN_TO_MINING_BLUE_CAMERA_KEY,
       "return-to-mining",
-      "top green return tiles exhausted; rotate camera before blue route",
+      "no top green or blue return tile visible during Step 14 green route; rotate camera before retry",
     );
     log(
       returnToMiningPhaseLog(
-        `No top green return tile found; entering blue route. camera${RETURN_TO_MINING_BLUE_CAMERA_KEY.toUpperCase()}=${rotated ? "yes" : "no"}. Tiles=${colorTiles.map(formatStep12ColorTile).join("; ") || "none"}.`,
+        `No top green or blue return tile found during green route. camera${RETURN_TO_MINING_BLUE_CAMERA_KEY.toUpperCase()}=${rotated ? "yes" : "no"}. Tiles=${colorTiles.map(formatStep12ColorTile).join("; ") || "none"} Blue=${blueOutlines.map(formatBlueOutline).join("; ") || "none"}.`,
       ),
     );
 
     return {
       ...state,
-      returnToMiningStage: "blue-1",
+      returnToMiningStage: "green",
       missingBlueOutlineTicks: 0,
       actionLockUntilMs: rotated ? cameraActionLockUntil(nowMs) : nowMs + FAST_RETRY_MS,
     };
   }
 
-  const markers = detectArceuusYellowMarkers(tickCapture.bitmap);
-  const targetYellow = pickArceuusYellowMarkerForAgilityLevel(markers, state.agilityLevel, playerAnchor, tickCapture.bitmap);
-  if (targetYellow) {
-    return clickStep14YellowMarkerAndReturnToMining(state, targetYellow, playerBox, captureBounds, fallbackTilePx);
+  if (state.returnToMiningStage === "blue-1" || state.returnToMiningStage === "blue-2") {
+    const markers = detectArceuusYellowMarkers(tickCapture.bitmap);
+    const targetYellow = pickArceuusYellowMarkerForAgilityLevel(markers, state.agilityLevel, playerAnchor, tickCapture.bitmap);
+    if (targetYellow) {
+      return clickStep14YellowMarkerAndReturnToMining(state, targetYellow, playerBox, captureBounds, fallbackTilePx);
+    }
+
+    const routeBlueOutlines = blueOutlines.filter((outline) => outline.tier === "step-12");
+    const fallbackBlueOutlines = routeBlueOutlines.length > 0 ? routeBlueOutlines : blueOutlines;
+    const targetBlue = pickFarthestTopBlueOutlineFromAnchor(fallbackBlueOutlines, playerAnchor);
+    if (!targetBlue) {
+      const missingBlueOutlineTicks = state.missingBlueOutlineTicks + 1;
+      const rotated = tapCameraKey(
+        RETURN_TO_MINING_BLUE_CAMERA_KEY,
+        "return-to-mining",
+        `Step 14 ${state.returnToMiningStage} blue return tile not visible; rotate camera before retry`,
+      );
+      if (missingBlueOutlineTicks === 1 || missingBlueOutlineTicks % MISSING_LOG_INTERVAL_TICKS === 0) {
+        warn(
+          returnToMiningPhaseLog(
+            `No Step 14 ${state.returnToMiningStage} blue return tile or ${getArceuusYellowMarkerTierForAgilityLevel(state.agilityLevel)} yellow marker found yet. camera${RETURN_TO_MINING_BLUE_CAMERA_KEY.toUpperCase()}=${rotated ? "yes" : "no"}. Blue=${blueOutlines.map(formatBlueOutline).join("; ") || "none"}. Yellow=${markers.map(formatYellowMarker).join("; ") || "none"}.`,
+          ),
+        );
+      }
+
+      return {
+        ...state,
+        missingBlueOutlineTicks,
+        actionLockUntilMs: rotated ? cameraActionLockUntil(nowMs) : nowMs + FAST_RETRY_MS,
+      };
+    }
+
+    return clickStep14RouteTarget(
+      state,
+      targetBlue,
+      playerBox,
+      captureBounds,
+      fallbackTilePx,
+      state.returnToMiningStage === "blue-1"
+        ? "first blue return tile after green"
+        : "next blue return tile while searching agility marker",
+      "blue-2",
+      {
+        key: RETURN_TO_MINING_BLUE_CAMERA_KEY,
+        reason: "arrived after Step 14 blue return tile click; rotating camera with j before looking for next blue/yellow",
+      },
+    );
   }
 
   if (state.returnToMiningStage === "agility") {
+    const markers = detectArceuusYellowMarkers(tickCapture.bitmap);
+    const targetYellow = pickArceuusYellowMarkerForAgilityLevel(markers, state.agilityLevel, playerAnchor, tickCapture.bitmap);
+    if (targetYellow) {
+      return clickStep14YellowMarkerAndReturnToMining(state, targetYellow, playerBox, captureBounds, fallbackTilePx);
+    }
+
+    const routeBlueOutlines = blueOutlines.filter((outline) => outline.tier === "step-12");
+    const fallbackBlueOutlines = routeBlueOutlines.length > 0 ? routeBlueOutlines : blueOutlines;
+    const targetBlue = pickFarthestTopBlueOutlineFromAnchor(fallbackBlueOutlines, playerAnchor);
+    if (targetBlue) {
+      return clickStep14RouteTarget(
+        state,
+        targetBlue,
+        playerBox,
+        captureBounds,
+        fallbackTilePx,
+        "blue return tile still visible while agility marker is missing",
+        "blue-2",
+        {
+          key: RETURN_TO_MINING_BLUE_CAMERA_KEY,
+          reason: "arrived after Step 14 fallback blue click; rotating camera with j before looking for next blue/yellow",
+        },
+      );
+    }
+
     const missingReturnYellowMarkerTicks = state.missingReturnYellowMarkerTicks + 1;
     const rotated = tapCameraKey(
       RETURN_TO_MINING_BLUE_CAMERA_KEY,
@@ -2428,36 +2823,10 @@ function runReturnToMiningTick(
     };
   }
 
-  const routeBlueOutlines = blueOutlines.filter((outline) => outline.tier === "step-12");
-  const fallbackBlueOutlines = routeBlueOutlines.length > 0 ? routeBlueOutlines : blueOutlines;
-  const targetBlue = pickFarthestTopBlueOutlineFromAnchor(fallbackBlueOutlines, playerAnchor);
-  if (!targetBlue) {
-    const missingBlueOutlineTicks = state.missingBlueOutlineTicks + 1;
-    if (missingBlueOutlineTicks === 1 || missingBlueOutlineTicks % MISSING_LOG_INTERVAL_TICKS === 0) {
-      warn(
-        returnToMiningPhaseLog(
-          `No blue return tile or return ${getArceuusYellowMarkerTierForAgilityLevel(state.agilityLevel)} yellow marker found. Blue=${blueOutlines.map(formatBlueOutline).join("; ") || "none"} yellow=${markers.map(formatYellowMarker).join("; ") || "none"}.`,
-        ),
-      );
-    }
-
-    return {
-      ...state,
-      returnToMiningStage: "agility",
-      missingBlueOutlineTicks,
-      actionLockUntilMs: nowMs + FAST_RETRY_MS,
-    };
-  }
-
-  return clickStep14RouteTarget(
-    state,
-    targetBlue,
-    playerBox,
-    captureBounds,
-    fallbackTilePx,
-    "blue return tile while searching for agility marker",
-    state.returnToMiningStage === "blue-1" ? "blue-2" : "blue-2",
-  );
+  return {
+    ...state,
+    actionLockUntilMs: nowMs + FAST_RETRY_MS,
+  };
 }
 
 function runBloodAltarCraftTick(
@@ -2491,9 +2860,82 @@ function runBloodAltarCraftTick(
       `Blood altar craft inventory validation: ${formatArceuusEssenceInventoryDetection(essenceDetection)} ${formatArceuusEssenceInventoryDetectionDetails(essenceDetection)} ${chiselDetectionText} freeSlots=${inventory.freeSlots ?? "unknown"}.`,
     ),
   );
+  const observedInventoryState = inventory.freeSlots === null ? state : updateInventoryState(state, inventory.freeSlots);
 
-  if (!state.bloodAltarCraftConfirmed && essenceDetection.darkFragments.length > 0) {
-    const missingInventoryCountTicks = state.missingInventoryCountTicks + 1;
+  if (observedInventoryState.bloodAltarFinalClickPending) {
+    if (essenceDetection.darkFragments.length > 0) {
+      const missingInventoryCountTicks = observedInventoryState.missingInventoryCountTicks + 1;
+      if (missingInventoryCountTicks === 1 || missingInventoryCountTicks % INVENTORY_DEBUG_INTERVAL_TICKS === 0) {
+        warn(
+          phaseLog(
+            "blood-altar-craft",
+            `Final blood altar click is pending; fragments still visible, waiting before Step 14. fragments=${essenceDetection.darkFragments.length}.`,
+          ),
+        );
+      }
+
+      return {
+        ...observedInventoryState,
+        missingInventoryCountTicks,
+        actionLockUntilMs: nowMs + FAST_RETRY_MS,
+      };
+    }
+
+    log(
+      phaseLog(
+        "blood-altar-craft",
+        `Final blood altar craft confirmed; fragments are gone. Entering Step 14 return-to-mining after ${GAME_TICK_MS}ms camera/settle wait.`,
+      ),
+    );
+
+    return transitionToReturnToMiningAfterBloodAltarCraft(
+      {
+        ...observedInventoryState,
+        missingInventoryCountTicks: 0,
+        missingMagentaTicks: 0,
+        lastDarkEssenceBlock: null,
+        bloodAltarCraftConfirmed: false,
+        bloodAltarFinalClickPending: false,
+      },
+      nowMs,
+      GAME_TICK_MS,
+    );
+  }
+
+  if (!observedInventoryState.bloodAltarCraftConfirmed && essenceDetection.darkFragments.length > 0) {
+    const missingInventoryCountTicks = observedInventoryState.missingInventoryCountTicks + 1;
+    if (missingInventoryCountTicks >= STEP13_INITIAL_CRAFT_RECLICK_ATTEMPTS) {
+      const magenta = detectLargestMagentaObject(tickCapture.bitmap, BIG_MAGENTA_MIN_PIXELS);
+      if (magenta) {
+        const playerBox = detectBestPlayerBoxInScreenshot(tickCapture.bitmap);
+        const greenOutline = pickLargestStep13GreenOutlineNearMagenta(magenta, detectStep12ExactColorTiles(tickCapture.bitmap, "green"));
+        const magentaClickLocal = pickLowerStep13MagentaClickLocalPoint(magenta, greenOutline);
+        const clicked = clickScreenPoint(captureBounds.x + magentaClickLocal.centerX, captureBounds.y + magentaClickLocal.centerY, captureBounds);
+        const clickedAtMs = Date.now();
+        const clickedLocalPoint = {
+          centerX: clicked.x - captureBounds.x,
+          centerY: clicked.y - captureBounds.y,
+        };
+        const travel = playerBox
+          ? estimateStep12TravelWaitTicks({ centerX: playerBox.centerX, centerY: playerBox.centerY }, clickedLocalPoint, captureBounds, fallbackTilePx)
+          : null;
+        logSimulatedClick("Step 13 blood-altar-craft", clicked, captureBounds, "retry blood altar magenta after failed craft validation");
+        warn(
+          phaseLog(
+            "blood-altar-craft",
+            `Fragments still visible after ${missingInventoryCountTicks} craft validation attempts; clicked blood altar magenta again at (${clicked.x},${clicked.y}). target=${formatMagentaObject(magenta)} greenOutline=${greenOutline ? formatStep12ColorTile(greenOutline) : "none"} clickLocal=(${clickedLocalPoint.centerX},${clickedLocalPoint.centerY}); ${travel ? formatStep12TravelWaitEstimate(travel) : "travelEstimate=unavailable"}.`,
+          ),
+        );
+
+        return {
+          ...observedInventoryState,
+          missingInventoryCountTicks: 0,
+          missingMagentaTicks: 0,
+          actionLockUntilMs: clickedAtMs + (travel ? ticksToMs(travel.waitTicks, GAME_TICK_MS) : GAME_TICK_MS),
+        };
+      }
+    }
+
     if (missingInventoryCountTicks === 1 || missingInventoryCountTicks % INVENTORY_DEBUG_INTERVAL_TICKS === 0) {
       warn(
         phaseLog(
@@ -2504,20 +2946,21 @@ function runBloodAltarCraftTick(
     }
 
     return {
-      ...state,
+      ...observedInventoryState,
       missingInventoryCountTicks,
       actionLockUntilMs: nowMs + FAST_RETRY_MS,
     };
   }
 
-  const confirmedState = state.bloodAltarCraftConfirmed
-    ? state
+  const confirmedState = observedInventoryState.bloodAltarCraftConfirmed
+    ? observedInventoryState
     : {
-        ...state,
+        ...observedInventoryState,
         bloodAltarCraftConfirmed: true,
         missingInventoryCountTicks: 0,
+        chiselClickSequenceIndex: 0,
       };
-  if (!state.bloodAltarCraftConfirmed) {
+  if (!observedInventoryState.bloodAltarCraftConfirmed) {
     log(
       phaseLog(
         "blood-altar-craft",
@@ -2526,13 +2969,12 @@ function runBloodAltarCraftTick(
     );
   }
 
-  const stateWithInventory =
-    inventory.freeSlots === null ? confirmedState : updateInventoryState(confirmedState, inventory.freeSlots);
-  const darkBlockTarget = pickChiselDarkEssenceBlock(essenceDetection.darkBlocks, state.lastDarkEssenceBlock);
+  const stateWithInventory = confirmedState;
+  const detectedChisel = chiselDetection ? pickBottomRightChisel(chiselDetection.chisels) : null;
+  const chisel = stateWithInventory.rememberedChisel ?? detectedChisel;
+  const chiselSource = stateWithInventory.rememberedChisel ? "startup" : detectedChisel ? "runtime" : "none";
+  const darkBlockTarget = pickChiselDarkEssenceBlock(essenceDetection.darkBlocks, chisel);
   if (darkBlockTarget.target) {
-    const detectedChisel = chiselDetection ? pickBottomRightChisel(chiselDetection.chisels) : null;
-    const chisel = stateWithInventory.rememberedChisel ?? detectedChisel;
-    const chiselSource = stateWithInventory.rememberedChisel ? "startup" : detectedChisel ? "runtime" : "none";
     if (!chisel) {
       warn(
         phaseLog(
@@ -2549,25 +2991,21 @@ function runBloodAltarCraftTick(
       };
     }
 
-    const clickedChisel = clickScreenPoint(captureBounds.x + chisel.centerX, captureBounds.y + chisel.centerY, captureBounds);
-    sleepSyncMs(RETURN_TRAVEL_CHISEL_CLICK_DELAY_MS);
-    const clickedDarkBlock = clickScreenPoint(
-      captureBounds.x + darkBlockTarget.target.centerX,
-      captureBounds.y + darkBlockTarget.target.centerY,
-      captureBounds,
-    );
+    const sequenceIndex = stateWithInventory.chiselClickSequenceIndex % RETURN_TRAVEL_CHISEL_CLICK_SEQUENCE.length;
+    const sequenceAction = RETURN_TRAVEL_CHISEL_CLICK_SEQUENCE[sequenceIndex];
+    const clickTarget = sequenceAction === "chisel" ? chisel : darkBlockTarget.target;
+    const clicked = clickInventoryScreenPoint(captureBounds.x + clickTarget.centerX, captureBounds.y + clickTarget.centerY, captureBounds);
     const clickedAtMs = Date.now();
-    logSimulatedClick("Step 13 blood-altar-craft", clickedChisel, captureBounds, "post-craft chisel");
     logSimulatedClick(
       "Step 13 blood-altar-craft",
-      clickedDarkBlock,
+      clicked,
       captureBounds,
-      `post-craft ${darkBlockTarget.source} dark essence block after ${RETURN_TRAVEL_CHISEL_CLICK_DELAY_MS}ms delay`,
+      sequenceAction === "chisel" ? "post-craft chisel sequence chisel" : `post-craft ${darkBlockTarget.source} dark essence block sequence`,
     );
     log(
       phaseLog(
         "blood-altar-craft",
-        `Step 13 post-craft chisel action: clickedChisel=(${chisel.centerX},${chisel.centerY}) source=${chiselSource} score=${chisel.score.toFixed(3)} rememberedChisel=${formatArceuusChiselMatch(stateWithInventory.rememberedChisel)} ${chiselDetectionText} then darkBlock=${formatArceuusEssenceIconMatch(darkBlockTarget.target)} source=${darkBlockTarget.source} darkBlocks=${essenceDetection.darkBlocks.length}.`,
+        `Step 13 post-craft chisel sequence: action=${sequenceAction} sequenceIndex=${sequenceIndex}/${RETURN_TRAVEL_CHISEL_CLICK_SEQUENCE.length - 1} clicked=(${clickTarget.centerX},${clickTarget.centerY}) chisel=(${chisel.centerX},${chisel.centerY}) source=${chiselSource} score=${chisel.score.toFixed(3)} rememberedChisel=${formatArceuusChiselMatch(stateWithInventory.rememberedChisel)} ${chiselDetectionText} darkBlock=${formatArceuusEssenceIconMatch(darkBlockTarget.target)} source=${darkBlockTarget.source} inventoryGrid=${INVENTORY_GRID_COLUMNS}x${INVENTORY_GRID_ROWS} slot=${INVENTORY_SLOT_WIDTH_PX}x${INVENTORY_SLOT_HEIGHT_PX}px darkSlotYOffset=${DARK_ESSENCE_BLOCK_SLOT_CENTER_OFFSET_Y_PX}px slotRowTolerance=${INVENTORY_SLOT_ROW_TOLERANCE_PX}px inventoryBuffer=${INVENTORY_CLICK_BUFFER_MS}ms darkBlocks=${essenceDetection.darkBlocks.length}.`,
       ),
     );
 
@@ -2576,6 +3014,7 @@ function runBloodAltarCraftTick(
       missingInventoryCountTicks: 0,
       lastDarkEssenceBlock: darkBlockTarget.target,
       rememberedChisel: chisel,
+      chiselClickSequenceIndex: getNextChiselClickSequenceIndex(sequenceIndex),
       lastReturnTravelChiselAtMs: clickedAtMs,
       actionLockUntilMs: clickedAtMs + RETURN_TRAVEL_CHISEL_INTERVAL_MS,
     };
@@ -2598,35 +3037,40 @@ function runBloodAltarCraftTick(
       missingInventoryCountTicks: 0,
       missingMagentaTicks,
       lastDarkEssenceBlock: null,
+      chiselClickSequenceIndex: 0,
       actionLockUntilMs: nowMs + FAST_RETRY_MS,
     };
   }
 
   const playerBox = detectBestPlayerBoxInScreenshot(tickCapture.bitmap);
-  const clicked = clickScreenPoint(captureBounds.x + magenta.centerX, captureBounds.y + magenta.centerY, captureBounds);
+  const greenOutline = pickLargestStep13GreenOutlineNearMagenta(magenta, detectStep12ExactColorTiles(tickCapture.bitmap, "green"));
+  const magentaClickLocal = pickLowerStep13MagentaClickLocalPoint(magenta, greenOutline);
+  const clicked = clickScreenPoint(captureBounds.x + magentaClickLocal.centerX, captureBounds.y + magentaClickLocal.centerY, captureBounds);
   const clickedAtMs = Date.now();
+  const clickedLocalPoint = {
+    centerX: clicked.x - captureBounds.x,
+    centerY: clicked.y - captureBounds.y,
+  };
   const travel = playerBox
-    ? estimateStep12TravelWaitTicks({ centerX: playerBox.centerX, centerY: playerBox.centerY }, magenta, captureBounds, fallbackTilePx)
+    ? estimateStep12TravelWaitTicks({ centerX: playerBox.centerX, centerY: playerBox.centerY }, clickedLocalPoint, captureBounds, fallbackTilePx)
     : null;
-  logSimulatedClick("Step 13 blood-altar-craft", clicked, captureBounds, "blood altar magenta after post-craft chisel");
+  logSimulatedClick("Step 13 blood-altar-craft", clicked, captureBounds, "lower blood altar magenta after post-craft chisel");
   log(
     phaseLog(
       "blood-altar-craft",
-      `Step 13 chisel complete; clicked blood altar magenta again at (${clicked.x},${clicked.y}); target=${formatMagentaObject(magenta)}; ${travel ? formatStep12TravelWaitEstimate(travel) : "travelEstimate=unavailable"}. Entering Step 14 after final altar click.`,
+      `Step 13 chisel complete; clicked lower blood altar magenta again at (${clicked.x},${clicked.y}); target=${formatMagentaObject(magenta)} greenOutline=${greenOutline ? formatStep12ColorTile(greenOutline) : "none"} clickLocal=(${clickedLocalPoint.centerX},${clickedLocalPoint.centerY}); ${travel ? formatStep12TravelWaitEstimate(travel) : "travelEstimate=unavailable"}. Waiting for fragments to disappear before Step 14.`,
     ),
   );
 
-  return transitionToReturnToMiningAfterBloodAltarCraft(
-    {
-      ...stateWithInventory,
-      missingInventoryCountTicks: 0,
-      missingMagentaTicks: 0,
-      lastDarkEssenceBlock: null,
-      bloodAltarCraftConfirmed: false,
-    },
-    clickedAtMs,
-    travel ? ticksToMs(travel.waitTicks, GAME_TICK_MS) : POST_CLICK_LOCK_MS,
-  );
+  return {
+    ...stateWithInventory,
+    missingInventoryCountTicks: 0,
+    missingMagentaTicks: 0,
+    lastDarkEssenceBlock: null,
+    chiselClickSequenceIndex: 0,
+    bloodAltarFinalClickPending: true,
+    actionLockUntilMs: clickedAtMs + (travel ? ticksToMs(travel.waitTicks, GAME_TICK_MS) : GAME_TICK_MS),
+  };
 }
 
 async function runLoop(
@@ -2654,7 +3098,7 @@ async function runLoop(
         setLogContextFromState(state);
       },
       functions: {
-        mine: ({ state, nowMs, tickCapture }) => runMiningTick(state, nowMs, tickCapture, captureBounds),
+        mine: ({ state, nowMs, tickCapture }) => runMiningTick(state, nowMs, tickCapture, captureBounds, fallbackTilePx),
         selectYellowMarker: ({ state, nowMs, tickCapture }) =>
           runSelectYellowMarkerTick(state, nowMs, tickCapture, captureBounds, fallbackTilePx),
         followBlueTiles: ({ state, nowMs, tickCapture }) =>
@@ -2763,7 +3207,6 @@ export function onRunecraftingArceuusBloodRuneBotStart(): void {
       startupEssenceDetection.darkBlocks.length > 0 &&
       startupEssenceDetection.darkFragments.length === 0;
     const startAtMiningAgain =
-      startupEssenceDetection.denseBlocks.length === 0 &&
       startupEssenceDetection.darkBlocks.length === 0 &&
       startupEssenceDetection.darkFragments.length > 0;
     const startupOverride = startAtStep12FollowAnother
@@ -2800,12 +3243,8 @@ export function onRunecraftingArceuusBloodRuneBotStart(): void {
       ),
     );
     if (startAtStep6ReturnBlue) {
-      const cameraPrepared = tapCameraKey(
-        STEP6_RETURN_BLUE_CAMERA_KEY,
-        "startup",
-        "startup detected Step 6 return-blue; rotate camera toward dark blue tiles",
-      );
-      log(phaseLog("startup", `Step 6 startup camera${STEP6_RETURN_BLUE_CAMERA_KEY.toUpperCase()}=${cameraPrepared ? "yes" : "no"}.`));
+      const cameraPrepared = prepareStep6ReturnBlueCamera("startup", "startup detected Step 6 return-blue; rotate camera toward dark blue tiles");
+      log(phaseLog("startup", `Step 6 startup camera${STEP6_RETURN_BLUE_CAMERA_KEY.toUpperCase()}+${STEP6_RETURN_BLUE_SECOND_CAMERA_KEY.toUpperCase()}=${cameraPrepared ? "yes" : "no"}.`));
       if (cameraPrepared) {
         await sleepWithAbort(CAMERA_ACTION_SETTLE_MS, () => AppState.automateBotRunning);
       }
