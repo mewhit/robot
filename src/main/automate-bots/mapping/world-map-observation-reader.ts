@@ -3,14 +3,16 @@ import { RobotBitmap } from "../shared/ocr-engine";
 import { WorldMapObservation } from "./async-world-mapper";
 import { parseWorldTileFromMatchedLine } from "./world-coordinate";
 
-const OVERLAY_OBSERVATION_CONFIDENCE = 0.65;
+const OVERLAY_OBSERVATION_CONFIDENCE = 0.8;
 
 export function readWorldMapObservationFromBitmap(params: {
   bitmap: RobotBitmap;
   observedAtMs: number;
   windowsScalePercent: number;
 }): Omit<WorldMapObservation, "sessionId" | "botId"> | null {
-  const overlayBox = detectCoordinateOverlayBox(params.bitmap, params.windowsScalePercent);
+  const overlayBox = detectCoordinateOverlayBox(params.bitmap, params.windowsScalePercent, {
+    requireRuneLiteCoordinatePattern: true,
+  });
   if (!overlayBox) {
     return null;
   }

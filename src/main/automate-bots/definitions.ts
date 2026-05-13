@@ -1,6 +1,7 @@
 export const AGILITY_BOT_ID = "agility";
 export const ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID = "attack-zamorak-warrior-safe-spot";
 export const COMBAT_AUTO_BOT_ID = "combat-auto";
+export const END_TO_END_BOT_ID = "end-to-end";
 export const MINING_GUILD_COAL_ORE_BOT_ID = "mining-guild-coal-ore";
 export const MINING_GUILD_MITHRIL_ORE_BOT_ID = "mining-guild-mithril-ore";
 export const MINING_MOTHERLODE_MINE_BOT_ID = "mining-motherlode-mine";
@@ -13,6 +14,7 @@ export type AutomateBotId =
   | typeof AGILITY_BOT_ID
   | typeof ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID
   | typeof COMBAT_AUTO_BOT_ID
+  | typeof END_TO_END_BOT_ID
   | typeof MINING_GUILD_COAL_ORE_BOT_ID
   | typeof MINING_GUILD_MITHRIL_ORE_BOT_ID
   | typeof MINING_MOTHERLODE_MINE_BOT_ID
@@ -32,6 +34,10 @@ export const AUTOMATE_BOTS: AutomateBotDefinition[] = [
   {
     id: AGILITY_BOT_ID,
     name: "Agility",
+  },
+  {
+    id: END_TO_END_BOT_ID,
+    name: "End To End",
   },
   {
     id: COMBAT_AUTO_BOT_ID,

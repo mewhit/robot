@@ -2,6 +2,7 @@ import { AppState } from "./global-state";
 import { onAgilityBotStart } from "./automate-bots/agility-bot";
 import { onAttackZamorakWarriorSafeSpotBotStart } from "./automate-bots/attack-zamorak-warrior-safe-spot-bot";
 import { onCombatAutoBotStart } from "./automate-bots/combat/auto-bot";
+import { onEndToEndBotStart } from "./automate-bots/end-to-end-bot";
 import {
   onMiningGuildCoalOreBotStart,
   onMiningGuildMithrilOreBotStart,
@@ -16,6 +17,7 @@ import {
   AGILITY_BOT_ID,
   ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID,
   COMBAT_AUTO_BOT_ID,
+  END_TO_END_BOT_ID,
   DEFAULT_AUTOMATE_BOT_ID,
   MINING_GUILD_COAL_ORE_BOT_ID,
   MINING_GUILD_MITHRIL_ORE_BOT_ID,
@@ -37,6 +39,7 @@ const botStartHandlers = new Map<string, () => void>([
   [AGILITY_BOT_ID, onAgilityBotStart],
   [ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID, onAttackZamorakWarriorSafeSpotBotStart],
   [COMBAT_AUTO_BOT_ID, onCombatAutoBotStart],
+  [END_TO_END_BOT_ID, onEndToEndBotStart],
   [MINING_GUILD_COAL_ORE_BOT_ID, onMiningGuildCoalOreBotStart],
   [MINING_GUILD_MITHRIL_ORE_BOT_ID, onMiningGuildMithrilOreBotStart],
   [MINING_MOTHERLODE_MINE_BOT_ID, onMotherlodeMineBotStart],
@@ -98,7 +101,7 @@ export function setAutomateBotCurrentStep(stepId: string | null) {
   sendAutomateBotState();
 }
 
-export function setActiveView(view: "clicker" | "automateBot" | "stats" | "debug") {
+export function setActiveView(view: "clicker" | "automateBot" | "stats" | "map" | "debug") {
   AppState.activeView = view;
 }
 

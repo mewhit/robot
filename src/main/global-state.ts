@@ -6,7 +6,7 @@ import { DEFAULT_AUTOMATE_BOT_ID } from "./automate-bots/definitions";
 
 // Shared state for recording/replay
 export class AppState {
-  static activeView: "clicker" | "automateBot" | "stats" | "debug" = "clicker";
+  static activeView: "clicker" | "automateBot" | "stats" | "map" | "debug" = "clicker";
   static selectedAutomateBotId: string | null = DEFAULT_AUTOMATE_BOT_ID;
   static automateBotRunning = false;
   static automateBotCurrentStepId: string | null = null;

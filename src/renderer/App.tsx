@@ -3,6 +3,7 @@ import type { IpcRenderer } from "electron";
 import ClickerTabs from "./clicker-tabs";
 import AutomateBot from "./automate-bot";
 import GotrStatsView from "./gotr-stats-view";
+import OsrsMapView from "./osrs-map-view";
 import type { GuardianOfTheRiftRunStatsSnapshot } from "../main/guardianOfTheRiftRunStats";
 import {
   AUTOMATE_BOTS,
@@ -114,7 +115,7 @@ type MarkerColorState = {
   point: { x: number; y: number } | null;
 };
 
-type ActiveView = "clicker" | "automateBot" | "stats" | "debug";
+type ActiveView = "clicker" | "automateBot" | "stats" | "map" | "debug";
 const ACTIVE_VIEW_STORAGE_KEY = "robot.activeView";
 const SELECTED_AUTOMATE_BOT_STORAGE_KEY = "robot.selectedAutomateBotId";
 const EXPANDED_TASK_NODE_IDS_STORAGE_KEY = "robot.expandedTaskNodeIds";
@@ -126,6 +127,9 @@ function getInitialActiveView(): ActiveView {
   }
   if (savedView === "stats") {
     return "stats";
+  }
+  if (savedView === "map") {
+    return "map";
   }
   if (savedView === "debug") {
     return "debug";
@@ -1487,6 +1491,12 @@ export default function App() {
             Stats
           </button>
           <button
+            className={`nav-tab ${activeView === "map" ? "active" : ""}`}
+            onClick={() => setActiveView("map")}
+          >
+            Map
+          </button>
+          <button
             className={`nav-tab ${activeView === "debug" ? "active" : ""}`}
             onClick={() => setActiveView("debug")}
           >
@@ -1580,6 +1590,8 @@ export default function App() {
             error={gotrRunStatsError}
             onRefresh={() => void refreshGotrRunStats()}
           />
+        ) : activeView === "map" ? (
+          <OsrsMapView ipcRenderer={ipcRenderer} />
         ) : (
           <div className="debug-view">
             <div className="debug-save-row">

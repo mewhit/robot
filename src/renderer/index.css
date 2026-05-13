@@ -458,6 +458,116 @@
     @apply m-0 min-w-0 break-words text-slate-800 tabular-nums;
   }
 
+  .osrs-map-view {
+    @apply w-full min-h-0 flex flex-col gap-3 overflow-hidden;
+  }
+
+  .osrs-map-toolbar {
+    @apply flex flex-wrap items-end gap-2 border border-slate-200 bg-slate-50 rounded-lg px-3 py-2;
+  }
+
+  .osrs-map-field {
+    @apply flex flex-col gap-1 text-xs font-semibold text-slate-600;
+  }
+
+  .osrs-map-field input,
+  .osrs-map-field select {
+    @apply h-9 w-24 rounded-md border border-slate-300 bg-white px-2 text-xs text-slate-900 tabular-nums;
+  }
+
+  .osrs-map-field-plane select {
+    @apply w-16;
+  }
+
+  .osrs-map-action {
+    @apply h-9 px-3 text-xs font-semibold rounded-md border-0 bg-teal-700 text-white cursor-pointer hover:bg-teal-800 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .osrs-map-error {
+    @apply m-0 px-3 py-2 rounded-md border border-red-200 bg-red-50 text-xs text-red-700;
+  }
+
+  .osrs-map-content {
+    @apply flex-1 min-h-0 grid grid-cols-[minmax(0,1fr)_20rem] gap-3;
+  }
+
+  .osrs-map-canvas-panel {
+    @apply min-h-0 overflow-auto rounded-lg border border-slate-200 bg-slate-100 p-3;
+  }
+
+  .osrs-map-canvas {
+    @apply block max-w-full h-auto mx-auto rounded border border-slate-300 bg-white cursor-crosshair;
+    image-rendering: pixelated;
+    aspect-ratio: 1 / 1;
+  }
+
+  .osrs-map-details {
+    @apply min-h-0 overflow-auto rounded-lg border border-slate-200 bg-white p-3 flex flex-col gap-3;
+  }
+
+  .osrs-map-stats,
+  .osrs-map-selected dl {
+    @apply m-0 grid grid-cols-[5rem_minmax(0,1fr)] gap-x-2 gap-y-1 text-xs;
+  }
+
+  .osrs-map-stats dt,
+  .osrs-map-selected dt {
+    @apply text-slate-500 font-semibold;
+  }
+
+  .osrs-map-stats dd,
+  .osrs-map-selected dd {
+    @apply m-0 min-w-0 truncate text-slate-800 tabular-nums;
+  }
+
+  .osrs-map-legend {
+    @apply grid grid-cols-2 gap-1.5 text-xs text-slate-700;
+  }
+
+  .osrs-map-legend-item {
+    @apply inline-flex items-center gap-1.5 min-w-0;
+  }
+
+  .osrs-map-legend-item i {
+    @apply inline-block h-3 w-3 rounded-sm border border-slate-300;
+  }
+
+  .legend-walkable {
+    @apply bg-[#eef4ef];
+  }
+
+  .legend-blocked {
+    @apply bg-[#8b5e3c];
+  }
+
+  .legend-object {
+    @apply bg-cyan-700/30;
+  }
+
+  .legend-wall {
+    @apply bg-red-600;
+  }
+
+  .legend-icon {
+    @apply bg-amber-200;
+  }
+
+  .osrs-map-selected {
+    @apply border-t border-slate-200 pt-3;
+  }
+
+  .osrs-map-selected h3 {
+    @apply m-0 mb-2 text-sm font-bold text-slate-800;
+  }
+
+  .osrs-map-selected p {
+    @apply m-0 text-xs text-slate-500;
+  }
+
+  .osrs-map-object-list {
+    @apply mt-3 mb-0 pl-4 text-xs text-slate-700;
+  }
+
   .debug-save-row {
     @apply w-full flex items-center gap-2;
   }
@@ -702,6 +812,14 @@
 
   .gotr-stats-detail {
     @apply max-h-80;
+  }
+
+  .osrs-map-content {
+    @apply grid-cols-1;
+  }
+
+  .osrs-map-details {
+    @apply max-h-96;
   }
 
   .sidebar,

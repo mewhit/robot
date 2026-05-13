@@ -21,6 +21,7 @@ export const CHANNELS = {
   SET_GUARDIAN_OF_THE_RIFT_COLOSSAL_POUCH_FILL_COUNT:
     "set-guardian-of-the-rift-colossal-pouch-fill-count",
   GET_GUARDIAN_OF_THE_RIFT_RUN_STATS: "get-guardian-of-the-rift-run-stats",
+  GET_OSRS_CACHE_MAP_REGION: "get-osrs-cache-map-region",
   SET_REPLAY_REPEAT: "set-replay-repeat",
   SET_REPLAY_REPEAT_COUNT: "set-replay-repeat-count",
   SET_REPLAY_CLICK_DELAY_MS: "set-replay-click-delay-ms",

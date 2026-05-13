@@ -64,6 +64,7 @@ import {
 import { runAgilityScreenshotCapture } from "./automate-bots/shared/screenshot-capture";
 import { sendAutomateBotLogs } from "./automateBotLogs";
 import { CHANNELS } from "./ipcChannels";
+import { readOsrsCacheMapRegionView } from "./automate-bots/cache/cache-map-view";
 
 const robot = ((robotModule as unknown as { default?: any }).default ?? robotModule) as any;
 
@@ -104,13 +105,17 @@ export function setupIpcHandlers() {
     sendOutputFolderState();
   });
 
-  ipcMain.on(CHANNELS.SET_ACTIVE_VIEW, (_event, view: "clicker" | "automateBot" | "stats" | "debug") => {
+  ipcMain.on(CHANNELS.SET_ACTIVE_VIEW, (_event, view: "clicker" | "automateBot" | "stats" | "map" | "debug") => {
     if (view === "automateBot") {
       setActiveView("automateBot");
       return;
     }
     if (view === "stats") {
       setActiveView("stats");
+      return;
+    }
+    if (view === "map") {
+      setActiveView("map");
       return;
     }
     if (view === "debug") {
@@ -332,6 +337,32 @@ export function setupIpcHandlers() {
       return { ok: false, error: message };
     }
   });
+
+  ipcMain.handle(
+    CHANNELS.GET_OSRS_CACHE_MAP_REGION,
+    (_event, payload?: { regionX?: number; regionY?: number; worldX?: number; worldY?: number }) => {
+      try {
+        const rawRegionX =
+          typeof payload?.worldX === "number" && Number.isFinite(payload.worldX)
+            ? payload.worldX >> 6
+            : payload?.regionX;
+        const rawRegionY =
+          typeof payload?.worldY === "number" && Number.isFinite(payload.worldY)
+            ? payload.worldY >> 6
+            : payload?.regionY;
+        const regionX = Number.isFinite(rawRegionX) ? Math.trunc(Number(rawRegionX)) : 50;
+        const regionY = Number.isFinite(rawRegionY) ? Math.trunc(Number(rawRegionY)) : 50;
+        return {
+          ok: true,
+          region: readOsrsCacheMapRegionView({ regionX, regionY }),
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`Could not read OSRS cache map region: ${message}`);
+        return { ok: false, error: message };
+      }
+    },
+  );
 
   ipcMain.on(CHANNELS.SET_REPLAY_REPEAT, (_event, enabled: boolean) => {
     AppState.replayRepeatEnabled = Boolean(enabled);
