@@ -8,6 +8,7 @@ import type { GuardianOfTheRiftRunStatsSnapshot } from "../main/guardianOfTheRif
 import {
   AUTOMATE_BOTS,
   DEFAULT_AUTOMATE_BOT_ID,
+  END_TO_END_BOT_ID,
   RUNECRAFTING_ARCEUUS_BLOOD_RUNE_BOT_ID,
   RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID,
 } from "../main/automate-bots/definitions";
@@ -18,6 +19,13 @@ import {
   type ArceuusBloodRuneConfig,
 } from "../main/automate-bots/arceuus-blood-rune-config";
 import {
+  createDefaultEndToEndConfig,
+  normalizeEndToEndConfig,
+  setEndToEndGuideStepCompletion,
+  type EndToEndConfig,
+} from "../main/automate-bots/end-to-end-config";
+import type { EndToEndGuideChecklist } from "../main/automate-bots/end-to-end/guide-checklist";
+import {
   GUARDIAN_OF_THE_RIFT_ACTIVE_ELEMENTS,
   createDefaultGuardianOfTheRiftConfig,
   type GuardianOfTheRiftActiveElement,
@@ -27,6 +35,9 @@ import {
   normalizeGuardianOfTheRiftRunecraftLevel,
 } from "../main/automate-bots/guardian-of-the-rift-config";
 import { CHANNELS } from "../main/ipcChannels";
+
+const AUTOMATE_BOT_MAX_VISIBLE_LOG_LINES = 500;
+const AUTOMATE_BOT_LOG_RENDER_BATCH_MS = 100;
 
 declare global {
   interface Window {
@@ -225,6 +236,10 @@ export default function App() {
   const [debugNotice, setDebugNotice] = useState<{ text: string; tone: "success" | "error" } | null>(null);
   const [screenshotSavePath, setScreenshotSavePath] = useState("");
   const [screenshotNameSuffix, setScreenshotNameSuffix] = useState("");
+  const [endToEndConfig, setEndToEndConfig] = useState<EndToEndConfig>(() => createDefaultEndToEndConfig());
+  const [endToEndChecklist, setEndToEndChecklist] = useState<EndToEndGuideChecklist | null>(null);
+  const [isEndToEndChecklistLoading, setIsEndToEndChecklistLoading] = useState(false);
+  const [endToEndChecklistError, setEndToEndChecklistError] = useState<string | null>(null);
   const [arceuusBloodRuneConfig, setArceuusBloodRuneConfig] = useState<ArceuusBloodRuneConfig>(() =>
     createDefaultArceuusBloodRuneConfig(),
   );
@@ -387,24 +402,48 @@ export default function App() {
         return;
       }
 
-      setAutomateBotLogLines(payload.map((line) => String(line)).slice(-500));
+      pendingAutomateBotLogLines.length = 0;
+      if (automateBotLogFlushTimer !== null) {
+        window.clearTimeout(automateBotLogFlushTimer);
+        automateBotLogFlushTimer = null;
+      }
+      setAutomateBotLogLines(payload.map((line) => String(line)).slice(-AUTOMATE_BOT_MAX_VISIBLE_LOG_LINES));
     };
-    const onAutomateBotLog = (_: unknown, payload: unknown) => {
+
+    const pendingAutomateBotLogLines: string[] = [];
+    let automateBotLogFlushTimer: number | null = null;
+    const flushPendingAutomateBotLogLines = () => {
+      automateBotLogFlushTimer = null;
+      if (pendingAutomateBotLogLines.length === 0) {
+        return;
+      }
+
+      const pending = pendingAutomateBotLogLines.splice(0, pendingAutomateBotLogLines.length);
       setAutomateBotLogLines((current) => {
-        const next = [...current, String(payload)];
-        if (next.length > 500) {
-          return next.slice(next.length - 500);
+        const next = [...current, ...pending];
+        if (next.length > AUTOMATE_BOT_MAX_VISIBLE_LOG_LINES) {
+          return next.slice(next.length - AUTOMATE_BOT_MAX_VISIBLE_LOG_LINES);
         }
         return next;
       });
+    };
+
+    const onAutomateBotLog = (_: unknown, payload: unknown) => {
+      pendingAutomateBotLogLines.push(String(payload));
+      if (automateBotLogFlushTimer === null) {
+        automateBotLogFlushTimer = window.setTimeout(
+          flushPendingAutomateBotLogLines,
+          AUTOMATE_BOT_LOG_RENDER_BATCH_MS,
+        );
+      }
     };
     const onAutomateBotError = (_: unknown, payload: { message?: string } | undefined) => {
       const message = payload?.message ? String(payload.message) : "Unknown automate bot error.";
       setAutomateBotLogLines((current) => {
         const timestamp = new Date().toLocaleTimeString("en-GB", { hour12: false });
         const next = [...current, `[${timestamp}] [ERROR] ${message}`];
-        if (next.length > 500) {
-          return next.slice(next.length - 500);
+        if (next.length > AUTOMATE_BOT_MAX_VISIBLE_LOG_LINES) {
+          return next.slice(next.length - AUTOMATE_BOT_MAX_VISIBLE_LOG_LINES);
         }
         return next;
       });
@@ -427,7 +466,11 @@ export default function App() {
       _: unknown,
       pos: { x: number; y: number; runLiteWindow?: { x: number; y: number; width: number; height: number } | null },
     ) => setCursorPos(pos);
+    const onEndToEndConfigState = (_: unknown, config: EndToEndConfig) => {
+      setEndToEndConfig(normalizeEndToEndConfig(config));
+    };
     ipcRenderer.on(CHANNELS.CURSOR_POS, onCursorPos);
+    ipcRenderer.on(CHANNELS.END_TO_END_CONFIG_STATE, onEndToEndConfigState);
     ipcRenderer.send(CHANNELS.UI_READY);
 
     void ipcRenderer
@@ -438,6 +481,19 @@ export default function App() {
         }
         setScreenshotSavePath(typeof result.path === "string" ? result.path : "");
         setScreenshotNameSuffix(typeof result.suffix === "string" ? result.suffix : "");
+      })
+      .catch(() => {
+        // Ignore non-critical config read failures.
+      });
+
+    void ipcRenderer
+      .invoke(CHANNELS.GET_END_TO_END_CONFIG)
+      .then((result: { ok?: boolean; config?: EndToEndConfig }) => {
+        if (!result?.ok || !result.config) {
+          return;
+        }
+
+        setEndToEndConfig(normalizeEndToEndConfig(result.config));
       })
       .catch(() => {
         // Ignore non-critical config read failures.
@@ -496,6 +552,10 @@ export default function App() {
       ipcRenderer.removeListener(CHANNELS.AUTOMATE_BOT_ERROR, onAutomateBotError);
       ipcRenderer.removeListener(CHANNELS.OUTPUT_FOLDER_STATE, onFolderState);
       ipcRenderer.removeListener(CHANNELS.CURSOR_POS, onCursorPos);
+      ipcRenderer.removeListener(CHANNELS.END_TO_END_CONFIG_STATE, onEndToEndConfigState);
+      if (automateBotLogFlushTimer !== null) {
+        window.clearTimeout(automateBotLogFlushTimer);
+      }
     };
   }, []);
 
@@ -537,6 +597,31 @@ export default function App() {
   }, [selectedTaskNodeId]);
 
   const handleToggleRecording = () => ipcRenderer.send(CHANNELS.TOGGLE_RECORDING);
+
+  const refreshEndToEndChecklist = useCallback(async () => {
+    setIsEndToEndChecklistLoading(true);
+    setEndToEndChecklistError(null);
+    try {
+      const result = await ipcRenderer.invoke(CHANNELS.GET_END_TO_END_SECTION_ONE_CHECKLIST);
+      if (!result?.ok) {
+        setEndToEndChecklistError(result?.error || "Unable to load End To End checklist.");
+        return;
+      }
+
+      setEndToEndChecklist(result.checklist ?? null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setEndToEndChecklistError(`Unable to load End To End checklist: ${message}`);
+    } finally {
+      setIsEndToEndChecklistLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeView === "automateBot" && selectedTaskNodeId === END_TO_END_BOT_ID && !endToEndChecklist) {
+      void refreshEndToEndChecklist();
+    }
+  }, [activeView, endToEndChecklist, refreshEndToEndChecklist, selectedTaskNodeId]);
 
   const refreshGotrRunStats = useCallback(async () => {
     setIsGotrRunStatsLoading(true);
@@ -720,6 +805,18 @@ export default function App() {
       };
 
       void ipcRenderer.invoke(CHANNELS.SET_ARCEUUS_BLOOD_RUNE_CONFIG, next).catch(() => {
+        // Ignore non-critical config write failures.
+      });
+
+      return next;
+    });
+  }, []);
+
+  const handleEndToEndChecklistStepChange = useCallback((stepId: string, completed: boolean) => {
+    setEndToEndConfig((prev) => {
+      const next = setEndToEndGuideStepCompletion(prev, stepId, completed);
+
+      void ipcRenderer.invoke(CHANNELS.SET_END_TO_END_CONFIG, next).catch(() => {
         // Ignore non-critical config write failures.
       });
 
@@ -1490,10 +1587,7 @@ export default function App() {
           >
             Stats
           </button>
-          <button
-            className={`nav-tab ${activeView === "map" ? "active" : ""}`}
-            onClick={() => setActiveView("map")}
-          >
+          <button className={`nav-tab ${activeView === "map" ? "active" : ""}`} onClick={() => setActiveView("map")}>
             Map
           </button>
           <button
@@ -1566,6 +1660,11 @@ export default function App() {
             isSelectedTaskRunning={isSelectedTaskRunning}
             currentStepId={currentStepId}
             logLines={automateBotLogLines}
+            showEndToEndConfig={selectedTaskNodeId === END_TO_END_BOT_ID}
+            endToEndChecklist={endToEndChecklist}
+            endToEndCompletedGuideStepIds={endToEndConfig.completedGuideStepIds}
+            isEndToEndChecklistLoading={isEndToEndChecklistLoading}
+            endToEndChecklistError={endToEndChecklistError}
             showArceuusBloodRuneConfig={selectedTaskNodeId === RUNECRAFTING_ARCEUUS_BLOOD_RUNE_BOT_ID}
             arceuusBloodRuneAgilityLevel={arceuusBloodRuneConfig.agilityLevel}
             showGuardianOfTheRiftConfig={selectedTaskNodeId === RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}
@@ -1575,6 +1674,8 @@ export default function App() {
             onSelectTaskNode={setSelectedTaskNodeId}
             onToggleSelectedTaskRun={(taskNodeId) => void handleToggleSelectedTaskRun(taskNodeId)}
             onStepContextMenu={handleStepContextMenu}
+            onEndToEndChecklistRefresh={() => void refreshEndToEndChecklist()}
+            onEndToEndChecklistStepChange={handleEndToEndChecklistStepChange}
             onArceuusBloodRuneAgilityLevelChange={handleArceuusBloodRuneAgilityLevelChange}
             onGuardianOfTheRiftElementEnabledChange={handleGuardianOfTheRiftElementEnabledChange}
             onGuardianOfTheRiftUseAgilityCourseChange={handleGuardianOfTheRiftUseAgilityCourseChange}

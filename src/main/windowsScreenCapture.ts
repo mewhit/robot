@@ -29,6 +29,42 @@ function normalizeCaptureBounds(bounds: ScreenCaptureBounds): ScreenCaptureBound
   };
 }
 
+export function resolveScreenCaptureBounds(bounds: ScreenCaptureBounds): ScreenCaptureBounds {
+  const normalizedBounds = normalizeCaptureBounds(bounds);
+  if (process.platform !== "win32") {
+    return normalizedBounds;
+  }
+
+  try {
+    const probeX = normalizedBounds.x + Math.max(0, Math.floor(normalizedBounds.width / 2));
+    const probeY = normalizedBounds.y + Math.max(0, Math.floor(normalizedBounds.height / 2));
+    const monitor = Monitor.fromPoint(probeX, probeY) ?? Monitor.fromPoint(normalizedBounds.x, normalizedBounds.y);
+    if (!monitor) {
+      return normalizedBounds;
+    }
+
+    const monitorX = monitor.x();
+    const monitorY = monitor.y();
+    const monitorWidth = Math.max(1, monitor.width());
+    const monitorHeight = Math.max(1, monitor.height());
+    const cropX = normalizedBounds.x - monitorX;
+    const cropY = normalizedBounds.y - monitorY;
+    const clampedX = Math.max(0, Math.min(monitorWidth - 1, cropX));
+    const clampedY = Math.max(0, Math.min(monitorHeight - 1, cropY));
+    const clampedWidth = Math.max(1, Math.min(normalizedBounds.width, monitorWidth - clampedX));
+    const clampedHeight = Math.max(1, Math.min(normalizedBounds.height, monitorHeight - clampedY));
+
+    return {
+      x: monitorX + clampedX,
+      y: monitorY + clampedY,
+      width: clampedWidth,
+      height: clampedHeight,
+    };
+  } catch {
+    return normalizedBounds;
+  }
+}
+
 function toHexByte(value: number): string {
   return Math.max(0, Math.min(255, value)).toString(16).padStart(2, "0");
 }
@@ -112,7 +148,7 @@ function captureWithRobotJs(bounds: ScreenCaptureBounds): ScreenBitmap {
 }
 
 export function captureScreenBitmap(bounds: ScreenCaptureBounds): ScreenBitmap {
-  const normalizedBounds = normalizeCaptureBounds(bounds);
+  const normalizedBounds = resolveScreenCaptureBounds(bounds);
 
   if (process.platform !== "win32") {
     return captureWithRobotJs(normalizedBounds);

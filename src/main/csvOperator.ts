@@ -30,6 +30,10 @@ import {
   normalizeArceuusBloodRuneConfig,
   type ArceuusBloodRuneConfig,
 } from "./automate-bots/arceuus-blood-rune-config";
+import {
+  normalizeEndToEndConfig,
+  type EndToEndConfig,
+} from "./automate-bots/end-to-end-config";
 
 const WINDOW_CONFIG_FILE_NAME = "window-config.json";
 const DEFAULT_WINDOW_WIDTH = 1280;
@@ -48,6 +52,7 @@ type WindowConfig = {
   selectedAutomateBotId?: string;
   arceuusBloodRuneConfig?: ArceuusBloodRuneConfig;
   guardianOfTheRiftConfig?: GuardianOfTheRiftConfig;
+  endToEndConfig?: EndToEndConfig;
   colossalPouchFullFillCountSinceRepair?: number;
 };
 
@@ -110,6 +115,14 @@ function normalizeSavedArceuusBloodRuneConfig(value: unknown): ArceuusBloodRuneC
   return normalizeArceuusBloodRuneConfig(value);
 }
 
+function normalizeSavedEndToEndConfig(value: unknown): EndToEndConfig | undefined {
+  if (typeof value === "undefined") {
+    return undefined;
+  }
+
+  return normalizeEndToEndConfig(value);
+}
+
 function toValidWindowConfig(raw: unknown): WindowConfig | null {
   if (!raw || typeof raw !== "object") {
     return null;
@@ -140,6 +153,7 @@ function toValidWindowConfig(raw: unknown): WindowConfig | null {
     selectedAutomateBotId: normalizeSelectedAutomateBotId(candidate.selectedAutomateBotId),
     arceuusBloodRuneConfig: normalizeSavedArceuusBloodRuneConfig(candidate.arceuusBloodRuneConfig),
     guardianOfTheRiftConfig: normalizeSavedGuardianOfTheRiftConfig(candidate.guardianOfTheRiftConfig),
+    endToEndConfig: normalizeSavedEndToEndConfig(candidate.endToEndConfig),
     colossalPouchFullFillCountSinceRepair: normalizeColossalPouchFullFillCount(candidate.colossalPouchFullFillCountSinceRepair),
   };
 }
@@ -225,6 +239,7 @@ function writeWindowConfig(window: BrowserWindow) {
     selectedAutomateBotId: currentConfig?.selectedAutomateBotId,
     arceuusBloodRuneConfig: currentConfig?.arceuusBloodRuneConfig,
     guardianOfTheRiftConfig: currentConfig?.guardianOfTheRiftConfig,
+    endToEndConfig: currentConfig?.endToEndConfig,
     colossalPouchFullFillCountSinceRepair: currentConfig?.colossalPouchFullFillCountSinceRepair,
   };
 
@@ -272,6 +287,14 @@ export function getSavedGuardianOfTheRiftConfig(): GuardianOfTheRiftConfig {
 
 export function getSavedArceuusBloodRuneConfig(): ArceuusBloodRuneConfig {
   return normalizeArceuusBloodRuneConfig(readWindowConfig()?.arceuusBloodRuneConfig);
+}
+
+export function getSavedEndToEndConfig(): EndToEndConfig {
+  return normalizeEndToEndConfig(readWindowConfig()?.endToEndConfig);
+}
+
+export function sendEndToEndConfigState(config: EndToEndConfig = getSavedEndToEndConfig()): void {
+  AppState.mainWindow?.webContents.send(CHANNELS.END_TO_END_CONFIG_STATE, normalizeEndToEndConfig(config));
 }
 
 export function getSavedColossalPouchFullFillCountSinceRepair(): number {
@@ -349,6 +372,19 @@ export function setSavedArceuusBloodRuneConfig(nextConfig: ArceuusBloodRuneConfi
 
   const configPath = getWindowConfigPath();
   fs.writeFileSync(configPath, JSON.stringify(payload, null, 2), "utf8");
+}
+
+export function setSavedEndToEndConfig(nextConfig: EndToEndConfig) {
+  const existing = readWindowConfig() ?? getWindowConfigFallback();
+  const normalizedConfig = normalizeEndToEndConfig(nextConfig);
+  const payload: WindowConfig = {
+    ...existing,
+    endToEndConfig: normalizedConfig,
+  };
+
+  const configPath = getWindowConfigPath();
+  fs.writeFileSync(configPath, JSON.stringify(payload, null, 2), "utf8");
+  sendEndToEndConfigState(normalizedConfig);
 }
 
 export function setSavedColossalPouchFullFillCountSinceRepair(nextCount: number): void {

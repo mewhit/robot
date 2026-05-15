@@ -1,4 +1,5 @@
 export * from "./area-loader";
+export * from "./item-loader";
 export * from "./cache-container";
 export * from "./cache-input-stream";
 export * from "./cache-store";

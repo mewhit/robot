@@ -7,9 +7,11 @@ import { XteaKey } from "./xtea";
 
 export const OSRS_CACHE_INDEX_CONFIGS = 2;
 export const OSRS_CACHE_INDEX_MAPS = 5;
+export const OSRS_ITEM_DEFINITION_ARCHIVE_ID = 10;
 export const OSRS_OBJECT_DEFINITION_ARCHIVE_ID = 6;
 export const OSRS_MAP_TERRAIN_FILE_ID = 0;
 export const OSRS_MAP_LOCATIONS_FILE_ID = 1;
+export const PROJECT_OSRS_CACHE_DIRECTORY = path.resolve(process.cwd(), "data", "osrs-cache");
 
 export type CacheArchiveReference = {
   id: number;
@@ -43,10 +45,19 @@ export type OsrsCacheStore = {
   close: () => void;
 };
 
+export type OsrsCacheSnapshotResult = {
+  sourceDirectoryPath: string;
+  targetDirectoryPath: string;
+  copiedFiles: string[];
+  skippedFiles: string[];
+  alreadyPresent: boolean;
+};
+
 const INDEX_REFERENCE_INDEX_ID = 255;
 const SECTOR_SIZE = 520;
 const SMALL_SECTOR_HEADER_SIZE = 8;
 const LARGE_SECTOR_HEADER_SIZE = 10;
+const OSRS_CACHE_FILE_NAME_PATTERN = /^main_file_cache\.(?:dat2|idx\d+)$/;
 
 function readMedium(buffer: Buffer, offset: number): number {
   return (buffer[offset] << 16) | (buffer[offset + 1] << 8) | buffer[offset + 2];
@@ -185,7 +196,36 @@ function hasCacheFiles(directoryPath: string): boolean {
   );
 }
 
-export function findOsrsCacheDirectory(): string | null {
+export function hasOsrsCacheFiles(directoryPath: string): boolean {
+  return hasCacheFiles(directoryPath);
+}
+
+function listOsrsCacheFileNames(directoryPath: string): string[] {
+  if (!fs.existsSync(directoryPath)) {
+    return [];
+  }
+
+  return fs
+    .readdirSync(directoryPath)
+    .filter((name) => OSRS_CACHE_FILE_NAME_PATTERN.test(name))
+    .sort((a, b) => a.localeCompare(b));
+}
+
+function shouldCopyCacheFile(sourcePath: string, targetPath: string, forceRefresh: boolean): boolean {
+  if (forceRefresh || !fs.existsSync(targetPath)) {
+    return true;
+  }
+
+  const sourceStat = fs.statSync(sourcePath);
+  const targetStat = fs.statSync(targetPath);
+  return sourceStat.size !== targetStat.size || sourceStat.mtimeMs > targetStat.mtimeMs + 1000;
+}
+
+export function findProjectOsrsCacheDirectory(): string | null {
+  return hasCacheFiles(PROJECT_OSRS_CACHE_DIRECTORY) ? PROJECT_OSRS_CACHE_DIRECTORY : null;
+}
+
+export function findExternalOsrsCacheDirectory(): string | null {
   const candidates = [
     process.env.OSRS_CACHE_DIR,
     path.join(os.homedir(), ".runelite", "jagexcache", "oldschool", "LIVE"),
@@ -197,6 +237,83 @@ export function findOsrsCacheDirectory(): string | null {
   ].filter((candidate): candidate is string => Boolean(candidate));
 
   return candidates.find(hasCacheFiles) ?? null;
+}
+
+export function findOsrsCacheDirectory(): string | null {
+  const configuredDirectory = process.env.OSRS_CACHE_DIR;
+  if (configuredDirectory && hasCacheFiles(configuredDirectory)) {
+    return configuredDirectory;
+  }
+
+  return findProjectOsrsCacheDirectory() ?? findExternalOsrsCacheDirectory();
+}
+
+export function ensureProjectOsrsCacheSnapshot(params: {
+  sourceDirectoryPath?: string | null;
+  targetDirectoryPath?: string;
+  forceRefresh?: boolean;
+} = {}): OsrsCacheSnapshotResult {
+  const targetDirectoryPath = params.targetDirectoryPath ?? PROJECT_OSRS_CACHE_DIRECTORY;
+  const forceRefresh = params.forceRefresh ?? false;
+  const targetAlreadyValid = hasCacheFiles(targetDirectoryPath);
+  const sourceDirectoryPath = params.sourceDirectoryPath ?? findExternalOsrsCacheDirectory();
+
+  if (targetAlreadyValid && !sourceDirectoryPath && !forceRefresh) {
+    return {
+      sourceDirectoryPath: targetDirectoryPath,
+      targetDirectoryPath,
+      copiedFiles: [],
+      skippedFiles: listOsrsCacheFileNames(targetDirectoryPath),
+      alreadyPresent: true,
+    };
+  }
+
+  if (!sourceDirectoryPath) {
+    throw new Error("Could not find an external OSRS cache directory to snapshot.");
+  }
+
+  const resolvedSource = path.resolve(sourceDirectoryPath);
+  const resolvedTarget = path.resolve(targetDirectoryPath);
+  if (resolvedSource === resolvedTarget) {
+    return {
+      sourceDirectoryPath: resolvedSource,
+      targetDirectoryPath: resolvedTarget,
+      copiedFiles: [],
+      skippedFiles: listOsrsCacheFileNames(resolvedTarget),
+      alreadyPresent: hasCacheFiles(resolvedTarget),
+    };
+  }
+
+  if (!hasCacheFiles(resolvedSource)) {
+    throw new Error(`External OSRS cache directory is missing required cache files: ${resolvedSource}.`);
+  }
+
+  fs.mkdirSync(resolvedTarget, { recursive: true });
+
+  const copiedFiles: string[] = [];
+  const skippedFiles: string[] = [];
+  for (const fileName of listOsrsCacheFileNames(resolvedSource)) {
+    const sourcePath = path.join(resolvedSource, fileName);
+    const targetPath = path.join(resolvedTarget, fileName);
+    if (shouldCopyCacheFile(sourcePath, targetPath, forceRefresh)) {
+      fs.copyFileSync(sourcePath, targetPath);
+      copiedFiles.push(fileName);
+    } else {
+      skippedFiles.push(fileName);
+    }
+  }
+
+  if (!hasCacheFiles(resolvedTarget)) {
+    throw new Error(`Project OSRS cache snapshot is incomplete after copy: ${resolvedTarget}.`);
+  }
+
+  return {
+    sourceDirectoryPath: resolvedSource,
+    targetDirectoryPath: resolvedTarget,
+    copiedFiles,
+    skippedFiles,
+    alreadyPresent: copiedFiles.length === 0,
+  };
 }
 
 export function openOsrsCacheStore(directoryPath = findOsrsCacheDirectory()): OsrsCacheStore {

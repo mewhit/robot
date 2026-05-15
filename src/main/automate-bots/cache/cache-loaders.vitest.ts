@@ -180,7 +180,7 @@ function createEmptyMapData(overrides: Record<string, readonly number[]> = {}): 
   for (let z = 0; z < OSRS_PLANES; z += 1) {
     for (let x = 0; x < OSRS_REGION_SIZE; x += 1) {
       for (let y = 0; y < OSRS_REGION_SIZE; y += 1) {
-        const opcodes = overrides[`${x},${y},${z}`] ?? [0];
+        const opcodes = overrides[`${x},${y},${z}`] ?? [82, 0];
         output.push(...opcodes);
       }
     }
@@ -206,7 +206,9 @@ function createLocationData(location: {
   return Buffer.from(output);
 }
 
-function createObjectData(options: Partial<Pick<OsrsObjectDefinition, "name" | "sizeX" | "sizeY">> = {}): Buffer {
+function createObjectData(
+  options: Partial<Pick<OsrsObjectDefinition, "name" | "sizeX" | "sizeY" | "wallOrDoor" | "interactType">> = {},
+): Buffer {
   const name = options.name ?? "Test object";
   return Buffer.from([
     2,
@@ -216,6 +218,9 @@ function createObjectData(options: Partial<Pick<OsrsObjectDefinition, "name" | "
     options.sizeX ?? 1,
     15,
     options.sizeY ?? 1,
+    ...(options.interactType === 0 ? [17] : []),
+    ...(options.interactType === 1 ? [27] : []),
+    ...(options.wallOrDoor === undefined ? [] : [19, options.wallOrDoor]),
     0,
   ]);
 }
@@ -309,6 +314,59 @@ describe("OSRS cache loaders", () => {
     expect(getRegionCollisionFlags(collision, 10, 10, 0) & CollisionFlag.Projectile).not.toBe(0);
   });
 
+  it("does not treat non-floor-blocking type 22 decorations as game objects", () => {
+    const mapRegion = createEmptyMapRegion();
+    const locations = loadOsrsRegionLocations(
+      createLocationData({ id: 42, localX: 18, localY: 19, z: 0, type: 22, orientation: 3 }),
+      50,
+      50,
+    );
+    const definitions = new Map([[42, loadOsrsObjectDefinition(42, createObjectData({ name: "null" }))]]);
+
+    const collision = buildOsrsRegionCollision(mapRegion, locations, definitions);
+
+    expect(isRegionTileBlocked(collision, 18, 19, 0)).toBe(false);
+  });
+
+  it("does not block known walkable Lumbridge bridge surface objects", () => {
+    const mapRegion = createEmptyMapRegion();
+    const locations = loadOsrsRegionLocations(
+      createLocationData({ id: 3002, localX: 44, localY: 26, z: 0, type: 10, orientation: 2 }),
+      50,
+      50,
+    );
+    const definitions = new Map([[3002, loadOsrsObjectDefinition(3002, createObjectData({ name: "null" }))]]);
+
+    const collision = buildOsrsRegionCollision(mapRegion, locations, definitions);
+
+    expect(isRegionTileBlocked(collision, 44, 26, 0)).toBe(false);
+  });
+
+  it("blocks movement for floor-blocking type 22 decorations without projectile blocking", () => {
+    const mapRegion = createEmptyMapRegion();
+    const locations = loadOsrsRegionLocations(
+      createLocationData({ id: 42, localX: 18, localY: 19, z: 0, type: 22, orientation: 3 }),
+      50,
+      50,
+    );
+    const definitions = new Map([[42, loadOsrsObjectDefinition(42, createObjectData({ interactType: 1 }))]]);
+
+    const collision = buildOsrsRegionCollision(mapRegion, locations, definitions);
+    const flags = getRegionCollisionFlags(collision, 18, 19, 0);
+
+    expect(flags & CollisionFlag.Blocked).not.toBe(0);
+    expect(flags & CollisionFlag.Projectile).toBe(0);
+  });
+
+  it("blocks terrain tiles without a floor", () => {
+    const mapRegion = loadOsrsMapRegion(createEmptyMapData({ "12,35,0": [0] }), 50, 50);
+    const locations = loadOsrsRegionLocations(Buffer.from([0]), 50, 50);
+    const collision = buildOsrsRegionCollision(mapRegion, locations, new Map(), { blockNoFloorTiles: true });
+
+    expect(isRegionTileBlocked(collision, 12, 35, 0)).toBe(true);
+    expect(isRegionTileBlocked(collision, 12, 34, 0)).toBe(false);
+  });
+
   it("loads region collision through the cache-data facade", () => {
     const definitions = new Map([[42, loadOsrsObjectDefinition(42, createObjectData({ sizeX: 1, sizeY: 1 }))]]);
     const collision = loadOsrsRegionCollisionFromCacheData({
@@ -399,6 +457,21 @@ describe("OSRS cache loaders", () => {
     expect(canMoveWithinRegion(collision, 20, 20, 0, 0, 1)).toBe(true);
   });
 
+  it("allows paths through named door wall blockers", () => {
+    const mapRegion = createEmptyMapRegion();
+    const locations = loadOsrsRegionLocations(
+      createLocationData({ id: 7, localX: 2, localY: 2, z: 0, type: 0, orientation: 1 }),
+      50,
+      50,
+    );
+    const definitions = new Map([[7, loadOsrsObjectDefinition(7, createObjectData({ name: "Door", wallOrDoor: 1 }))]]);
+    const collision = buildOsrsRegionCollision(mapRegion, locations, definitions);
+
+    const path = findRegionPath(collision, { localX: 2, localY: 1, z: 0 }, { localX: 2, localY: 3, z: 0 });
+
+    expect(path?.map((step) => step.key)).toEqual(["3202,3201,0", "3202,3202,0", "3202,3203,0"]);
+  });
+
   it("finds a local region path around blocked tiles", () => {
     const mapRegion = createEmptyMapRegion();
     const locations = loadOsrsRegionLocations(
@@ -415,5 +488,41 @@ describe("OSRS cache loaders", () => {
     expect(path?.[0].key).toBe("3201,3202,0");
     expect(path?.[path.length - 1].key).toBe("3203,3202,0");
     expect(path?.some((step) => step.x === 3202 && step.y >= 3201 && step.y <= 3203)).toBe(false);
+  });
+
+  it("can path away from a blocked start tile", () => {
+    const mapRegion = createEmptyMapRegion();
+    const locations = loadOsrsRegionLocations(
+      createLocationData({ id: 42, localX: 1, localY: 1, z: 0, type: 10, orientation: 0 }),
+      50,
+      50,
+    );
+    const definitions = new Map([[42, loadOsrsObjectDefinition(42, createObjectData())]]);
+    const collision = buildOsrsRegionCollision(mapRegion, locations, definitions);
+
+    const path = findRegionPath(collision, { localX: 1, localY: 1, z: 0 }, { localX: 1, localY: 3, z: 0 });
+
+    expect(path).not.toBeNull();
+    expect(path?.map((step) => step.key)).toEqual(["3201,3201,0", "3201,3202,0", "3201,3203,0"]);
+  });
+
+  it("allows diagonal movement without cutting blocked corners", () => {
+    const openCollision = buildOsrsRegionCollision(createEmptyMapRegion(), loadOsrsRegionLocations(Buffer.from([0]), 50, 50), new Map());
+    const openPath = findRegionPath(openCollision, { localX: 1, localY: 1, z: 0 }, { localX: 2, localY: 2, z: 0 });
+
+    expect(openPath?.map((step) => step.key)).toEqual(["3201,3201,0", "3202,3202,0"]);
+
+    const blockedLocations = loadOsrsRegionLocations(
+      createLocationData({ id: 42, localX: 2, localY: 1, z: 0, type: 10, orientation: 0 }),
+      50,
+      50,
+    );
+    const blockedCollision = buildOsrsRegionCollision(
+      createEmptyMapRegion(),
+      blockedLocations,
+      new Map([[42, loadOsrsObjectDefinition(42, createObjectData())]]),
+    );
+
+    expect(canMoveWithinRegion(blockedCollision, 1, 1, 0, 1, 1)).toBe(false);
   });
 });

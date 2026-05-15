@@ -4,6 +4,12 @@ import type {
   GuardianOfTheRiftConfig,
   GuardianOfTheRiftPouch,
 } from "../main/automate-bots/guardian-of-the-rift-config";
+import type {
+  EndToEndGuideChecklist,
+} from "../main/automate-bots/end-to-end/guide-checklist";
+import {
+  formatEndToEndGuideChecklistStepSourceLabel,
+} from "../main/automate-bots/end-to-end/guide-checklist";
 import {
   GUARDIAN_OF_THE_RIFT_POUCHES,
   getGuardianOfTheRiftColossalPouchStats,
@@ -23,6 +29,11 @@ type AutomateBotProps = {
   isSelectedTaskRunning: boolean;
   currentStepId: string | null;
   logLines: string[];
+  showEndToEndConfig: boolean;
+  endToEndChecklist: EndToEndGuideChecklist | null;
+  endToEndCompletedGuideStepIds: string[];
+  isEndToEndChecklistLoading: boolean;
+  endToEndChecklistError: string | null;
   showArceuusBloodRuneConfig: boolean;
   arceuusBloodRuneAgilityLevel: number;
   showGuardianOfTheRiftConfig: boolean;
@@ -32,6 +43,8 @@ type AutomateBotProps = {
   onSelectTaskNode: (id: string) => void;
   onToggleSelectedTaskRun: (taskNodeId?: string) => void;
   onStepContextMenu: (e: React.MouseEvent, stepId: string, stepName: string) => void;
+  onEndToEndChecklistRefresh: () => void;
+  onEndToEndChecklistStepChange: (stepId: string, completed: boolean) => void;
   onArceuusBloodRuneAgilityLevelChange: (level: number) => void;
   onGuardianOfTheRiftElementEnabledChange: (element: GuardianOfTheRiftActiveElement, enabled: boolean) => void;
   onGuardianOfTheRiftUseAgilityCourseChange: (enabled: boolean) => void;
@@ -302,6 +315,11 @@ export default function AutomateBot(props: AutomateBotProps) {
     isSelectedTaskRunning,
     currentStepId,
     logLines,
+    showEndToEndConfig,
+    endToEndChecklist,
+    endToEndCompletedGuideStepIds,
+    isEndToEndChecklistLoading,
+    endToEndChecklistError,
     showArceuusBloodRuneConfig,
     arceuusBloodRuneAgilityLevel,
     showGuardianOfTheRiftConfig,
@@ -311,6 +329,8 @@ export default function AutomateBot(props: AutomateBotProps) {
     onSelectTaskNode,
     onToggleSelectedTaskRun,
     onStepContextMenu,
+    onEndToEndChecklistRefresh,
+    onEndToEndChecklistStepChange,
     onArceuusBloodRuneAgilityLevelChange,
     onGuardianOfTheRiftElementEnabledChange,
   onGuardianOfTheRiftUseAgilityCourseChange,
@@ -322,6 +342,21 @@ export default function AutomateBot(props: AutomateBotProps) {
 
   const logContainerRef = useRef<HTMLDivElement | null>(null);
   const visibleLogLines = useMemo(() => logLines.slice(-500), [logLines]);
+  const endToEndCompletedGuideStepIdSet = useMemo(
+    () => new Set(endToEndCompletedGuideStepIds),
+    [endToEndCompletedGuideStepIds],
+  );
+  const visibleEndToEndChecklistSteps = useMemo(
+    () => endToEndChecklist?.steps ?? [],
+    [endToEndChecklist],
+  );
+  const endToEndCompletedGuideStepCount = visibleEndToEndChecklistSteps.length
+    ? visibleEndToEndChecklistSteps.filter((step) => endToEndCompletedGuideStepIdSet.has(step.id)).length
+    : 0;
+  const endToEndChecklistProgress =
+    visibleEndToEndChecklistSteps.length > 0
+      ? Math.round((endToEndCompletedGuideStepCount / visibleEndToEndChecklistSteps.length) * 100)
+      : 0;
   const colossalPouchStats = getGuardianOfTheRiftColossalPouchStats(guardianOfTheRiftConfig.runecraftLevel);
   const maxColossalPouchUseCount = colossalPouchStats?.fullUsesBeforeDecay ?? 0;
   const normalizedColossalPouchFullFillCount =
@@ -486,23 +521,90 @@ export default function AutomateBot(props: AutomateBotProps) {
         )}
       </aside>
 
-      <aside className="automatebot-log-panel">
-        <div className="automatebot-log-head">
-          <h2 className="sidebar-title">LOGS</h2>
-          <span className="automatebot-log-count">{visibleLogLines.length}</span>
-        </div>
-        <div className="automatebot-log-list" ref={logContainerRef}>
-          {visibleLogLines.length === 0 ? (
-            <p className="automatebot-log-empty">No logs yet.</p>
-          ) : (
-            visibleLogLines.map((line, index) => (
-              <p key={`${index}-${line}`} className={getAutomateBotLogLineClass(line)}>
-                {renderAutomateBotLogLine(line)}
+      <div className={showEndToEndConfig ? "automatebot-workspace automatebot-workspace-end-to-end" : "automatebot-workspace"}>
+        {showEndToEndConfig && (
+          <section className="automatebot-checklist-panel">
+            <div className="automatebot-checklist-head">
+              <div className="automatebot-checklist-title-wrap">
+                <h2 className="automatebot-checklist-title">Section 1.1</h2>
+                <span className="automatebot-checklist-source">ironman.guide</span>
+              </div>
+              <button
+                type="button"
+                className="automatebot-checklist-refresh"
+                onClick={onEndToEndChecklistRefresh}
+                disabled={isEndToEndChecklistLoading}
+              >
+                {isEndToEndChecklistLoading ? "Loading" : "Refresh"}
+              </button>
+            </div>
+            {endToEndChecklist && (
+              <div className="automatebot-checklist-progress">
+                <span>
+                  {endToEndCompletedGuideStepCount} / {visibleEndToEndChecklistSteps.length}
+                </span>
+                <span>{endToEndChecklistProgress}%</span>
+                <div className="automatebot-checklist-progress-track">
+                  <div className="automatebot-checklist-progress-fill" style={{ width: `${endToEndChecklistProgress}%` }} />
+                </div>
+              </div>
+            )}
+            {endToEndChecklistError && <p className="automatebot-checklist-error">{endToEndChecklistError}</p>}
+            {!endToEndChecklist && !endToEndChecklistError && (
+              <p className="automatebot-checklist-empty">
+                {isEndToEndChecklistLoading ? "Loading checklist." : "Checklist not loaded."}
               </p>
-            ))
-          )}
-        </div>
-      </aside>
+            )}
+            {endToEndChecklist && (
+              <div className="automatebot-checklist-list">
+                {visibleEndToEndChecklistSteps.map((step, index) => {
+                  const isCompleted = endToEndCompletedGuideStepIdSet.has(step.id);
+                  const sourceLabel = formatEndToEndGuideChecklistStepSourceLabel(step);
+                  const displayIndex = index + 1;
+                  return (
+                    <label
+                      key={step.id}
+                      className={`automatebot-checklist-step${isCompleted ? " automatebot-checklist-step-completed" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isCompleted}
+                        onChange={(e) => onEndToEndChecklistStepChange(step.id, e.target.checked)}
+                      />
+                      <span className="automatebot-checklist-step-number">
+                        <span className="automatebot-checklist-step-index">{displayIndex}</span>
+                        <span className="automatebot-checklist-step-source">{sourceLabel}</span>
+                      </span>
+                      <span className="automatebot-checklist-step-body">
+                        <span className="automatebot-checklist-step-text">{step.text}</span>
+                        {step.location && <span className="automatebot-checklist-step-meta">{step.location}</span>}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        )}
+
+        <aside className="automatebot-log-panel">
+          <div className="automatebot-log-head">
+            <h2 className="sidebar-title">LOGS</h2>
+            <span className="automatebot-log-count">{visibleLogLines.length}</span>
+          </div>
+          <div className="automatebot-log-list" ref={logContainerRef}>
+            {visibleLogLines.length === 0 ? (
+              <p className="automatebot-log-empty">No logs yet.</p>
+            ) : (
+              visibleLogLines.map((line, index) => (
+                <p key={`${index}-${line}`} className={getAutomateBotLogLineClass(line)}>
+                  {renderAutomateBotLogLine(line)}
+                </p>
+              ))
+            )}
+          </div>
+        </aside>
+      </div>
     </div>
   );
 }

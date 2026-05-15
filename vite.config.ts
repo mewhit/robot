@@ -15,5 +15,13 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    watch: {
+      ignored: [
+        "**/test-image-debug/**",
+        "**/automate-bot-logs/**",
+        "**/ocr-debug/**",
+        "**/saved-clicks/**",
+      ],
+    },
   },
 });

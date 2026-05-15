@@ -9,6 +9,9 @@ import { CHANNELS } from "./ipcChannels";
 import { runAgilityScreenshotCapture } from "./automate-bots/shared/screenshot-capture";
 import { getSavedScreenshotNameSuffix, getSavedScreenshotSavePath } from "./csvOperator";
 
+const CURSOR_POS_IDLE_INTERVAL_MS = 50;
+const CURSOR_POS_BOTTING_INTERVAL_MS = 300;
+
 export function setupIoHookHandlers() {
   uIOhook.on("keydown", (e) => {
     if (e.keycode === UiohookKey.F3) {
@@ -92,7 +95,10 @@ export function setupIoHookHandlers() {
       let lastSent = 0;
       return (e: { x: number; y: number }) => {
         const now = Date.now();
-        if (now - lastSent < 50) return;
+        const minIntervalMs = AppState.automateBotRunning
+          ? CURSOR_POS_BOTTING_INTERVAL_MS
+          : CURSOR_POS_IDLE_INTERVAL_MS;
+        if (now - lastSent < minIntervalMs) return;
         lastSent = now;
         const runLiteWindow = getRunLiteWindowInfo();
         AppState.mainWindow?.webContents.send(CHANNELS.CURSOR_POS, { x: e.x, y: e.y, runLiteWindow });

@@ -14,6 +14,11 @@ export const CHANNELS = {
   GET_DEBUG_FOLDER_FILES: "get-debug-folder-files",
   GET_ARCEUUS_BLOOD_RUNE_CONFIG: "get-arceuus-blood-rune-config",
   SET_ARCEUUS_BLOOD_RUNE_CONFIG: "set-arceuus-blood-rune-config",
+  GET_END_TO_END_CONFIG: "get-end-to-end-config",
+  SET_END_TO_END_CONFIG: "set-end-to-end-config",
+  END_TO_END_CONFIG_STATE: "end-to-end-config-state",
+  GET_END_TO_END_SECTION_ONE_CHECKLIST: "get-end-to-end-section-one-checklist",
+  GET_END_TO_END_LATEST_PATH: "get-end-to-end-latest-path",
   GET_GUARDIAN_OF_THE_RIFT_CONFIG: "get-guardian-of-the-rift-config",
   SET_GUARDIAN_OF_THE_RIFT_CONFIG: "set-guardian-of-the-rift-config",
   GET_GUARDIAN_OF_THE_RIFT_COLOSSAL_POUCH_FILL_COUNT:

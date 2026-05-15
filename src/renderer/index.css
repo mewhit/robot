@@ -189,6 +189,10 @@
     @apply w-14 px-1 py-0.5 text-right text-xs;
   }
 
+  .automatebot-toggle-row input[type="text"] {
+    @apply w-28 min-w-0 px-1.5 py-0.5 text-xs;
+  }
+
   .automatebot-toggle-row-small {
     @apply py-1;
   }
@@ -207,6 +211,110 @@
 
   .automatebot-main {
     @apply flex-1 min-w-0 h-full min-h-0 overflow-auto rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm text-slate-600;
+  }
+
+  .automatebot-workspace {
+    @apply flex-1 min-w-0 min-h-0 flex;
+  }
+
+  .automatebot-workspace-end-to-end {
+    @apply flex-col gap-3;
+  }
+
+  .automatebot-checklist-panel {
+    @apply flex-[1.2] min-w-[22rem] min-h-0 flex flex-col border border-gray-200 rounded-lg bg-white overflow-hidden;
+  }
+
+  .automatebot-checklist-head {
+    @apply flex items-center justify-between gap-3 px-3 py-2 border-b border-slate-200 bg-slate-50;
+  }
+
+  .automatebot-checklist-title-wrap {
+    @apply min-w-0 flex flex-col;
+  }
+
+  .automatebot-checklist-title {
+    @apply m-0 text-sm font-semibold text-slate-800;
+  }
+
+  .automatebot-checklist-source {
+    @apply text-[11px] text-slate-500;
+  }
+
+  .automatebot-checklist-refresh {
+    @apply px-2 py-1 text-xs font-semibold rounded border border-slate-300 text-slate-700 bg-white hover:bg-slate-100 disabled:opacity-50;
+  }
+
+  .automatebot-checklist-progress {
+    @apply grid grid-cols-2 gap-x-2 gap-y-1 px-3 py-2 text-xs font-semibold text-slate-600 border-b border-slate-100;
+  }
+
+  .automatebot-checklist-progress span:last-of-type {
+    @apply text-right;
+  }
+
+  .automatebot-checklist-progress-track {
+    @apply col-span-2 h-2 overflow-hidden rounded-full bg-slate-100;
+  }
+
+  .automatebot-checklist-progress-fill {
+    @apply h-full rounded-full bg-emerald-600 transition-all duration-200;
+  }
+
+  .automatebot-checklist-error {
+    @apply m-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900;
+  }
+
+  .automatebot-checklist-empty {
+    @apply m-3 text-xs text-slate-500;
+  }
+
+  .automatebot-checklist-list {
+    @apply flex-1 min-h-0 overflow-auto p-2 flex flex-col gap-1;
+  }
+
+  .automatebot-checklist-step {
+    @apply grid grid-cols-[1rem_3.75rem_minmax(0,1fr)] gap-2 rounded border border-slate-200 bg-slate-50 px-2 py-1.5 text-xs text-slate-700 cursor-pointer;
+  }
+
+  .automatebot-checklist-step:hover {
+    @apply border-slate-300 bg-white;
+  }
+
+  .automatebot-checklist-step input {
+    @apply mt-0.5;
+  }
+
+  .automatebot-checklist-step-completed {
+    @apply border-emerald-200 bg-emerald-50 text-slate-500;
+  }
+
+  .automatebot-checklist-step-completed .automatebot-checklist-step-text {
+    @apply line-through decoration-slate-400;
+  }
+
+  .automatebot-checklist-step-number {
+    @apply mt-0.5 flex flex-col gap-0.5 tabular-nums;
+  }
+
+  .automatebot-checklist-step-index {
+    @apply text-[12px] font-semibold leading-4 text-slate-700;
+  }
+
+  .automatebot-checklist-step-source {
+    @apply text-[10px] font-medium leading-3 text-slate-400;
+  }
+
+  .automatebot-checklist-step-body {
+    @apply min-w-0 flex flex-col gap-1;
+  }
+
+  .automatebot-checklist-step-text {
+    @apply leading-5 break-words;
+  }
+
+  .automatebot-checklist-step-meta {
+    @apply w-fit rounded bg-white border border-slate-200 px-1.5 py-0.5 text-[11px] font-semibold text-slate-500;
   }
 
   .automatebot-log-panel {
@@ -483,6 +591,10 @@
     @apply h-9 px-3 text-xs font-semibold rounded-md border-0 bg-teal-700 text-white cursor-pointer hover:bg-teal-800 disabled:opacity-50 disabled:cursor-not-allowed;
   }
 
+  .osrs-map-action-secondary {
+    @apply bg-slate-700 hover:bg-slate-800;
+  }
+
   .osrs-map-error {
     @apply m-0 px-3 py-2 rounded-md border border-red-200 bg-red-50 text-xs text-red-700;
   }
@@ -506,16 +618,19 @@
   }
 
   .osrs-map-stats,
+  .osrs-map-route dl,
   .osrs-map-selected dl {
     @apply m-0 grid grid-cols-[5rem_minmax(0,1fr)] gap-x-2 gap-y-1 text-xs;
   }
 
   .osrs-map-stats dt,
+  .osrs-map-route dt,
   .osrs-map-selected dt {
     @apply text-slate-500 font-semibold;
   }
 
   .osrs-map-stats dd,
+  .osrs-map-route dd,
   .osrs-map-selected dd {
     @apply m-0 min-w-0 truncate text-slate-800 tabular-nums;
   }
@@ -552,14 +667,21 @@
     @apply bg-amber-200;
   }
 
+  .legend-path {
+    @apply bg-orange-500;
+  }
+
+  .osrs-map-route,
   .osrs-map-selected {
     @apply border-t border-slate-200 pt-3;
   }
 
+  .osrs-map-route h3,
   .osrs-map-selected h3 {
     @apply m-0 mb-2 text-sm font-bold text-slate-800;
   }
 
+  .osrs-map-route p,
   .osrs-map-selected p {
     @apply m-0 text-xs text-slate-500;
   }
@@ -796,6 +918,10 @@
 
   .automatebot-log-panel {
     @apply w-full max-w-none min-w-0 min-h-64;
+  }
+
+  .automatebot-checklist-panel {
+    @apply w-full max-w-none min-w-0 min-h-96;
   }
 
   .gotr-stats-filters {

@@ -2,7 +2,12 @@ import { loadOsrsRegionLocations, OsrsLocation } from "./locations-loader";
 import { loadOsrsMapRegion } from "./map-loader";
 import { loadOsrsObjectDefinitionsFromCache, getOsrsRegionArchiveId } from "./osrs-region-cache";
 import { OSRS_CACHE_INDEX_CONFIGS, openOsrsCacheStore } from "./cache-store";
-import { buildOsrsRegionCollision, CollisionFlag, getRegionCollisionFlags } from "./region-collision";
+import {
+  buildOsrsRegionCollision,
+  CollisionFlag,
+  getRegionCollisionFlags,
+  isKnownWalkableBridgeSurfaceObject,
+} from "./region-collision";
 import { OsrsObjectDefinition, OsrsObjectDefinitionMap } from "./object-loader";
 import {
   loadOsrsAreaDefinitions,
@@ -96,13 +101,20 @@ function shouldIncludeMapObject(location: OsrsLocation, definition: OsrsObjectDe
     return false;
   }
 
+  if (location.type === 22) {
+    return definition.interactType === 1;
+  }
+
+  if (isKnownWalkableBridgeSurfaceObject(location, definition)) {
+    return false;
+  }
+
   return (
     (location.type >= 0 && location.type <= 3) ||
     location.type === 9 ||
     location.type === 10 ||
     location.type === 11 ||
-    location.type >= 12 ||
-    (location.type === 22 && definition.interactType === 1)
+    location.type >= 12
   );
 }
 

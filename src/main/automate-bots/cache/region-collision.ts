@@ -20,15 +20,26 @@ export type OsrsRegionCollision = {
 
 export type BuildRegionCollisionOptions = {
   blockTerrainSettings?: boolean;
+  blockNoFloorTiles?: boolean;
 };
 
 export type RegionPathStep = WorldTile;
+
+const LUMBRIDGE_BRIDGE_SURFACE_OBJECT_IDS = new Set([2999, 3001, 3002, 3003, 3004, 3005, 3006, 3007, 3008, 3009]);
 
 const CARDINALS = [
   { dx: 0, dy: 1, fromFlag: CollisionFlag.North, toFlag: CollisionFlag.South },
   { dx: 1, dy: 0, fromFlag: CollisionFlag.East, toFlag: CollisionFlag.West },
   { dx: 0, dy: -1, fromFlag: CollisionFlag.South, toFlag: CollisionFlag.North },
   { dx: -1, dy: 0, fromFlag: CollisionFlag.West, toFlag: CollisionFlag.East },
+] as const;
+
+const DIRECTIONS = [
+  ...CARDINALS.map(({ dx, dy }) => ({ dx, dy })),
+  { dx: -1, dy: 1 },
+  { dx: 1, dy: 1 },
+  { dx: -1, dy: -1 },
+  { dx: 1, dy: -1 },
 ] as const;
 
 function createEmptyFlags(): number[][][] {
@@ -139,12 +150,37 @@ function getRotatedFootprint(definition: OsrsObjectDefinition, orientation: numb
   };
 }
 
+export function isKnownWalkableBridgeSurfaceObject(
+  location: Pick<OsrsLocation, "id" | "type">,
+  definition: Pick<OsrsObjectDefinition, "name">,
+): boolean {
+  return location.type === 10 && definition.name === "null" && LUMBRIDGE_BRIDGE_SURFACE_OBJECT_IDS.has(location.id);
+}
+
+function getEffectiveTerrainTile(mapRegion: OsrsMapRegion, localX: number, localY: number, z: number) {
+  const hasBridge = z < OSRS_PLANES - 1 && (mapRegion.tiles[1][localX][localY].settings & 2) !== 0;
+  const effectiveZ = z < OSRS_PLANES - 1 ? z + (hasBridge ? 1 : 0) : z;
+  return mapRegion.tiles[effectiveZ][localX][localY];
+}
+
+function isTerrainBlocked(mapRegion: OsrsMapRegion, localX: number, localY: number, z: number, blockNoFloorTiles: boolean): boolean {
+  const terrainTile = getEffectiveTerrainTile(mapRegion, localX, localY, z);
+  const blocksMovementBySetting =
+    terrainTile.settings === 1 || terrainTile.settings === 3 || terrainTile.settings === 5 || terrainTile.settings === 7;
+  const hasNoFloor = terrainTile.underlayId === 0 && terrainTile.overlayId === 0;
+  return blocksMovementBySetting || (blockNoFloorTiles && hasNoFloor);
+}
+
 function applyLocation(collision: OsrsRegionCollision, location: OsrsLocation, definition: OsrsObjectDefinition): void {
   if (definition.interactType === 0) {
     return;
   }
 
   if (location.type >= 0 && location.type <= 3) {
+    if (definition.wallOrDoor === 1 && definition.name === "Door") {
+      return;
+    }
+
     addWallBlock(collision, location);
     return;
   }
@@ -154,14 +190,21 @@ function applyLocation(collision: OsrsRegionCollision, location: OsrsLocation, d
     return;
   }
 
+  if (location.type === 22) {
+    if (definition.interactType === 1) {
+      addFlag(collision, location.localX, location.localY, location.z, CollisionFlag.Blocked);
+    }
+    return;
+  }
+
+  if (isKnownWalkableBridgeSurfaceObject(location, definition)) {
+    return;
+  }
+
   if (location.type === 10 || location.type === 11 || location.type >= 12) {
     const { sizeX, sizeY } = getRotatedFootprint(definition, location.orientation);
     addRectangleBlock(collision, location.localX, location.localY, location.z, sizeX, sizeY, definition.blocksProjectile);
     return;
-  }
-
-  if (location.type === 22 && definition.interactType === 1) {
-    addRectangleBlock(collision, location.localX, location.localY, location.z, 1, 1, definition.blocksProjectile);
   }
 }
 
@@ -178,10 +221,11 @@ export function buildOsrsRegionCollision(
   };
 
   if (options.blockTerrainSettings ?? true) {
+    const blockNoFloorTiles = options.blockNoFloorTiles ?? false;
     for (let z = 0; z < OSRS_PLANES; z += 1) {
       for (let x = 0; x < OSRS_REGION_SIZE; x += 1) {
         for (let y = 0; y < OSRS_REGION_SIZE; y += 1) {
-          if ((mapRegion.tiles[z][x][y].settings & 1) !== 0) {
+          if (isTerrainBlocked(mapRegion, x, y, z, blockNoFloorTiles)) {
             addFlag(collision, x, y, z, CollisionFlag.Blocked);
           }
         }
@@ -217,8 +261,25 @@ export function canMoveWithinRegion(
   dx: -1 | 0 | 1,
   dy: -1 | 0 | 1,
 ): boolean {
-  if (Math.abs(dx) + Math.abs(dy) !== 1) {
+  const axisDistance = Math.abs(dx) + Math.abs(dy);
+  if (axisDistance < 1 || axisDistance > 2) {
     return false;
+  }
+
+  if (axisDistance === 2) {
+    const nextX = localX + dx;
+    const nextY = localY + dy;
+    if (!inBounds(localX, localY, z) || !inBounds(nextX, nextY, z)) {
+      return false;
+    }
+
+    return (
+      !isRegionTileBlocked(collision, nextX, nextY, z) &&
+      canMoveWithinRegion(collision, localX, localY, z, dx, 0) &&
+      canMoveWithinRegion(collision, localX, localY, z, 0, dy) &&
+      canMoveWithinRegion(collision, localX + dx, localY, z, 0, dy) &&
+      canMoveWithinRegion(collision, localX, localY + dy, z, dx, 0)
+    );
   }
 
   const direction = CARDINALS.find((candidate) => candidate.dx === dx && candidate.dy === dy);
@@ -255,7 +316,7 @@ export function findRegionPath(
     return null;
   }
 
-  if (start.z !== target.z || isRegionTileBlocked(collision, start.localX, start.localY, start.z)) {
+  if (start.z !== target.z) {
     return null;
   }
 
@@ -271,7 +332,7 @@ export function findRegionPath(
     }
 
     const current = fromPathKey(key);
-    for (const direction of CARDINALS) {
+    for (const direction of DIRECTIONS) {
       if (!canMoveWithinRegion(collision, current.localX, current.localY, current.z, direction.dx, direction.dy)) {
         continue;
       }

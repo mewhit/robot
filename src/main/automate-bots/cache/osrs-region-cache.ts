@@ -1,6 +1,7 @@
 import {
   OSRS_CACHE_INDEX_CONFIGS,
   OSRS_CACHE_INDEX_MAPS,
+  OSRS_ITEM_DEFINITION_ARCHIVE_ID,
   OSRS_MAP_LOCATIONS_FILE_ID,
   OSRS_MAP_TERRAIN_FILE_ID,
   OSRS_OBJECT_DEFINITION_ARCHIVE_ID,
@@ -10,6 +11,7 @@ import {
 import { loadOsrsRegionLocations } from "./locations-loader";
 import { loadOsrsMapRegion } from "./map-loader";
 import { loadOsrsObjectDefinitions, OsrsObjectDefinitionMap } from "./object-loader";
+import { loadOsrsItemDefinitions, OsrsItemDefinitionMap } from "./item-loader";
 import {
   BuildRegionCollisionOptions,
   OsrsRegionCollision,
@@ -43,6 +45,11 @@ export function loadOsrsObjectDefinitionsFromCache(store: OsrsCacheStore): OsrsO
   return loadOsrsObjectDefinitions(objectArchive.files.entries(), {
     rev220SoundData: (objectArchive.reference?.revision ?? 0) >= 1673,
   });
+}
+
+export function loadOsrsItemDefinitionsFromCache(store: OsrsCacheStore): OsrsItemDefinitionMap {
+  const itemArchive = store.readArchive(OSRS_CACHE_INDEX_CONFIGS, OSRS_ITEM_DEFINITION_ARCHIVE_ID);
+  return loadOsrsItemDefinitions(itemArchive.files.entries());
 }
 
 export function loadOsrsRegionCacheDataFromStore(params: {

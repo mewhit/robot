@@ -14,6 +14,8 @@ export type OverlayBox = {
 
 export type CoordinateOverlayDetectionOptions = {
   requireRuneLiteCoordinatePattern?: boolean;
+  allowCompactSingleLine?: boolean;
+  leftStripRatio?: number;
 };
 
 type CoordinateCandidate = {
@@ -47,10 +49,246 @@ type RuneLiteCoordinateChar = RuneLiteCoordinateSegment & {
 };
 
 const LOG_CROP_SCAN_DEBUG = false;
+const LOG_COORDINATE_DETECTION_DEBUG = false;
 const RUNELITE_COORDINATE_WHITE_THRESHOLD = 185;
-const RUNELITE_COORDINATE_NORMALIZED_WIDTH = 5;
-const RUNELITE_COORDINATE_NORMALIZED_HEIGHT = 7;
+const RUNELITE_COORDINATE_NORMALIZED_WIDTH = 10;
+const RUNELITE_COORDINATE_NORMALIZED_HEIGHT = 18;
+const RUNELITE_COORDINATE_MAX_TEMPLATE_DISTANCE_RATIO = 0.37;
 const RUNELITE_COORDINATE_DENSITY_THRESHOLDS = [0.55, 0.65, 0.45, 0.35];
+
+const RUNELITE_COORDINATE_ARIAL_BOLD_16_TEMPLATE_ROWS: Array<{ char: string; rows: string[] }> = [
+  // Generated from Windows Arial Bold 16pt, then normalized to the OCR's 10x18 grid.
+  {
+    char: "0",
+    rows: [
+      "0001111000",
+      "0111111100",
+      "0111111110",
+      "1111001110",
+      "1110001110",
+      "1110000110",
+      "1110000110",
+      "1110000111",
+      "1110000111",
+      "1110000111",
+      "1110000111",
+      "1110000110",
+      "1110000110",
+      "1110001110",
+      "1111001110",
+      "0111111110",
+      "0111111100",
+      "0001111000",
+    ],
+  },
+  {
+    char: "1",
+    rows: [
+      "0000011110",
+      "0000011110",
+      "0001111110",
+      "0011111110",
+      "1111111110",
+      "1111111110",
+      "1110011110",
+      "1100011110",
+      "1000011110",
+      "0000011110",
+      "0000011110",
+      "0000011110",
+      "0000011110",
+      "0000011110",
+      "0000011110",
+      "0000011110",
+      "0000011110",
+      "0000011110",
+    ],
+  },
+  {
+    char: "2",
+    rows: [
+      "0011111100",
+      "0011111110",
+      "0111111111",
+      "1111000111",
+      "0110000111",
+      "0000000111",
+      "0000001111",
+      "0000001111",
+      "0000001111",
+      "0000011110",
+      "0000111100",
+      "0001111100",
+      "0011111000",
+      "0011110000",
+      "0111100000",
+      "1111111111",
+      "1111111111",
+      "1111111111",
+    ],
+  },
+  {
+    char: "3",
+    rows: [
+      "0011111000",
+      "0111111100",
+      "1111111110",
+      "1110001110",
+      "0110001110",
+      "0000001110",
+      "0000011100",
+      "0000111100",
+      "0000111100",
+      "0000111110",
+      "0000001111",
+      "0000000111",
+      "0000000111",
+      "1110000111",
+      "1110001111",
+      "1111111110",
+      "0111111100",
+      "0011111000",
+    ],
+  },
+  {
+    char: "4",
+    rows: [
+      "0000011110",
+      "0000011110",
+      "0000011110",
+      "0000111110",
+      "0000111110",
+      "0001111110",
+      "0011111110",
+      "0011111110",
+      "0011111110",
+      "0111011110",
+      "1110011110",
+      "1110011110",
+      "1111111111",
+      "1111111111",
+      "1111111111",
+      "0000011110",
+      "0000011110",
+      "0000011110",
+    ],
+  },
+  {
+    char: "5",
+    rows: [
+      "0011111110",
+      "0011111110",
+      "0111111110",
+      "0111000000",
+      "0111000000",
+      "0111000000",
+      "0111111000",
+      "1111111110",
+      "1111111110",
+      "1110001111",
+      "0000000111",
+      "0000000111",
+      "0000000111",
+      "1110000111",
+      "1111001111",
+      "1111111110",
+      "0111111100",
+      "0011111000",
+    ],
+  },
+  {
+    char: "6",
+    rows: [
+      "0001111100",
+      "0011111110",
+      "0111111110",
+      "1111001110",
+      "1110001000",
+      "1110000000",
+      "1110111000",
+      "1111111110",
+      "1111111110",
+      "1111001110",
+      "1110000111",
+      "1110000111",
+      "1110000111",
+      "1110000111",
+      "1111001110",
+      "0111111110",
+      "0011111100",
+      "0001111000",
+    ],
+  },
+  {
+    char: "7",
+    rows: [
+      "1111111111",
+      "1111111111",
+      "1111111111",
+      "0000011110",
+      "0000011100",
+      "0000011100",
+      "0000111000",
+      "0000111000",
+      "0001111000",
+      "0001110000",
+      "0001110000",
+      "0001110000",
+      "0011100000",
+      "0011100000",
+      "0011100000",
+      "0011100000",
+      "0011100000",
+      "0011100000",
+    ],
+  },
+  {
+    char: "8",
+    rows: [
+      "0011111000",
+      "0111111110",
+      "1111111110",
+      "1111001110",
+      "1110001110",
+      "1110001110",
+      "0111001110",
+      "0111111110",
+      "0111111100",
+      "0111111110",
+      "1111001111",
+      "1110000111",
+      "1110000111",
+      "1110000111",
+      "1111001111",
+      "1111111110",
+      "0111111110",
+      "0011111000",
+    ],
+  },
+  {
+    char: "9",
+    rows: [
+      "0011111000",
+      "0111111100",
+      "1111111110",
+      "1110001110",
+      "1110001110",
+      "1110001110",
+      "1110000111",
+      "1110001111",
+      "1110001111",
+      "1111111111",
+      "0111111111",
+      "0011110110",
+      "0000000110",
+      "1110001110",
+      "1110001110",
+      "1111111110",
+      "0111111100",
+      "0011110000",
+    ],
+  },
+];
 
 const RUNELITE_COORDINATE_TEMPLATE_ROWS: Record<string, string[]> = {
   "0": ["01110", "10001", "10011", "10101", "11001", "10001", "01110"],
@@ -80,6 +318,10 @@ const RUNELITE_COORDINATE_TEMPLATE_VARIANTS: Array<{ char: string; rows: string[
 ];
 
 const RUNELITE_COORDINATE_GLYPH_TEMPLATES: RuneLiteCoordinateGlyphTemplate[] = [
+  ...RUNELITE_COORDINATE_ARIAL_BOLD_16_TEMPLATE_ROWS.map(({ char, rows }) => ({
+    char,
+    bits: coordinateTemplateRowsToBits(rows),
+  })),
   ...Object.entries(RUNELITE_COORDINATE_TEMPLATE_ROWS).map(([char, rows]) => ({
     char,
     bits: coordinateTemplateRowsToBits(rows),
@@ -176,8 +418,15 @@ function normalizeCandidateCoordinate(
 
 function coordinateTemplateRowsToBits(rows: string[]): number[] {
   const bits: number[] = [];
-  for (const row of rows) {
-    for (const char of row) {
+  const sourceHeight = rows.length;
+  const sourceWidth = rows.reduce((max, row) => Math.max(max, row.length), 0);
+
+  for (let y = 0; y < RUNELITE_COORDINATE_NORMALIZED_HEIGHT; y += 1) {
+    const sourceY = Math.min(sourceHeight - 1, Math.floor((y * sourceHeight) / RUNELITE_COORDINATE_NORMALIZED_HEIGHT));
+    const row = rows[sourceY] ?? "";
+    for (let x = 0; x < RUNELITE_COORDINATE_NORMALIZED_WIDTH; x += 1) {
+      const sourceX = Math.min(sourceWidth - 1, Math.floor((x * sourceWidth) / RUNELITE_COORDINATE_NORMALIZED_WIDTH));
+      const char = row[sourceX] ?? "0";
       bits.push(char === "1" ? 1 : 0);
     }
   }
@@ -428,7 +677,12 @@ function classifyRuneLiteCoordinateSegment(
     }
   }
 
-  if (!bestChar || bestDistance > 13) {
+  const maxTemplateDistance = Math.round(
+    RUNELITE_COORDINATE_NORMALIZED_WIDTH *
+      RUNELITE_COORDINATE_NORMALIZED_HEIGHT *
+      RUNELITE_COORDINATE_MAX_TEMPLATE_DISTANCE_RATIO,
+  );
+  if (!bestChar || bestDistance > maxTemplateDistance) {
     return null;
   }
 
@@ -1293,11 +1547,20 @@ function isBetterCoordinateCandidate(a: CoordinateCandidate, b: CoordinateCandid
   return a.score > b.score;
 }
 
+function hasMinimumOverlayBoxGeometry(
+  overlayBox: { x: number; y: number; width: number; height: number },
+  options: CoordinateOverlayDetectionOptions = {},
+): boolean {
+  const minHeight = options.allowCompactSingleLine ? 16 : 35;
+  return overlayBox.width >= 90 && overlayBox.height >= minHeight;
+}
+
 function isPlausibleOverlayBoxGeometry(
   bitmap: RobotBitmap,
   overlayBox: { x: number; y: number; width: number; height: number },
+  options: CoordinateOverlayDetectionOptions = {},
 ): boolean {
-  if (overlayBox.width < 90 || overlayBox.height < 35) {
+  if (!hasMinimumOverlayBoxGeometry(overlayBox, options)) {
     return false;
   }
 
@@ -1314,6 +1577,7 @@ function detectTopLeftOverlayFallback(
   maxGapScaled: number,
   scanRatios: number[],
   windowsScalePercent: number,
+  options: CoordinateOverlayDetectionOptions = {},
 ): OverlayDetectionWithScore | null {
   const topLimitScaled = Math.min(
     bitmap.height * OCR_SCALE_FACTOR - 1,
@@ -1349,7 +1613,7 @@ function detectTopLeftOverlayFallback(
     anchorYOrig,
     maxGapScaled,
   );
-  if (!overlayBox || !isPlausibleOverlayBoxGeometry(bitmap, overlayBox)) {
+  if (!overlayBox || !isPlausibleOverlayBoxGeometry(bitmap, overlayBox, options)) {
     return null;
   }
 
@@ -1396,7 +1660,7 @@ function detectTopLeftOverlayFallback(
   let bestCandidate: CoordinateCandidate | null = null;
   let bestOverlayBox = overlayBox;
   for (const candidateBox of candidateBoxes) {
-    if (!isPlausibleOverlayBoxGeometry(bitmap, candidateBox)) {
+    if (!isPlausibleOverlayBoxGeometry(bitmap, candidateBox, options)) {
       continue;
     }
 
@@ -1433,15 +1697,70 @@ function detectTopLeftOverlayFallback(
   };
 }
 
+function detectCompactSingleLineOverlayFallback(
+  bitmap: RobotBitmap,
+  mask: Uint8Array,
+  bands: Array<{ startY: number; endY: number }>,
+  leftStripWidthOrig: number,
+  maxGapScaled: number,
+  scanRatios: number[],
+  windowsScalePercent: number,
+  options: CoordinateOverlayDetectionOptions = {},
+): OverlayDetectionWithScore | null {
+  let bestDetection: OverlayDetectionWithScore | null = null;
+
+  for (const band of bands) {
+    const anchorYOrig = Math.round((band.startY + band.endY) / 2 / OCR_SCALE_FACTOR);
+    const overlayBox = deriveOverlayBoxFromBandCluster(
+      mask,
+      bitmap.width,
+      bitmap.height,
+      leftStripWidthOrig,
+      anchorYOrig,
+      maxGapScaled,
+    );
+    if (!overlayBox || !isPlausibleOverlayBoxGeometry(bitmap, overlayBox, options)) {
+      continue;
+    }
+
+    const candidate = readBestCoordinateCandidateInOverlayBox(bitmap, overlayBox, scanRatios, windowsScalePercent);
+    if (!candidate || candidate.z > 3 || candidate.x < 1000 || candidate.y < 1000) {
+      continue;
+    }
+
+    const detection: OverlayDetectionWithScore = {
+      x: overlayBox.x,
+      y: overlayBox.y,
+      width: overlayBox.width,
+      height: overlayBox.height,
+      matchedLine: candidate.line,
+      score: candidate.score + (overlayBox.height <= 45 ? 18 : 0),
+    };
+
+    if (!bestDetection || detection.score > bestDetection.score) {
+      bestDetection = detection;
+    }
+  }
+
+  return bestDetection;
+}
+
 function detectOverlayBoxWithMask(
   bitmap: RobotBitmap,
   mask: Uint8Array,
   windowsScalePercent: number = 100,
+  options: CoordinateOverlayDetectionOptions = {},
 ): OverlayDetectionWithScore | null {
   const scaledWidth = bitmap.width * OCR_SCALE_FACTOR;
   const scaledHeight = bitmap.height * OCR_SCALE_FACTOR;
 
-  const stripRatio = bitmap.width > 2560 ? 0.25 : 0.166;
+  const configuredStripRatio = options.leftStripRatio;
+  const stripRatio =
+    configuredStripRatio !== undefined && Number.isFinite(configuredStripRatio)
+      ? Math.max(0.05, Math.min(1, configuredStripRatio))
+      : bitmap.width > 2560
+        ? 0.25
+        : 0.166;
   const leftStripWidthOrig = Math.max(40, Math.floor(bitmap.width * stripRatio));
   const scaledStripWidth = Math.min(scaledWidth, leftStripWidthOrig * OCR_SCALE_FACTOR);
 
@@ -1525,6 +1844,9 @@ function detectOverlayBoxWithMask(
     if (!overlayBox) {
       continue;
     }
+    if (!hasMinimumOverlayBoxGeometry(overlayBox, options)) {
+      continue;
+    }
 
     const croppedCandidate = readBestCoordinateCandidateInOverlayBox(
       bitmap,
@@ -1588,9 +1910,11 @@ function detectOverlayBoxWithMask(
 
     const totalScore = finalCandidate.score + contextScore + geometryScore;
 
-    console.log(
-      `  [detect] band[${i}] y=${band.startY}-${band.endY} stripBest="${bestCandidate.line}" cropBest="${croppedCandidate?.line ?? "null"}" final="${finalCandidate.line}" cropScore=${croppedCandidate?.score ?? 0} ctx=${contextScore} geo=${geometryScore} total=${totalScore}`,
-    );
+    if (LOG_COORDINATE_DETECTION_DEBUG) {
+      console.log(
+        `  [detect] band[${i}] y=${band.startY}-${band.endY} stripBest="${bestCandidate.line}" cropBest="${croppedCandidate?.line ?? "null"}" final="${finalCandidate.line}" cropScore=${croppedCandidate?.score ?? 0} ctx=${contextScore} geo=${geometryScore} total=${totalScore}`,
+      );
+    }
 
     const detection: OverlayDetectionWithScore = {
       x: overlayBox.x,
@@ -1610,6 +1934,22 @@ function detectOverlayBoxWithMask(
     return bestDetection;
   }
 
+  if (options.allowCompactSingleLine) {
+    const compactDetection = detectCompactSingleLineOverlayFallback(
+      bitmap,
+      mask,
+      bands,
+      leftStripWidthOrig,
+      maxGapScaled,
+      scanRatios,
+      windowsScalePercent,
+      options,
+    );
+    if (compactDetection) {
+      return compactDetection;
+    }
+  }
+
   return detectTopLeftOverlayFallback(
     bitmap,
     mask,
@@ -1618,6 +1958,7 @@ function detectOverlayBoxWithMask(
     maxGapScaled,
     scanRatios,
     windowsScalePercent,
+    options,
   );
 }
 
@@ -1629,8 +1970,8 @@ export function detectOverlayBoxInScreenshot(
   const defaultMask = buildWhiteTextMask(bitmap);
   const coordinateMask = buildCoordinateOverlayTextMask(bitmap);
 
-  const defaultDetection = detectOverlayBoxWithMask(bitmap, defaultMask, windowsScalePercent);
-  const coordinateDetection = detectOverlayBoxWithMask(bitmap, coordinateMask, windowsScalePercent);
+  const defaultDetection = detectOverlayBoxWithMask(bitmap, defaultMask, windowsScalePercent, options);
+  const coordinateDetection = detectOverlayBoxWithMask(bitmap, coordinateMask, windowsScalePercent, options);
 
   const parseDetectionLine = (line: string): { x: number; y: number; z: number } | null => {
     const match = line.match(/^(\d{3,5}),(\d{3,5}),(\d)$/);
@@ -1649,7 +1990,7 @@ export function detectOverlayBoxInScreenshot(
   };
 
   const isPlausibleCoordinateDetection = (detection: OverlayDetectionWithScore): boolean => {
-    if (detection.width < 90 || detection.height < 35) {
+    if (!hasMinimumOverlayBoxGeometry(detection, options)) {
       return false;
     }
 
@@ -1658,8 +1999,10 @@ export function detectOverlayBoxInScreenshot(
       return false;
     }
 
-    const maxExpectedWidth = Math.max(120, Math.floor(bitmap.width * 0.24));
-    const maxExpectedHeight = 140;
+    const maxExpectedWidth = options.allowCompactSingleLine
+      ? Math.max(180, Math.floor(bitmap.width * 0.75))
+      : Math.max(120, Math.floor(bitmap.width * 0.24));
+    const maxExpectedHeight = options.allowCompactSingleLine ? 90 : 140;
     const absoluteMaxExpectedHeight = Math.max(320, Math.floor(bitmap.height * 0.24));
     if (detection.height > absoluteMaxExpectedHeight) {
       return false;
@@ -1714,9 +2057,11 @@ export function detectOverlayBoxInScreenshot(
     }
   }
 
-  console.log(
-    `  [final] default="${defaultDetection?.matchedLine ?? "null"}" score=${defaultDetection?.score ?? 0} coordinate="${coordinateDetection?.matchedLine ?? "null"}" score=${coordinateDetection?.score ?? 0} winner="${bestDetection?.matchedLine ?? "null"}"`,
-  );
+  if (LOG_COORDINATE_DETECTION_DEBUG) {
+    console.log(
+      `  [final] default="${defaultDetection?.matchedLine ?? "null"}" score=${defaultDetection?.score ?? 0} coordinate="${coordinateDetection?.matchedLine ?? "null"}" score=${coordinateDetection?.score ?? 0} winner="${bestDetection?.matchedLine ?? "null"}"`,
+    );
+  }
 
   if (!bestDetection) {
     return null;
@@ -1735,4 +2080,34 @@ export function detectOverlayBoxInScreenshot(
 
   const { score: _score, ...result } = bestDetection;
   return result;
+}
+
+export function readCoordinateOverlayBoxInKnownBounds(
+  bitmap: RobotBitmap,
+  overlayBox: { x: number; y: number; width: number; height: number },
+  windowsScalePercent: number = 100,
+  options: CoordinateOverlayDetectionOptions = {},
+): OverlayBox | null {
+  const x = Math.max(0, Math.min(bitmap.width - 1, Math.round(overlayBox.x)));
+  const y = Math.max(0, Math.min(bitmap.height - 1, Math.round(overlayBox.y)));
+  const width = Math.max(1, Math.min(bitmap.width - x, Math.round(overlayBox.width)));
+  const height = Math.max(1, Math.min(bitmap.height - y, Math.round(overlayBox.height)));
+  const clampedBox = { x, y, width, height };
+
+  if (!hasMinimumOverlayBoxGeometry(clampedBox, options)) {
+    return null;
+  }
+
+  const scanRatios = [0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35];
+  const candidate = options.requireRuneLiteCoordinatePattern
+    ? readRuneLiteCoordinateCandidateInOverlayBox(bitmap, clampedBox)
+    : readBestCoordinateCandidateInOverlayBox(bitmap, clampedBox, scanRatios, windowsScalePercent);
+  if (!candidate || candidate.z > 3) {
+    return null;
+  }
+
+  return {
+    ...clampedBox,
+    matchedLine: candidate.line,
+  };
 }

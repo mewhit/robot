@@ -7,6 +7,10 @@ import type {
   OsrsCacheMapRegionView,
   OsrsCacheMapTile,
 } from "../main/automate-bots/cache/cache-map-view";
+import type {
+  EndToEndPathTile,
+  EndToEndRoutePathSnapshot,
+} from "../main/automate-bots/end-to-end/route-path-snapshot";
 
 type OsrsMapViewProps = {
   ipcRenderer: IpcRenderer;
@@ -48,11 +52,200 @@ function getIconLabel(icon: OsrsCacheMapIcon): string {
   return icon.label || icon.name || icon.objectName || `Icon ${icon.areaId}`;
 }
 
+function formatWorldTile(tile: EndToEndPathTile | null | undefined): string {
+  return tile ? `${tile.x},${tile.y},${tile.z}` : "None";
+}
+
+function formatDirectionalFlags(flags: number): string {
+  const directions = [
+    (flags & FLAG_NORTH) !== 0 ? "N" : null,
+    (flags & FLAG_EAST) !== 0 ? "E" : null,
+    (flags & FLAG_SOUTH) !== 0 ? "S" : null,
+    (flags & FLAG_WEST) !== 0 ? "W" : null,
+  ].filter((direction): direction is string => direction !== null);
+
+  return directions.length > 0 ? directions.join(" ") : "None";
+}
+
+function getRouteTileCanvasCenter(
+  region: OsrsCacheMapRegionView,
+  plane: number,
+  tile: EndToEndPathTile,
+): { x: number; y: number; localX: number; localY: number } | null {
+  if (tile.z !== plane) {
+    return null;
+  }
+
+  const localX = tile.x - region.baseX;
+  const localY = tile.y - region.baseY;
+  if (localX < 0 || localX >= REGION_SIZE || localY < 0 || localY >= REGION_SIZE) {
+    return null;
+  }
+
+  return {
+    x: localX * CELL_SIZE + CELL_SIZE / 2,
+    y: (REGION_SIZE - 1 - localY) * CELL_SIZE + CELL_SIZE / 2,
+    localX,
+    localY,
+  };
+}
+
+function isRouteTileInRegion(region: OsrsCacheMapRegionView, plane: number, tile: EndToEndPathTile): boolean {
+  return getRouteTileCanvasCenter(region, plane, tile) !== null;
+}
+
+function drawRouteMarker(
+  ctx: CanvasRenderingContext2D,
+  region: OsrsCacheMapRegionView,
+  plane: number,
+  tile: EndToEndPathTile | null,
+  label: string,
+  fillStyle: string,
+  strokeStyle: string,
+): void {
+  if (!tile) {
+    return;
+  }
+
+  const point = getRouteTileCanvasCenter(region, plane, tile);
+  if (!point) {
+    return;
+  }
+
+  ctx.save();
+  ctx.fillStyle = fillStyle;
+  ctx.strokeStyle = strokeStyle;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(point.x, point.y, Math.max(7, CELL_SIZE * 0.52), 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "800 9px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(label, point.x, point.y + 0.5);
+  ctx.restore();
+}
+
+function drawRoutePath(
+  ctx: CanvasRenderingContext2D,
+  region: OsrsCacheMapRegionView,
+  plane: number,
+  routePath: EndToEndRoutePathSnapshot | null,
+): void {
+  if (!routePath || routePath.pathTiles.length === 0) {
+    return;
+  }
+
+  const segments: Array<Array<{ x: number; y: number }>> = [];
+  let segment: Array<{ x: number; y: number }> = [];
+
+  for (const tile of routePath.pathTiles) {
+    const point = getRouteTileCanvasCenter(region, plane, tile);
+    if (!point) {
+      if (segment.length > 0) {
+        segments.push(segment);
+        segment = [];
+      }
+      continue;
+    }
+
+    segment.push({ x: point.x, y: point.y });
+  }
+
+  if (segment.length > 0) {
+    segments.push(segment);
+  }
+
+  if (segments.length === 0) {
+    return;
+  }
+
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  for (const lineWidth of [7, 3]) {
+    ctx.strokeStyle = lineWidth === 7 ? "rgba(255, 255, 255, 0.88)" : "#f97316";
+    ctx.lineWidth = lineWidth;
+    for (const routeSegment of segments) {
+      if (routeSegment.length < 2) {
+        continue;
+      }
+
+      ctx.beginPath();
+      ctx.moveTo(routeSegment[0].x, routeSegment[0].y);
+      for (const point of routeSegment.slice(1)) {
+        ctx.lineTo(point.x, point.y);
+      }
+      ctx.stroke();
+    }
+  }
+
+  ctx.fillStyle = "#ea580c";
+  for (const tile of routePath.pathTiles) {
+    const point = getRouteTileCanvasCenter(region, plane, tile);
+    if (!point) {
+      continue;
+    }
+
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, Math.max(2.25, CELL_SIZE * 0.18), 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const destinationMarkerLabel = routePath.destinationLabel?.includes("X Marks") ? "Q" : "G";
+  drawRouteMarker(ctx, region, plane, routePath.destinationTile ?? routePath.storeTile, destinationMarkerLabel, "#d97706", "#78350f");
+  drawRouteMarker(ctx, region, plane, routePath.targetTile, "D", "#db2777", "#831843");
+  drawRouteMarker(ctx, region, plane, routePath.clickTile, "C", "#2563eb", "#1e3a8a");
+  drawRouteMarker(ctx, region, plane, routePath.playerTile, "S", "#059669", "#064e3b");
+  ctx.restore();
+}
+
+function drawDirectionalCollisionWalls(ctx: CanvasRenderingContext2D, tiles: OsrsCacheMapTile[]): void {
+  ctx.save();
+  ctx.strokeStyle = "#dc2626";
+  ctx.lineWidth = 2.5;
+  ctx.lineCap = "square";
+  for (const tile of tiles) {
+    const px = tile.localX * CELL_SIZE;
+    const py = (REGION_SIZE - 1 - tile.localY) * CELL_SIZE;
+    const flags = tile.flags;
+
+    if ((flags & FLAG_NORTH) !== 0) {
+      ctx.beginPath();
+      ctx.moveTo(px + 1, py + 1);
+      ctx.lineTo(px + CELL_SIZE - 1, py + 1);
+      ctx.stroke();
+    }
+    if ((flags & FLAG_EAST) !== 0) {
+      ctx.beginPath();
+      ctx.moveTo(px + CELL_SIZE - 1, py + 1);
+      ctx.lineTo(px + CELL_SIZE - 1, py + CELL_SIZE - 1);
+      ctx.stroke();
+    }
+    if ((flags & FLAG_SOUTH) !== 0) {
+      ctx.beginPath();
+      ctx.moveTo(px + 1, py + CELL_SIZE - 1);
+      ctx.lineTo(px + CELL_SIZE - 1, py + CELL_SIZE - 1);
+      ctx.stroke();
+    }
+    if ((flags & FLAG_WEST) !== 0) {
+      ctx.beginPath();
+      ctx.moveTo(px + 1, py + 1);
+      ctx.lineTo(px + 1, py + CELL_SIZE - 1);
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
 function drawMap(
   canvas: HTMLCanvasElement,
   region: OsrsCacheMapRegionView,
   plane: number,
   selectedTile: SelectedTile | null,
+  routePath: EndToEndRoutePathSnapshot | null,
 ): void {
   const ctx = canvas.getContext("2d");
   if (!ctx) {
@@ -145,39 +338,8 @@ function drawMap(
     ctx.stroke();
   }
 
-  ctx.strokeStyle = "#dc2626";
-  ctx.lineWidth = 2;
-  ctx.lineCap = "square";
-  for (const tile of planeTiles) {
-    const px = tile.localX * CELL_SIZE;
-    const py = (REGION_SIZE - 1 - tile.localY) * CELL_SIZE;
-    const flags = tile.flags;
-
-    if ((flags & FLAG_NORTH) !== 0) {
-      ctx.beginPath();
-      ctx.moveTo(px + 1, py + 1);
-      ctx.lineTo(px + CELL_SIZE - 1, py + 1);
-      ctx.stroke();
-    }
-    if ((flags & FLAG_EAST) !== 0) {
-      ctx.beginPath();
-      ctx.moveTo(px + CELL_SIZE - 1, py + 1);
-      ctx.lineTo(px + CELL_SIZE - 1, py + CELL_SIZE - 1);
-      ctx.stroke();
-    }
-    if ((flags & FLAG_SOUTH) !== 0) {
-      ctx.beginPath();
-      ctx.moveTo(px + 1, py + CELL_SIZE - 1);
-      ctx.lineTo(px + CELL_SIZE - 1, py + CELL_SIZE - 1);
-      ctx.stroke();
-    }
-    if ((flags & FLAG_WEST) !== 0) {
-      ctx.beginPath();
-      ctx.moveTo(px + 1, py + 1);
-      ctx.lineTo(px + 1, py + CELL_SIZE - 1);
-      ctx.stroke();
-    }
-  }
+  drawRoutePath(ctx, region, plane, routePath);
+  drawDirectionalCollisionWalls(ctx, planeTiles);
 
   if (selectedTile) {
     const px = selectedTile.localX * CELL_SIZE;
@@ -197,8 +359,12 @@ export default function OsrsMapView({ ipcRenderer }: OsrsMapViewProps) {
   const [plane, setPlane] = useState(0);
   const [region, setRegion] = useState<OsrsCacheMapRegionView | null>(null);
   const [selectedTile, setSelectedTile] = useState<SelectedTile | null>(null);
+  const [routePath, setRoutePath] = useState<EndToEndRoutePathSnapshot | null>(null);
+  const [routePathFilePath, setRoutePathFilePath] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isPathLoading, setIsPathLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pathError, setPathError] = useState<string | null>(null);
 
   const tilesByKey = useMemo(() => {
     const map = new Map<string, OsrsCacheMapTile>();
@@ -247,6 +413,24 @@ export default function OsrsMapView({ ipcRenderer }: OsrsMapViewProps) {
   );
   const planeObjectCount = useMemo(() => region?.objects.filter((object) => object.z === plane).length ?? 0, [plane, region]);
   const planeIconCount = useMemo(() => region?.icons.filter((icon) => icon.z === plane).length ?? 0, [plane, region]);
+  const visibleRouteTileCount = useMemo(() => {
+    if (!region || !routePath) {
+      return 0;
+    }
+
+    return routePath.pathTiles.filter((tile) => isRouteTileInRegion(region, plane, tile)).length;
+  }, [plane, region, routePath]);
+  const selectedRouteIndices = useMemo(() => {
+    if (!region || !selectedTile || !routePath) {
+      return [];
+    }
+
+    const worldX = region.baseX + selectedTile.localX;
+    const worldY = region.baseY + selectedTile.localY;
+    return routePath.pathTiles
+      .map((tile, index) => (tile.x === worldX && tile.y === worldY && tile.z === plane ? index : -1))
+      .filter((index) => index >= 0);
+  }, [plane, region, routePath, selectedTile]);
 
   const loadRegion = useCallback(
     async (payload?: { regionX?: number; regionY?: number; worldX?: number; worldY?: number }) => {
@@ -286,8 +470,8 @@ export default function OsrsMapView({ ipcRenderer }: OsrsMapViewProps) {
       return;
     }
 
-    drawMap(canvas, region, plane, selectedTile);
-  }, [plane, region, selectedTile]);
+    drawMap(canvas, region, plane, selectedTile, routePath);
+  }, [plane, region, routePath, selectedTile]);
 
   const handleCanvasClick = useCallback(
     (event: React.MouseEvent<HTMLCanvasElement>) => {
@@ -320,6 +504,35 @@ export default function OsrsMapView({ ipcRenderer }: OsrsMapViewProps) {
     void loadRegion({ worldX, worldY });
   }, [loadRegion, worldXInput, worldYInput]);
 
+  const loadLatestPath = useCallback(async () => {
+    setIsPathLoading(true);
+    setPathError(null);
+    try {
+      const result = await ipcRenderer.invoke(CHANNELS.GET_END_TO_END_LATEST_PATH);
+      if (!result?.ok) {
+        setPathError(result?.error || "Unable to load latest End To End path.");
+        return;
+      }
+
+      const nextPath = (result.path ?? null) as EndToEndRoutePathSnapshot | null;
+      if (!nextPath) {
+        setRoutePath(null);
+        setRoutePathFilePath(result.filePath ?? null);
+        setPathError("No saved End To End path yet. Start the End To End bot once to generate it.");
+        return;
+      }
+
+      setRoutePath(nextPath);
+      setRoutePathFilePath(typeof result.filePath === "string" ? result.filePath : null);
+      setPlane(clampPlane(nextPath.plane));
+      await loadRegion({ regionX: nextPath.regionX, regionY: nextPath.regionY });
+    } catch (loadError) {
+      setPathError(loadError instanceof Error ? loadError.message : String(loadError));
+    } finally {
+      setIsPathLoading(false);
+    }
+  }, [ipcRenderer, loadRegion]);
+
   return (
     <div className="osrs-map-view">
       <div className="osrs-map-toolbar">
@@ -345,6 +558,26 @@ export default function OsrsMapView({ ipcRenderer }: OsrsMapViewProps) {
         <button type="button" className="osrs-map-action" onClick={handleLoadWorldTile} disabled={isLoading}>
           Use World
         </button>
+        <button
+          type="button"
+          className="osrs-map-action"
+          onClick={() => void loadLatestPath()}
+          disabled={isLoading || isPathLoading}
+        >
+          Latest Path
+        </button>
+        <button
+          type="button"
+          className="osrs-map-action osrs-map-action-secondary"
+          onClick={() => {
+            setRoutePath(null);
+            setRoutePathFilePath(null);
+            setPathError(null);
+          }}
+          disabled={!routePath || isPathLoading}
+        >
+          Clear Path
+        </button>
         <label className="osrs-map-field osrs-map-field-plane">
           <span>Plane</span>
           <select value={plane} onChange={(event) => setPlane(clampPlane(Number(event.target.value)))}>
@@ -357,6 +590,7 @@ export default function OsrsMapView({ ipcRenderer }: OsrsMapViewProps) {
       </div>
 
       {error && <p className="osrs-map-error">{error}</p>}
+      {pathError && <p className="osrs-map-error">{pathError}</p>}
 
       <div className="osrs-map-content">
         <div className="osrs-map-canvas-panel">
@@ -403,6 +637,39 @@ export default function OsrsMapView({ ipcRenderer }: OsrsMapViewProps) {
                 <span className="osrs-map-legend-item"><i className="legend-object" /> Object</span>
                 <span className="osrs-map-legend-item"><i className="legend-wall" /> Wall</span>
                 <span className="osrs-map-legend-item"><i className="legend-icon" /> Map icon</span>
+                <span className="osrs-map-legend-item"><i className="legend-path" /> Route path</span>
+              </div>
+
+              <div className="osrs-map-route">
+                <h3>Route Path</h3>
+                {routePath ? (
+                  <dl>
+                    <dt>Label</dt>
+                    <dd title={routePath.label}>{routePath.label}</dd>
+                    <dt>Saved</dt>
+                    <dd title={routePathFilePath ?? undefined}>{new Date(routePath.createdAt).toLocaleString()}</dd>
+                    <dt>Start</dt>
+                    <dd>{formatWorldTile(routePath.playerTile)}</dd>
+                    <dt>Destination</dt>
+                    <dd title={routePath.destinationLabel ?? undefined}>
+                      {routePath.destinationLabel ?? "Unknown"} {formatWorldTile(routePath.destinationTile)}
+                    </dd>
+                    <dt>Click</dt>
+                    <dd>{formatWorldTile(routePath.clickTile)}</dd>
+                    <dt>Target</dt>
+                    <dd>{formatWorldTile(routePath.targetTile)}</dd>
+                    <dt>Steps</dt>
+                    <dd>{routePath.pathLength}</dd>
+                    <dt>Visible</dt>
+                    <dd>
+                      {visibleRouteTileCount}/{routePath.pathTiles.length}
+                    </dd>
+                    <dt>Reason</dt>
+                    <dd title={routePath.selectionReason ?? undefined}>{routePath.selectionReason ?? "None"}</dd>
+                  </dl>
+                ) : (
+                  <p>No route path loaded.</p>
+                )}
               </div>
 
               <div className="osrs-map-selected">
@@ -424,8 +691,12 @@ export default function OsrsMapView({ ipcRenderer }: OsrsMapViewProps) {
                       <dd>{(selectedTileData.flags & FLAG_BLOCKED) !== 0 ? "Yes" : "No"}</dd>
                       <dt>Projectile</dt>
                       <dd>{(selectedTileData.flags & FLAG_PROJECTILE) !== 0 ? "Yes" : "No"}</dd>
+                      <dt>Walls</dt>
+                      <dd>{formatDirectionalFlags(selectedTileData.flags)}</dd>
                       <dt>Terrain</dt>
                       <dd>{selectedTileData.terrainSettings}</dd>
+                      <dt>Path</dt>
+                      <dd>{selectedRouteIndices.length > 0 ? selectedRouteIndices.join(", ") : "No"}</dd>
                     </dl>
                     {selectedTileObjects.length > 0 && (
                       <ul className="osrs-map-object-list">

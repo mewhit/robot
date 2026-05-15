@@ -258,7 +258,9 @@ export function focusRuneLiteWindowForAutomation() {
   }
 
   try {
-    runeLiteWindow.restore();
+    if (!runeLiteWindow.isVisible()) {
+      runeLiteWindow.show();
+    }
     runeLiteWindow.bringToTop();
   } catch (error) {
     console.error("Could not focus RuneLite window:", error);

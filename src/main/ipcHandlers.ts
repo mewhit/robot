@@ -22,11 +22,13 @@ import {
   getSavedScreenshotSavePath,
   getSavedArceuusBloodRuneConfig,
   getSavedGuardianOfTheRiftConfig,
+  getSavedEndToEndConfig,
   getSavedColossalPouchFullFillCountSinceRepair,
   setSavedScreenshotNameSuffix,
   setSavedScreenshotSavePath,
   setSavedArceuusBloodRuneConfig,
   setSavedGuardianOfTheRiftConfig,
+  setSavedEndToEndConfig,
   setSavedColossalPouchFullFillCountSinceRepair,
 } from "./csvOperator";
 import {
@@ -37,6 +39,7 @@ import {
   normalizeGuardianOfTheRiftConfig,
   type GuardianOfTheRiftConfig,
 } from "./automate-bots/guardian-of-the-rift-config";
+import { normalizeEndToEndConfig, type EndToEndConfig } from "./automate-bots/end-to-end-config";
 import { readGuardianOfTheRiftRunStatsSnapshot } from "./guardianOfTheRiftRunStats";
 import { readActiveFileRows } from "./csvOperations";
 import { resolveInsideOutputFolder } from "./fileManager";
@@ -65,6 +68,8 @@ import { runAgilityScreenshotCapture } from "./automate-bots/shared/screenshot-c
 import { sendAutomateBotLogs } from "./automateBotLogs";
 import { CHANNELS } from "./ipcChannels";
 import { readOsrsCacheMapRegionView } from "./automate-bots/cache/cache-map-view";
+import { fetchEndToEndSectionOneChecklist } from "./automate-bots/end-to-end/guide-checklist";
+import { readLatestEndToEndRoutePathSnapshot } from "./automate-bots/end-to-end/route-path-snapshot";
 
 const robot = ((robotModule as unknown as { default?: any }).default ?? robotModule) as any;
 
@@ -273,6 +278,58 @@ export function setupIpcHandlers() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`Could not save Arceuus Blood Rune config: ${message}`);
+      return { ok: false, error: message };
+    }
+  });
+
+  ipcMain.handle(CHANNELS.GET_END_TO_END_CONFIG, () => {
+    try {
+      return {
+        ok: true,
+        config: getSavedEndToEndConfig(),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Could not get End To End config: ${message}`);
+      return { ok: false, error: message };
+    }
+  });
+
+  ipcMain.handle(CHANNELS.SET_END_TO_END_CONFIG, (_event, config: EndToEndConfig) => {
+    try {
+      setSavedEndToEndConfig(normalizeEndToEndConfig(config));
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Could not save End To End config: ${message}`);
+      return { ok: false, error: message };
+    }
+  });
+
+  ipcMain.handle(CHANNELS.GET_END_TO_END_SECTION_ONE_CHECKLIST, async () => {
+    try {
+      return {
+        ok: true,
+        checklist: await fetchEndToEndSectionOneChecklist(),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Could not fetch End To End section 1 checklist: ${message}`);
+      return { ok: false, error: message };
+    }
+  });
+
+  ipcMain.handle(CHANNELS.GET_END_TO_END_LATEST_PATH, () => {
+    try {
+      const result = readLatestEndToEndRoutePathSnapshot();
+      return {
+        ok: true,
+        path: result.snapshot,
+        filePath: result.filePath,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Could not read End To End latest path: ${message}`);
       return { ok: false, error: message };
     }
   });
