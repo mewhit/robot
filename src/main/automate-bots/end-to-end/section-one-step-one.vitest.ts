@@ -11,6 +11,7 @@ function snapshot(inventoryIds: number[], equipmentIds: number[] = []): RuneLite
     skills: [],
     inventory: inventoryIds.map((id) => ({ id, quantity: 1 })),
     equipment: equipmentIds.map((id) => ({ id, quantity: 1 })),
+    playerTile: null,
     probe: {
       baseUrl: "http://127.0.0.1:8080",
       responses: [],

@@ -46,29 +46,29 @@ export function loadOsrsMapRegion(data: Buffer, regionX: number, regionY: number
       for (let y = 0; y < OSRS_REGION_SIZE; y += 1) {
         const tile = tiles[z][x][y];
         while (true) {
-          const opcode = stream.readUnsignedByte();
-          if (opcode === 0) {
+          const attribute = stream.readUnsignedShort();
+          if (attribute === 0) {
             break;
           }
 
-          if (opcode === 1) {
+          if (attribute === 1) {
             tile.height = stream.readUnsignedByte();
             break;
           }
 
-          if (opcode <= 49) {
+          if (attribute <= 49) {
             tile.overlayId = stream.readShort();
-            tile.overlayPath = Math.floor((opcode - 2) / 4);
-            tile.overlayRotation = (opcode - 2) & 3;
+            tile.overlayPath = Math.floor((attribute - 2) / 4);
+            tile.overlayRotation = (attribute - 2) & 3;
             continue;
           }
 
-          if (opcode <= 81) {
-            tile.settings = opcode - 49;
+          if (attribute <= 81) {
+            tile.settings = attribute - 49;
             continue;
           }
 
-          tile.underlayId = opcode - 81;
+          tile.underlayId = attribute - 81;
         }
       }
     }

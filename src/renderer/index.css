@@ -595,8 +595,40 @@
     @apply bg-slate-700 hover:bg-slate-800;
   }
 
+  .osrs-map-hover-readout {
+    @apply h-9 min-w-48 inline-flex items-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-xs text-slate-600 tabular-nums;
+  }
+
+  .osrs-map-hover-readout span {
+    @apply font-semibold text-slate-500;
+  }
+
+  .osrs-map-hover-readout strong {
+    @apply text-sm font-bold text-slate-900;
+  }
+
+  .osrs-map-hover-readout em {
+    @apply not-italic text-[11px] text-slate-500;
+  }
+
   .osrs-map-error {
     @apply m-0 px-3 py-2 rounded-md border border-red-200 bg-red-50 text-xs text-red-700;
+  }
+
+  .osrs-map-path-input-panel {
+    @apply grid grid-cols-[minmax(0,1fr)_auto] gap-2 border border-slate-200 bg-slate-50 rounded-lg px-3 py-2;
+  }
+
+  .osrs-map-path-input-field {
+    @apply min-w-0 flex flex-col gap-1 text-xs font-semibold text-slate-600;
+  }
+
+  .osrs-map-path-input-field textarea {
+    @apply min-h-20 w-full resize-y rounded-md border border-slate-300 bg-white px-2 py-2 font-mono text-xs leading-5 text-slate-900 outline-none focus:border-teal-700;
+  }
+
+  .osrs-map-path-actions {
+    @apply flex flex-col justify-end gap-2;
   }
 
   .osrs-map-content {
@@ -688,6 +720,26 @@
 
   .osrs-map-object-list {
     @apply mt-3 mb-0 pl-4 text-xs text-slate-700;
+  }
+
+  .osrs-map-detail-group {
+    @apply mt-3 flex flex-col gap-2;
+  }
+
+  .osrs-map-detail-group h4 {
+    @apply m-0 text-xs font-bold text-slate-700;
+  }
+
+  .osrs-map-object-detail {
+    @apply m-0 grid grid-cols-[5rem_minmax(0,1fr)] gap-x-2 gap-y-1 rounded-md border border-slate-200 bg-slate-50 p-2 text-xs;
+  }
+
+  .osrs-map-object-detail dt {
+    @apply text-slate-500 font-semibold;
+  }
+
+  .osrs-map-object-detail dd {
+    @apply m-0 min-w-0 break-words text-slate-800 tabular-nums;
   }
 
   .debug-save-row {
@@ -942,6 +994,14 @@
 
   .osrs-map-content {
     @apply grid-cols-1;
+  }
+
+  .osrs-map-path-input-panel {
+    @apply grid-cols-1;
+  }
+
+  .osrs-map-path-actions {
+    @apply flex-row;
   }
 
   .osrs-map-details {

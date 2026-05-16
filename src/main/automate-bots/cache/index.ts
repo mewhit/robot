@@ -9,4 +9,6 @@ export * from "./map-loader";
 export * from "./object-loader";
 export * from "./osrs-region-cache";
 export * from "./region-collision";
+export * from "./runelite-agility-obstacles";
+export * from "./runelite-agility-shortcuts";
 export * from "./xtea";

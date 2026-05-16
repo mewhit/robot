@@ -6665,7 +6665,7 @@ function formatTimerRead(timerRead: TimerRead): string {
 }
 
 function formatMiningStatus(status: MiningBoxStatusDetection): string {
-  return `status=${status.status} confidence=${status.confidence.toFixed(2)} red=${status.redPixelCount} green=${status.greenPixelCount}`;
+  return `status=${status.status} confidence=${status.confidence.toFixed(2)} red=${status.redPixelCount} green=${status.greenPixelCount} text=${status.textComponentCount}c/${status.textColumnCount}col/${status.textWidth}x${status.textHeight}`;
 }
 
 function formatTimeSincePortal(detection: GuardianOfTheRiftTimeSincePortalDetection): string {

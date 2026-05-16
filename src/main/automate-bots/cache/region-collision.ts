@@ -165,8 +165,7 @@ function getEffectiveTerrainTile(mapRegion: OsrsMapRegion, localX: number, local
 
 function isTerrainBlocked(mapRegion: OsrsMapRegion, localX: number, localY: number, z: number, blockNoFloorTiles: boolean): boolean {
   const terrainTile = getEffectiveTerrainTile(mapRegion, localX, localY, z);
-  const blocksMovementBySetting =
-    terrainTile.settings === 1 || terrainTile.settings === 3 || terrainTile.settings === 5 || terrainTile.settings === 7;
+  const blocksMovementBySetting = (terrainTile.settings & 1) !== 0;
   const hasNoFloor = terrainTile.underlayId === 0 && terrainTile.overlayId === 0;
   return blocksMovementBySetting || (blockNoFloorTiles && hasNoFloor);
 }
@@ -191,9 +190,6 @@ function applyLocation(collision: OsrsRegionCollision, location: OsrsLocation, d
   }
 
   if (location.type === 22) {
-    if (definition.interactType === 1) {
-      addFlag(collision, location.localX, location.localY, location.z, CollisionFlag.Blocked);
-    }
     return;
   }
 

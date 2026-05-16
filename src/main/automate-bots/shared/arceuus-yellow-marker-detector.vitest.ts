@@ -47,8 +47,8 @@ function fillRect(
 describe("Arceuus yellow marker detector", () => {
   test("maps agility level to the correct marker tier", () => {
     expect(getArceuusYellowMarkerTierForAgilityLevel(1)).toBe("base");
-    expect(getArceuusYellowMarkerTierForAgilityLevel(52)).toBe("base");
-    expect(getArceuusYellowMarkerTierForAgilityLevel(53)).toBe("agility-52");
+    expect(getArceuusYellowMarkerTierForAgilityLevel(51)).toBe("base");
+    expect(getArceuusYellowMarkerTierForAgilityLevel(52)).toBe("agility-52");
     expect(getArceuusYellowMarkerTierForAgilityLevel(68)).toBe("agility-52");
     expect(getArceuusYellowMarkerTierForAgilityLevel(69)).toBe("agility-69");
     expect(getArceuusYellowMarkerTierForAgilityLevel(72)).toBe("agility-69");

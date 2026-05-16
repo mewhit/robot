@@ -9,8 +9,9 @@ import {
   AUTOMATE_BOTS,
   DEFAULT_AUTOMATE_BOT_ID,
   END_TO_END_BOT_ID,
-  RUNECRAFTING_ARCEUUS_BLOOD_RUNE_BOT_ID,
+  RUNECRAFTING_ARCEUUS_BLOOD_RUNE_V2_BOT_ID,
   RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID,
+  normalizeAutomateBotId,
 } from "../main/automate-bots/definitions";
 import {
   createDefaultArceuusBloodRuneConfig,
@@ -154,8 +155,7 @@ function getInitialSelectedTaskNodeId(): string | null {
     return DEFAULT_AUTOMATE_BOT_ID;
   }
 
-  const normalized = savedId.trim();
-  return normalized.length > 0 ? normalized : DEFAULT_AUTOMATE_BOT_ID;
+  return normalizeAutomateBotId(savedId) ?? DEFAULT_AUTOMATE_BOT_ID;
 }
 
 function getInitialExpandedTaskNodeIds(): Set<string> {
@@ -257,6 +257,9 @@ export default function App() {
 
     for (const bot of AUTOMATE_BOTS) {
       const leaf: TaskNode = { id: bot.id, name: bot.name };
+      if (bot.steps?.length) {
+        leaf.children = bot.steps.map((step) => ({ id: step.id, name: step.name }));
+      }
 
       if (bot.group) {
         let parent = groups.get(bot.group);
@@ -1665,7 +1668,7 @@ export default function App() {
             endToEndCompletedGuideStepIds={endToEndConfig.completedGuideStepIds}
             isEndToEndChecklistLoading={isEndToEndChecklistLoading}
             endToEndChecklistError={endToEndChecklistError}
-            showArceuusBloodRuneConfig={selectedTaskNodeId === RUNECRAFTING_ARCEUUS_BLOOD_RUNE_BOT_ID}
+            showArceuusBloodRuneConfig={selectedTaskNodeId === RUNECRAFTING_ARCEUUS_BLOOD_RUNE_V2_BOT_ID}
             arceuusBloodRuneAgilityLevel={arceuusBloodRuneConfig.agilityLevel}
             showGuardianOfTheRiftConfig={selectedTaskNodeId === RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}
             guardianOfTheRiftElements={GUARDIAN_OF_THE_RIFT_ACTIVE_ELEMENTS}

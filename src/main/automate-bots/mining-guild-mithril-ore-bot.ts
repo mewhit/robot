@@ -1237,7 +1237,7 @@ function runMineTick(
 
   if (miningStatus.status === "not-mining") {
     log(
-      `Mining status is not-mining (confidence=${miningStatus.confidence.toFixed(2)}, red=${miningStatus.redPixelCount}, green=${miningStatus.greenPixelCount}); returning to ore search.`,
+      `Mining status is not-mining (confidence=${miningStatus.confidence.toFixed(2)}, red=${miningStatus.redPixelCount}, green=${miningStatus.greenPixelCount}, text=${miningStatus.textComponentCount}c/${miningStatus.textColumnCount}col/${miningStatus.textWidth}x${miningStatus.textHeight}); returning to ore search.`,
     );
     return resetToSearchingState({ ...state, inventoryCount }, state.actionLockUntilMs);
   }
@@ -1245,8 +1245,8 @@ function runMineTick(
   if (state.loopIndex % 2 === 0) {
     log(
       miningStatus.status === "mining"
-        ? `Mining status is mining (confidence=${miningStatus.confidence.toFixed(2)}, red=${miningStatus.redPixelCount}, green=${miningStatus.greenPixelCount}); holding current mining target.`
-        : `Mining status is ${miningStatus.status} (confidence=${miningStatus.confidence.toFixed(2)}, red=${miningStatus.redPixelCount}, green=${miningStatus.greenPixelCount}); waiting for the status box to resolve.`,
+        ? `Mining status is mining (confidence=${miningStatus.confidence.toFixed(2)}, red=${miningStatus.redPixelCount}, green=${miningStatus.greenPixelCount}, text=${miningStatus.textComponentCount}c/${miningStatus.textColumnCount}col/${miningStatus.textWidth}x${miningStatus.textHeight}); holding current mining target.`
+        : `Mining status is ${miningStatus.status} (confidence=${miningStatus.confidence.toFixed(2)}, red=${miningStatus.redPixelCount}, green=${miningStatus.greenPixelCount}, text=${miningStatus.textComponentCount}c/${miningStatus.textColumnCount}col/${miningStatus.textWidth}x${miningStatus.textHeight}); waiting for the status box to resolve.`,
     );
   }
 

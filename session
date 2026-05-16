@@ -1,1 +1,3 @@
-codex resume 019e21be-4c6d-7e20-8f5e-7d1e177dd8d0
+codex resume 019e2bf2-c5cf-7073-9318-975f2d358652
+
+ssh -t mikew@192.168.2.115 "powershell -NoExit -Command `"Set-Location 'C:\dev\robot'`""

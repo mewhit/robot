@@ -21,6 +21,22 @@ type SelectedTile = {
   localY: number;
 };
 
+type OsrsMapFilterState = {
+  regionXInput: string;
+  regionYInput: string;
+  worldXInput: string;
+  worldYInput: string;
+  plane: number;
+};
+
+type ParsedManualRoutePath = {
+  pathTiles: EndToEndPathTile[];
+  playerTile: EndToEndPathTile | null;
+  destinationTile: EndToEndPathTile | null;
+  targetTile: EndToEndPathTile | null;
+  clickTile: EndToEndPathTile | null;
+};
+
 const CANVAS_SIZE = 768;
 const REGION_SIZE = 64;
 const CELL_SIZE = CANVAS_SIZE / REGION_SIZE;
@@ -30,6 +46,14 @@ const FLAG_EAST = 1 << 2;
 const FLAG_SOUTH = 1 << 3;
 const FLAG_WEST = 1 << 4;
 const FLAG_PROJECTILE = 1 << 5;
+const OSRS_MAP_FILTERS_STORAGE_KEY = "robot.osrs-map.filters.v1";
+const DEFAULT_OSRS_MAP_FILTERS: OsrsMapFilterState = {
+  regionXInput: "50",
+  regionYInput: "50",
+  worldXInput: "",
+  worldYInput: "",
+  plane: 0,
+};
 
 function getTileKey(localX: number, localY: number, z: number): string {
   return `${localX},${localY},${z}`;
@@ -43,9 +67,238 @@ function clampPlane(value: number): number {
   return Math.max(0, Math.min(3, Math.trunc(value)));
 }
 
+function normalizeIntegerInput(value: unknown, fallback: string): string {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!/^-?\d+$/.test(text)) {
+    return fallback;
+  }
+
+  return text;
+}
+
+function readOsrsMapFilters(): OsrsMapFilterState {
+  try {
+    const raw = window.localStorage.getItem(OSRS_MAP_FILTERS_STORAGE_KEY);
+    if (!raw) {
+      return DEFAULT_OSRS_MAP_FILTERS;
+    }
+
+    const parsed = JSON.parse(raw) as Partial<OsrsMapFilterState>;
+    return {
+      regionXInput: normalizeIntegerInput(parsed.regionXInput, DEFAULT_OSRS_MAP_FILTERS.regionXInput),
+      regionYInput: normalizeIntegerInput(parsed.regionYInput, DEFAULT_OSRS_MAP_FILTERS.regionYInput),
+      worldXInput: normalizeIntegerInput(parsed.worldXInput, DEFAULT_OSRS_MAP_FILTERS.worldXInput),
+      worldYInput: normalizeIntegerInput(parsed.worldYInput, DEFAULT_OSRS_MAP_FILTERS.worldYInput),
+      plane: clampPlane(Number(parsed.plane)),
+    };
+  } catch {
+    return DEFAULT_OSRS_MAP_FILTERS;
+  }
+}
+
+function writeOsrsMapFilters(filters: OsrsMapFilterState): void {
+  try {
+    window.localStorage.setItem(OSRS_MAP_FILTERS_STORAGE_KEY, JSON.stringify(filters));
+  } catch {
+    // Ignore storage failures; the map should still work normally.
+  }
+}
+
+function parseInteger(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && Number.isInteger(value)) {
+    return value;
+  }
+
+  if (typeof value === "string" && /^-?\d+$/.test(value.trim())) {
+    return Number(value);
+  }
+
+  return null;
+}
+
+function normalizeManualPathTile(value: unknown, fallbackPlane: number): EndToEndPathTile | null {
+  if (Array.isArray(value)) {
+    const x = parseInteger(value[0]);
+    const y = parseInteger(value[1]);
+    const z = parseInteger(value[2] ?? fallbackPlane);
+    return x !== null && y !== null && z !== null ? { x, y, z } : null;
+  }
+
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const x = parseInteger(candidate.x ?? candidate.worldX);
+  const y = parseInteger(candidate.y ?? candidate.worldY);
+  const z = parseInteger(candidate.z ?? candidate.plane ?? fallbackPlane);
+  return x !== null && y !== null && z !== null ? { x, y, z } : null;
+}
+
+function sameWorldTile(a: EndToEndPathTile, b: EndToEndPathTile): boolean {
+  return a.x === b.x && a.y === b.y && a.z === b.z;
+}
+
+function parseManualPathJson(input: string, fallbackPlane: number): ParsedManualRoutePath | null {
+  try {
+    const parsed = JSON.parse(input) as unknown;
+    const container = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+    const pathValue = container
+      ? container.pathTiles ?? container.path ?? container.tiles ?? container.points
+      : parsed;
+    if (!Array.isArray(pathValue)) {
+      return null;
+    }
+
+    const pathTiles = pathValue
+      .map((value) => normalizeManualPathTile(value, fallbackPlane))
+      .filter((tile): tile is EndToEndPathTile => tile !== null);
+    if (pathTiles.length === 0) {
+      return null;
+    }
+
+    return {
+      pathTiles,
+      playerTile: container ? normalizeManualPathTile(container.playerTile ?? container.startTile, fallbackPlane) : null,
+      destinationTile: container
+        ? normalizeManualPathTile(container.destinationTile ?? container.destTile ?? container.endTile, fallbackPlane)
+        : null,
+      targetTile: container ? normalizeManualPathTile(container.targetTile, fallbackPlane) : null,
+      clickTile: container ? normalizeManualPathTile(container.clickTile, fallbackPlane) : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseLooseTileObject(input: string, fallbackPlane: number): EndToEndPathTile | null {
+  const x = /(?:^|[,{]\s*)["']?(?:x|worldX)["']?\s*[:=]\s*(-?\d+)/i.exec(input);
+  const y = /(?:^|[,{]\s*)["']?(?:y|worldY)["']?\s*[:=]\s*(-?\d+)/i.exec(input);
+  const z = /(?:^|[,{]\s*)["']?(?:z|plane)["']?\s*[:=]\s*(-?\d+)/i.exec(input);
+  return x && y
+    ? {
+        x: Number(x[1]),
+        y: Number(y[1]),
+        z: z ? Number(z[1]) : fallbackPlane,
+      }
+    : null;
+}
+
+function parseManualPathText(input: string, fallbackPlane: number): ParsedManualRoutePath | null {
+  const firstPathMarkerIndex = input.search(/\[(?:START|PLAYER)\s*:/i);
+  const pathText = firstPathMarkerIndex >= 0 ? input.slice(firstPathMarkerIndex) : input;
+  const triplePattern = /(?:\[([A-Z_+]+)\s*:)?\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)(?:\])?/gi;
+  const pathTiles: EndToEndPathTile[] = [];
+  let playerTile: EndToEndPathTile | null = null;
+  let destinationTile: EndToEndPathTile | null = null;
+  let targetTile: EndToEndPathTile | null = null;
+  let clickTile: EndToEndPathTile | null = null;
+  let match: RegExpExecArray | null;
+
+  while ((match = triplePattern.exec(pathText)) !== null) {
+    const tile = {
+      x: Number(match[2]),
+      y: Number(match[3]),
+      z: Number(match[4]),
+    };
+    const labels = new Set((match[1]?.toUpperCase() ?? "").split("+").filter(Boolean));
+    pathTiles.push(tile);
+
+    if (labels.has("START") || labels.has("PLAYER")) {
+      playerTile = tile;
+    }
+    if (labels.has("CLICK")) {
+      clickTile = tile;
+    }
+    if (labels.has("DEST") || labels.has("DESTINATION") || labels.has("END")) {
+      destinationTile = tile;
+    }
+    if (labels.has("TARGET")) {
+      targetTile = tile;
+    }
+  }
+
+  if (pathTiles.length === 0) {
+    const objectPattern = /\{[^{}]*\}/g;
+    while ((match = objectPattern.exec(pathText)) !== null) {
+      const tile = parseLooseTileObject(match[0], fallbackPlane);
+      if (tile) {
+        pathTiles.push(tile);
+      }
+    }
+  }
+
+  return pathTiles.length > 0
+    ? { pathTiles, playerTile, destinationTile, targetTile, clickTile }
+    : null;
+}
+
+function buildManualRoutePathSnapshot(input: string, fallbackPlane: number): EndToEndRoutePathSnapshot {
+  const trimmed = input.trim();
+  if (!trimmed) {
+    throw new Error("Paste a path before drawing it.");
+  }
+
+  const parsed = parseManualPathJson(trimmed, fallbackPlane) ?? parseManualPathText(trimmed, fallbackPlane);
+  if (!parsed || parsed.pathTiles.length === 0) {
+    throw new Error("Could not find any world tiles. Use x,y,z triples or a JSON array of points.");
+  }
+
+  const playerTile = parsed.playerTile ?? parsed.pathTiles[0];
+  const destinationTile = parsed.destinationTile ?? parsed.pathTiles[parsed.pathTiles.length - 1];
+  const targetTile = parsed.targetTile;
+  const clickTile = parsed.clickTile;
+  const clickIndex = clickTile ? parsed.pathTiles.findIndex((tile) => sameWorldTile(tile, clickTile)) : -1;
+
+  return {
+    schemaVersion: 1,
+    id: `manual-route-${Date.now()}`,
+    botId: "end-to-end",
+    label: `Manual Path (${parsed.pathTiles.length} tiles)`,
+    sourceStep: "manual-map-input",
+    destinationLabel: "Manual destination",
+    createdAt: new Date().toISOString(),
+    routeStatus: "ready",
+    regionX: playerTile.x >> 6,
+    regionY: playerTile.y >> 6,
+    plane: playerTile.z,
+    playerTile,
+    destinationTile,
+    storeTile: null,
+    targetTile,
+    clickTile,
+    pathTiles: parsed.pathTiles,
+    pathLength: Math.max(0, parsed.pathTiles.length - 1),
+    nextWaypointPathLength: clickIndex >= 0 ? clickIndex : 0,
+    selectionReason: "Manual map path input",
+  };
+}
+
 function formatObjectLabel(object: OsrsCacheMapObject): string {
   const name = object.name && object.name !== "null" ? object.name : `Object ${object.id}`;
   return `${name} (${object.id})`;
+}
+
+function formatObjectTypeDescription(type: number): string {
+  if (type >= 0 && type <= 3) {
+    return "Wall object";
+  }
+  if (type === 9) {
+    return "Diagonal object";
+  }
+  if (type === 10 || type === 11) {
+    return "Game object";
+  }
+  if (type === 22) {
+    return "Ground object";
+  }
+  if (type >= 12) {
+    return "Large/scenery object";
+  }
+
+  return "Unknown object";
 }
 
 function getIconLabel(icon: OsrsCacheMapIcon): string {
@@ -54,6 +307,10 @@ function getIconLabel(icon: OsrsCacheMapIcon): string {
 
 function formatWorldTile(tile: EndToEndPathTile | null | undefined): string {
   return tile ? `${tile.x},${tile.y},${tile.z}` : "None";
+}
+
+function isSameSelectedTile(a: SelectedTile | null, b: SelectedTile | null): boolean {
+  return !!a && !!b && a.localX === b.localX && a.localY === b.localY;
 }
 
 function formatDirectionalFlags(flags: number): string {
@@ -65,6 +322,23 @@ function formatDirectionalFlags(flags: number): string {
   ].filter((direction): direction is string => direction !== null);
 
   return directions.length > 0 ? directions.join(" ") : "None";
+}
+
+function formatYesNo(value: boolean): string {
+  return value ? "Yes" : "No";
+}
+
+function formatCollisionFlags(flags: number): string {
+  const names = [
+    (flags & FLAG_BLOCKED) !== 0 ? "Blocked" : null,
+    (flags & FLAG_PROJECTILE) !== 0 ? "Projectile" : null,
+    (flags & FLAG_NORTH) !== 0 ? "North" : null,
+    (flags & FLAG_EAST) !== 0 ? "East" : null,
+    (flags & FLAG_SOUTH) !== 0 ? "South" : null,
+    (flags & FLAG_WEST) !== 0 ? "West" : null,
+  ].filter((name): name is string => name !== null);
+
+  return names.length > 0 ? names.join(", ") : "None";
 }
 
 function getRouteTileCanvasCenter(
@@ -245,6 +519,7 @@ function drawMap(
   region: OsrsCacheMapRegionView,
   plane: number,
   selectedTile: SelectedTile | null,
+  hoveredTile: SelectedTile | null,
   routePath: EndToEndRoutePathSnapshot | null,
 ): void {
   const ctx = canvas.getContext("2d");
@@ -341,6 +616,17 @@ function drawMap(
   drawRoutePath(ctx, region, plane, routePath);
   drawDirectionalCollisionWalls(ctx, planeTiles);
 
+  if (hoveredTile) {
+    const px = hoveredTile.localX * CELL_SIZE;
+    const py = (REGION_SIZE - 1 - hoveredTile.localY) * CELL_SIZE;
+    ctx.save();
+    ctx.strokeStyle = "rgba(15, 23, 42, 0.82)";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([4, 3]);
+    ctx.strokeRect(px + 2, py + 2, CELL_SIZE - 4, CELL_SIZE - 4);
+    ctx.restore();
+  }
+
   if (selectedTile) {
     const px = selectedTile.localX * CELL_SIZE;
     const py = (REGION_SIZE - 1 - selectedTile.localY) * CELL_SIZE;
@@ -352,15 +638,18 @@ function drawMap(
 
 export default function OsrsMapView({ ipcRenderer }: OsrsMapViewProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [regionXInput, setRegionXInput] = useState("50");
-  const [regionYInput, setRegionYInput] = useState("50");
-  const [worldXInput, setWorldXInput] = useState("");
-  const [worldYInput, setWorldYInput] = useState("");
-  const [plane, setPlane] = useState(0);
+  const [initialFilters] = useState(readOsrsMapFilters);
+  const [regionXInput, setRegionXInput] = useState(initialFilters.regionXInput);
+  const [regionYInput, setRegionYInput] = useState(initialFilters.regionYInput);
+  const [worldXInput, setWorldXInput] = useState(initialFilters.worldXInput);
+  const [worldYInput, setWorldYInput] = useState(initialFilters.worldYInput);
+  const [plane, setPlane] = useState(initialFilters.plane);
   const [region, setRegion] = useState<OsrsCacheMapRegionView | null>(null);
   const [selectedTile, setSelectedTile] = useState<SelectedTile | null>(null);
+  const [hoveredTile, setHoveredTile] = useState<SelectedTile | null>(null);
   const [routePath, setRoutePath] = useState<EndToEndRoutePathSnapshot | null>(null);
   const [routePathFilePath, setRoutePathFilePath] = useState<string | null>(null);
+  const [manualPathInput, setManualPathInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isPathLoading, setIsPathLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -375,6 +664,7 @@ export default function OsrsMapView({ ipcRenderer }: OsrsMapViewProps) {
   }, [region]);
 
   const selectedTileData = selectedTile ? tilesByKey.get(getTileKey(selectedTile.localX, selectedTile.localY, plane)) ?? null : null;
+  const hoveredTileData = hoveredTile ? tilesByKey.get(getTileKey(hoveredTile.localX, hoveredTile.localY, plane)) ?? null : null;
 
   const selectedTileObjects = useMemo(() => {
     if (!region || !selectedTile) {
@@ -407,6 +697,10 @@ export default function OsrsMapView({ ipcRenderer }: OsrsMapViewProps) {
 
   const planeTiles = useMemo(() => region?.tiles.filter((tile) => tile.z === plane) ?? [], [plane, region]);
   const blockedTileCount = useMemo(() => planeTiles.filter((tile) => tile.blocked).length, [planeTiles]);
+  const terrainBlockedTileCount = useMemo(
+    () => planeTiles.filter((tile) => (tile.terrainSettings & 1) !== 0).length,
+    [planeTiles],
+  );
   const wallTileCount = useMemo(
     () => planeTiles.filter((tile) => (tile.flags & (FLAG_NORTH | FLAG_EAST | FLAG_SOUTH | FLAG_WEST)) !== 0).length,
     [planeTiles],
@@ -451,6 +745,7 @@ export default function OsrsMapView({ ipcRenderer }: OsrsMapViewProps) {
         setRegionXInput(String(nextRegion.regionX));
         setRegionYInput(String(nextRegion.regionY));
         setSelectedTile(null);
+        setHoveredTile(null);
       } catch (loadError) {
         setError(loadError instanceof Error ? loadError.message : String(loadError));
       } finally {
@@ -461,8 +756,21 @@ export default function OsrsMapView({ ipcRenderer }: OsrsMapViewProps) {
   );
 
   useEffect(() => {
-    void loadRegion({ regionX: 50, regionY: 50 });
+    void loadRegion({
+      regionX: Number(initialFilters.regionXInput),
+      regionY: Number(initialFilters.regionYInput),
+    });
   }, []);
+
+  useEffect(() => {
+    writeOsrsMapFilters({
+      regionXInput,
+      regionYInput,
+      worldXInput,
+      worldYInput,
+      plane,
+    });
+  }, [plane, regionXInput, regionYInput, worldXInput, worldYInput]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -470,27 +778,42 @@ export default function OsrsMapView({ ipcRenderer }: OsrsMapViewProps) {
       return;
     }
 
-    drawMap(canvas, region, plane, selectedTile, routePath);
-  }, [plane, region, routePath, selectedTile]);
+    drawMap(canvas, region, plane, selectedTile, hoveredTile, routePath);
+  }, [hoveredTile, plane, region, routePath, selectedTile]);
+
+  const readCanvasTileFromMouseEvent = useCallback((event: React.MouseEvent<HTMLCanvasElement>): SelectedTile | null => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return null;
+    }
+
+    const rect = canvas.getBoundingClientRect();
+    const x = Math.floor(((event.clientX - rect.left) / rect.width) * REGION_SIZE);
+    const topY = Math.floor(((event.clientY - rect.top) / rect.height) * REGION_SIZE);
+    const y = REGION_SIZE - 1 - topY;
+    if (x < 0 || x >= REGION_SIZE || y < 0 || y >= REGION_SIZE) {
+      return null;
+    }
+
+    return { localX: x, localY: y };
+  }, []);
 
   const handleCanvasClick = useCallback(
     (event: React.MouseEvent<HTMLCanvasElement>) => {
-      const canvas = canvasRef.current;
-      if (!canvas) {
-        return;
+      const tile = readCanvasTileFromMouseEvent(event);
+      if (tile) {
+        setSelectedTile(tile);
       }
-
-      const rect = canvas.getBoundingClientRect();
-      const x = Math.floor(((event.clientX - rect.left) / rect.width) * REGION_SIZE);
-      const topY = Math.floor(((event.clientY - rect.top) / rect.height) * REGION_SIZE);
-      const y = REGION_SIZE - 1 - topY;
-      if (x < 0 || x >= REGION_SIZE || y < 0 || y >= REGION_SIZE) {
-        return;
-      }
-
-      setSelectedTile({ localX: x, localY: y });
     },
-    [],
+    [readCanvasTileFromMouseEvent],
+  );
+
+  const handleCanvasMouseMove = useCallback(
+    (event: React.MouseEvent<HTMLCanvasElement>) => {
+      const tile = readCanvasTileFromMouseEvent(event);
+      setHoveredTile((current) => (isSameSelectedTile(current, tile) ? current : tile));
+    },
+    [readCanvasTileFromMouseEvent],
   );
 
   const handleLoadWorldTile = useCallback(() => {
@@ -532,6 +855,22 @@ export default function OsrsMapView({ ipcRenderer }: OsrsMapViewProps) {
       setIsPathLoading(false);
     }
   }, [ipcRenderer, loadRegion]);
+
+  const drawManualPath = useCallback(async () => {
+    setIsPathLoading(true);
+    setPathError(null);
+    try {
+      const nextPath = buildManualRoutePathSnapshot(manualPathInput, plane);
+      setRoutePath(nextPath);
+      setRoutePathFilePath(null);
+      setPlane(clampPlane(nextPath.plane));
+      await loadRegion({ regionX: nextPath.regionX, regionY: nextPath.regionY });
+    } catch (drawError) {
+      setPathError(drawError instanceof Error ? drawError.message : String(drawError));
+    } finally {
+      setIsPathLoading(false);
+    }
+  }, [loadRegion, manualPathInput, plane]);
 
   return (
     <div className="osrs-map-view">
@@ -587,6 +926,49 @@ export default function OsrsMapView({ ipcRenderer }: OsrsMapViewProps) {
             <option value={3}>3</option>
           </select>
         </label>
+        <div className="osrs-map-hover-readout">
+          <span>Hover</span>
+          <strong>
+            {hoveredTileData
+              ? `${hoveredTileData.worldX},${hoveredTileData.worldY},${hoveredTileData.z}`
+              : "None"}
+          </strong>
+          {hoveredTileData && (
+            <em>
+              local {hoveredTileData.localX},{hoveredTileData.localY}
+            </em>
+          )}
+        </div>
+      </div>
+
+      <div className="osrs-map-path-input-panel">
+        <label className="osrs-map-path-input-field">
+          <span>Manual Path</span>
+          <textarea
+            value={manualPathInput}
+            onChange={(event) => setManualPathInput(event.target.value)}
+            placeholder="[START:1774,3849,0] -> 1775,3849,0 -> [CLICK:1768,3869,0] -> [DEST:1734,3873,0]"
+            spellCheck={false}
+          />
+        </label>
+        <div className="osrs-map-path-actions">
+          <button
+            type="button"
+            className="osrs-map-action"
+            onClick={() => void drawManualPath()}
+            disabled={isLoading || isPathLoading || manualPathInput.trim().length === 0}
+          >
+            Draw Path
+          </button>
+          <button
+            type="button"
+            className="osrs-map-action osrs-map-action-secondary"
+            onClick={() => setManualPathInput("")}
+            disabled={manualPathInput.length === 0}
+          >
+            Clear Input
+          </button>
+        </div>
       </div>
 
       {error && <p className="osrs-map-error">{error}</p>}
@@ -600,6 +982,8 @@ export default function OsrsMapView({ ipcRenderer }: OsrsMapViewProps) {
             height={CANVAS_SIZE}
             className="osrs-map-canvas"
             onClick={handleCanvasClick}
+            onMouseMove={handleCanvasMouseMove}
+            onMouseLeave={() => setHoveredTile(null)}
           />
         </div>
 
@@ -619,6 +1003,8 @@ export default function OsrsMapView({ ipcRenderer }: OsrsMapViewProps) {
                 </dd>
                 <dt>Blocked</dt>
                 <dd>{blockedTileCount} tiles</dd>
+                <dt>Terrain</dt>
+                <dd>{terrainBlockedTileCount} blocked</dd>
                 <dt>Walls</dt>
                 <dd>{wallTileCount} tiles</dd>
                 <dt>Objects</dt>
@@ -681,40 +1067,136 @@ export default function OsrsMapView({ ipcRenderer }: OsrsMapViewProps) {
                       <dd>
                         {selectedTileData.worldX},{selectedTileData.worldY},{selectedTileData.z}
                       </dd>
+                      <dt>Region</dt>
+                      <dd>
+                        {region.regionX},{region.regionY} ({region.regionId})
+                      </dd>
                       <dt>Local</dt>
                       <dd>
                         {selectedTileData.localX},{selectedTileData.localY}
                       </dd>
                       <dt>Flags</dt>
-                      <dd>0x{selectedTileData.flags.toString(16).padStart(2, "0")}</dd>
+                      <dd title={formatCollisionFlags(selectedTileData.flags)}>
+                        0x{selectedTileData.flags.toString(16).padStart(2, "0")} ({selectedTileData.flags})
+                      </dd>
                       <dt>Blocked</dt>
-                      <dd>{(selectedTileData.flags & FLAG_BLOCKED) !== 0 ? "Yes" : "No"}</dd>
+                      <dd>{formatYesNo((selectedTileData.flags & FLAG_BLOCKED) !== 0)}</dd>
                       <dt>Projectile</dt>
-                      <dd>{(selectedTileData.flags & FLAG_PROJECTILE) !== 0 ? "Yes" : "No"}</dd>
+                      <dd>{formatYesNo((selectedTileData.flags & FLAG_PROJECTILE) !== 0)}</dd>
                       <dt>Walls</dt>
                       <dd>{formatDirectionalFlags(selectedTileData.flags)}</dd>
                       <dt>Terrain</dt>
-                      <dd>{selectedTileData.terrainSettings}</dd>
+                      <dd title={`settings=${selectedTileData.terrainSettings} underlay=${selectedTileData.underlayId} overlay=${selectedTileData.overlayId} path=${selectedTileData.overlayPath} rotation=${selectedTileData.overlayRotation}`}>
+                        settings={selectedTileData.terrainSettings} underlay={selectedTileData.underlayId} overlay={selectedTileData.overlayId}
+                      </dd>
+                      <dt>Overlay</dt>
+                      <dd>
+                        path={selectedTileData.overlayPath} rot={selectedTileData.overlayRotation}
+                      </dd>
+                      <dt>Height</dt>
+                      <dd>{selectedTileData.height}</dd>
                       <dt>Path</dt>
                       <dd>{selectedRouteIndices.length > 0 ? selectedRouteIndices.join(", ") : "No"}</dd>
+                      <dt>Objects</dt>
+                      <dd>{selectedTileObjects.length}</dd>
+                      <dt>Icons</dt>
+                      <dd>{selectedTileIcons.length}</dd>
                     </dl>
                     {selectedTileObjects.length > 0 && (
-                      <ul className="osrs-map-object-list">
+                      <div className="osrs-map-detail-group">
+                        <h4>Objects</h4>
                         {selectedTileObjects.slice(0, 8).map((object) => (
-                          <li key={`${object.id}-${object.localX}-${object.localY}-${object.type}`}>
-                            {formatObjectLabel(object)}
-                          </li>
+                          <dl className="osrs-map-object-detail" key={`${object.id}-${object.localX}-${object.localY}-${object.type}`}>
+                            <dt>Name</dt>
+                            <dd title={formatObjectLabel(object)}>{formatObjectLabel(object)}</dd>
+                            <dt>ID</dt>
+                            <dd>{object.id}</dd>
+                            <dt>Agility</dt>
+                            <dd title={object.agilityObstacleKey ?? ""}>
+                              {object.agilityObstacleKey
+                                ? `Yes (${object.agilityObstacleKey}${object.agilityShortcutLevel !== null ? `, level ${object.agilityShortcutLevel}` : ""})`
+                                : "No"}
+                            </dd>
+                            {object.agilityShortcut && (
+                              <>
+                                <dt>Shortcut</dt>
+                                <dd title={object.agilityShortcutKey ?? ""}>
+                                  {object.agilityShortcutDescription ?? "Shortcut"} level {object.agilityShortcutLevel}
+                                </dd>
+                              </>
+                            )}
+                            <dt>Type</dt>
+                            <dd title={formatObjectTypeDescription(object.type)}>
+                              {object.type} ({formatObjectTypeDescription(object.type)})
+                            </dd>
+                            <dt>Interact</dt>
+                            <dd>{object.interactType}</dd>
+                            <dt>Orient</dt>
+                            <dd>{object.orientation}</dd>
+                            <dt>World</dt>
+                            <dd>
+                              {object.worldX},{object.worldY},{object.z}
+                            </dd>
+                            <dt>Local</dt>
+                            <dd>
+                              {object.localX},{object.localY}
+                            </dd>
+                            <dt>Size</dt>
+                            <dd>
+                              {object.sizeX}x{object.sizeY} rotated, def {object.definitionSizeX}x{object.definitionSizeY}
+                            </dd>
+                            <dt>Projectile</dt>
+                            <dd>{formatYesNo(object.blocksProjectile)}</dd>
+                            <dt>Wall/Door</dt>
+                            <dd>{object.wallOrDoor}</dd>
+                            <dt>Map Area</dt>
+                            <dd>{object.mapAreaId}</dd>
+                            <dt>Clipped</dt>
+                            <dd>
+                              clip={formatYesNo(object.clipped)} model={formatYesNo(object.modelClipped)}
+                            </dd>
+                            <dt>Ground</dt>
+                            <dd>
+                              obstruct={formatYesNo(object.obstructsGround)} hollow={formatYesNo(object.isHollow)}
+                            </dd>
+                            <dt>Items</dt>
+                            <dd>{object.supportsItems}</dd>
+                          </dl>
                         ))}
-                      </ul>
+                      </div>
                     )}
                     {selectedTileIcons.length > 0 && (
-                      <ul className="osrs-map-object-list">
+                      <div className="osrs-map-detail-group">
+                        <h4>Icons</h4>
                         {selectedTileIcons.map((icon) => (
-                          <li key={`icon-${icon.areaId}-${icon.localX}-${icon.localY}`}>
-                            {getIconLabel(icon)} icon ({icon.areaId})
-                          </li>
+                          <dl className="osrs-map-object-detail" key={`icon-${icon.areaId}-${icon.localX}-${icon.localY}`}>
+                            <dt>Label</dt>
+                            <dd title={getIconLabel(icon)}>{getIconLabel(icon)}</dd>
+                            <dt>Area</dt>
+                            <dd>{icon.areaId}</dd>
+                            <dt>Sprite</dt>
+                            <dd>{icon.spriteId}</dd>
+                            <dt>Category</dt>
+                            <dd>{icon.category}</dd>
+                            <dt>Object</dt>
+                            <dd title={icon.objectName}>
+                              {icon.objectName} ({icon.objectId})
+                            </dd>
+                            <dt>Type</dt>
+                            <dd>{icon.type}</dd>
+                            <dt>Orient</dt>
+                            <dd>{icon.orientation}</dd>
+                            <dt>World</dt>
+                            <dd>
+                              {icon.worldX},{icon.worldY},{icon.z}
+                            </dd>
+                            <dt>Local</dt>
+                            <dd>
+                              {icon.localX},{icon.localY}
+                            </dd>
+                          </dl>
                         ))}
-                      </ul>
+                      </div>
                     )}
                   </>
                 ) : (

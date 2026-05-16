@@ -23,6 +23,16 @@ import {
   loadOsrsRegionCollisionFromCacheData,
 } from "./osrs-region-cache";
 import {
+  getRuneliteAgilityObstacleKey,
+  isRuneliteAgilityObstacleId,
+  RUNELITE_AGILITY_OBSTACLE_IDS,
+} from "./runelite-agility-obstacles";
+import {
+  getRuneliteAgilityShortcutForObject,
+  isRuneliteAgilityShortcutObjectId,
+  RUNELITE_AGILITY_SHORTCUT_OBJECT_IDS,
+} from "./runelite-agility-shortcuts";
+import {
   CollisionFlag,
   buildOsrsRegionCollision,
   canMoveWithinRegion,
@@ -70,6 +80,33 @@ function writeInt(output: number[], value: number): void {
 
 function writeUnsignedShort(output: number[], value: number): void {
   output.push((value >> 8) & 0xff, value & 0xff);
+}
+
+function writeShort(output: number[], value: number): void {
+  const buffer = Buffer.alloc(2);
+  buffer.writeInt16BE(value, 0);
+  output.push(buffer[0], buffer[1]);
+}
+
+function writeTerrainAttributes(output: number[], attributes: readonly number[]): void {
+  for (let i = 0; i < attributes.length; i += 1) {
+    const attribute = attributes[i];
+    writeUnsignedShort(output, attribute);
+
+    if (attribute === 0) {
+      return;
+    }
+
+    if (attribute === 1) {
+      output.push(attributes[i + 1] ?? 0);
+      return;
+    }
+
+    if (attribute <= 49) {
+      i += 1;
+      writeShort(output, attributes[i] ?? 0);
+    }
+  }
 }
 
 function createCacheContainer(data: Buffer): Buffer {
@@ -180,8 +217,8 @@ function createEmptyMapData(overrides: Record<string, readonly number[]> = {}): 
   for (let z = 0; z < OSRS_PLANES; z += 1) {
     for (let x = 0; x < OSRS_REGION_SIZE; x += 1) {
       for (let y = 0; y < OSRS_REGION_SIZE; y += 1) {
-        const opcodes = overrides[`${x},${y},${z}`] ?? [82, 0];
-        output.push(...opcodes);
+        const attributes = overrides[`${x},${y},${z}`] ?? [82, 0];
+        writeTerrainAttributes(output, attributes);
       }
     }
   }
@@ -256,11 +293,32 @@ describe("OSRS cache loaders", () => {
     expect(decompressCacheContainer(Buffer.concat([gzipHeader, compressed])).data.toString("utf8")).toBe("cache payload");
   });
 
-  it("loads terrain settings from map data", () => {
-    const region = loadOsrsMapRegion(createEmptyMapData({ "3,4,0": [50, 0] }), 50, 50);
+  it("loads terrain attributes from map data", () => {
+    const region = loadOsrsMapRegion(
+      createEmptyMapData({
+        "3,4,0": [50, 0],
+        "4,5,0": [153, 0],
+        "6,7,0": [2, 72, 0],
+      }),
+      50,
+      50,
+    );
 
     expect(region.tiles[0][3][4].settings).toBe(1);
     expect(region.tiles[0][3][5].settings).toBe(0);
+    expect(region.tiles[0][4][5].underlayId).toBe(72);
+    expect(region.tiles[0][6][7].overlayId).toBe(72);
+    expect(region.tiles[0][6][7].overlayPath).toBe(0);
+    expect(region.tiles[0][6][7].overlayRotation).toBe(0);
+  });
+
+  it("blocks movement for terrain setting bit 0", () => {
+    const mapRegion = loadOsrsMapRegion(createEmptyMapData({ "3,4,0": [50, 0] }), 50, 50);
+    const locations = loadOsrsRegionLocations(Buffer.from([0]), 50, 50);
+    const collision = buildOsrsRegionCollision(mapRegion, locations, new Map());
+
+    expect(isRegionTileBlocked(collision, 3, 4, 0)).toBe(true);
+    expect(isRegionTileBlocked(collision, 3, 5, 0)).toBe(false);
   });
 
   it("loads location ids and packed local coordinates", () => {
@@ -294,6 +352,28 @@ describe("OSRS cache loaders", () => {
       sizeY: 3,
       interactType: 2,
       blocksProjectile: true,
+    });
+  });
+
+  it("copies RuneLite agility obstacle ids as local numeric ids", () => {
+    expect(RUNELITE_AGILITY_OBSTACLE_IDS).toHaveLength(269);
+    expect(isRuneliteAgilityObstacleId(23134)).toBe(true);
+    expect(getRuneliteAgilityObstacleKey(23134)).toBe("OBSTICAL_NET2");
+    expect(getRuneliteAgilityObstacleKey(55194)).toBe("VARLAMORE_WYRM_AGILITY_ADVANCED_BALANCE_1_TRIGGER");
+    expect(isRuneliteAgilityObstacleId(27987)).toBe(false);
+  });
+
+  it("copies RuneLite agility shortcut levels for Arceuus dense essence mine", () => {
+    expect(RUNELITE_AGILITY_SHORTCUT_OBJECT_IDS).toEqual([27984, 27985, 27987, 27988, 27990, 34741]);
+    expect(isRuneliteAgilityShortcutObjectId(27987)).toBe(true);
+    expect(getRuneliteAgilityShortcutForObject({ objectId: 27987, worldX: 1773, worldY: 3849, z: 0 })).toMatchObject({
+      key: "ARCEUUS_ESSENCE_MINE_EAST_SCRAMBLE",
+      level: 52,
+      description: "Rock Climb",
+    });
+    expect(getRuneliteAgilityShortcutForObject({ objectId: 34741, worldX: 1761, worldY: 3873, z: 0 })).toMatchObject({
+      key: "ARCEUUS_ESSENCE_NORTH",
+      level: 69,
     });
   });
 
@@ -342,7 +422,7 @@ describe("OSRS cache loaders", () => {
     expect(isRegionTileBlocked(collision, 44, 26, 0)).toBe(false);
   });
 
-  it("blocks movement for floor-blocking type 22 decorations without projectile blocking", () => {
+  it("does not block movement for interactable type 22 ground objects", () => {
     const mapRegion = createEmptyMapRegion();
     const locations = loadOsrsRegionLocations(
       createLocationData({ id: 42, localX: 18, localY: 19, z: 0, type: 22, orientation: 3 }),
@@ -354,7 +434,7 @@ describe("OSRS cache loaders", () => {
     const collision = buildOsrsRegionCollision(mapRegion, locations, definitions);
     const flags = getRegionCollisionFlags(collision, 18, 19, 0);
 
-    expect(flags & CollisionFlag.Blocked).not.toBe(0);
+    expect(flags & CollisionFlag.Blocked).toBe(0);
     expect(flags & CollisionFlag.Projectile).toBe(0);
   });
 

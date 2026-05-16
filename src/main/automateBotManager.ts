@@ -10,7 +10,10 @@ import {
 import { onMotherlodeMineBotStart } from "./automate-bots/motherlode-mine-bot";
 import { onMotherlodeMineBotV2Start } from "./automate-bots/motherlode-mine-bot-v2";
 import { onMotherlodeMineBotV3Start } from "./automate-bots/motherlode-mine-bot-v3";
-import { onRunecraftingArceuusBloodRuneBotStart } from "./automate-bots/runecrafting-arceuus-blood-rune-bot";
+import {
+  onRunecraftingArceuusBloodRuneV2BotStart,
+  onRunecraftingArceuusBloodRuneV2BotStartFromStep,
+} from "./automate-bots/runecrafting-arceuus-blood-rune-bot-v2";
 import { onRunecraftingGuardianOfTheRiftBotStart } from "./automate-bots/runecrafting-guardian-of-the-rift-bot";
 import {
   AUTOMATE_BOTS,
@@ -24,9 +27,9 @@ import {
   MINING_MOTHERLODE_MINE_BOT_ID,
   MINING_MOTHERLODE_MINE_V2_BOT_ID,
   MINING_MOTHERLODE_MINE_V3_BOT_ID,
-  RUNECRAFTING_ARCEUUS_BLOOD_RUNE_BOT_ID,
+  RUNECRAFTING_ARCEUUS_BLOOD_RUNE_V2_BOT_ID,
   RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID,
-  isAutomateBotId,
+  normalizeAutomateBotId,
 } from "./automate-bots/definitions";
 import { flushOcrDebugDirectory } from "./automate-bots/shared/ocr-engine";
 import { readStartupPlayerTileCalibration } from "./automate-bots/shared/startup-calibration";
@@ -45,11 +48,13 @@ const botStartHandlers = new Map<string, () => void>([
   [MINING_MOTHERLODE_MINE_BOT_ID, onMotherlodeMineBotStart],
   [MINING_MOTHERLODE_MINE_V2_BOT_ID, onMotherlodeMineBotV2Start],
   [MINING_MOTHERLODE_MINE_V3_BOT_ID, onMotherlodeMineBotV3Start],
-  [RUNECRAFTING_ARCEUUS_BLOOD_RUNE_BOT_ID, onRunecraftingArceuusBloodRuneBotStart],
+  [RUNECRAFTING_ARCEUUS_BLOOD_RUNE_V2_BOT_ID, onRunecraftingArceuusBloodRuneV2BotStart],
   [RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID, onRunecraftingGuardianOfTheRiftBotStart],
 ]);
 
-const botStartFromStepHandlers = new Map<string, (stepId: string) => void>();
+const botStartFromStepHandlers = new Map<string, (stepId: string) => void>([
+  [RUNECRAFTING_ARCEUUS_BLOOD_RUNE_V2_BOT_ID, onRunecraftingArceuusBloodRuneV2BotStartFromStep],
+]);
 
 function getAutomateBotName(botId: string): string {
   return AUTOMATE_BOTS.find((bot) => bot.id === botId)?.name ?? botId;
@@ -106,8 +111,7 @@ export function setActiveView(view: "clicker" | "automateBot" | "stats" | "map" 
 }
 
 export function setSelectedAutomateBotId(botId: string | null) {
-  const normalized = typeof botId === "string" ? botId.trim() : "";
-  AppState.selectedAutomateBotId = isAutomateBotId(normalized) ? normalized : DEFAULT_AUTOMATE_BOT_ID;
+  AppState.selectedAutomateBotId = normalizeAutomateBotId(botId) ?? DEFAULT_AUTOMATE_BOT_ID;
   setSavedSelectedAutomateBotId(AppState.selectedAutomateBotId ?? "");
 
   if (AppState.automateBotRunning && AppState.selectedAutomateBotId === null) {
@@ -119,8 +123,7 @@ export function setSelectedAutomateBotId(botId: string | null) {
 
 export function loadSavedAutomateBotSelection() {
   const savedBotId = getSavedSelectedAutomateBotId();
-  const normalized = typeof savedBotId === "string" ? savedBotId.trim() : "";
-  AppState.selectedAutomateBotId = isAutomateBotId(normalized) ? normalized : DEFAULT_AUTOMATE_BOT_ID;
+  AppState.selectedAutomateBotId = normalizeAutomateBotId(savedBotId) ?? DEFAULT_AUTOMATE_BOT_ID;
 }
 
 export function stopAutomateBot(source: "f4" | "ui" | "bot") {
@@ -168,7 +171,7 @@ export function startAutomateBotFromStep(stepId: string) {
   let matchedHandler: ((stepId: string) => void) | null = null;
 
   for (const [botId, handler] of botStartFromStepHandlers) {
-    if (stepId.startsWith(botId)) {
+    if (stepId === botId || stepId.startsWith(`${botId}-step-`) || stepId.startsWith(`${botId}:`)) {
       matchedBotId = botId;
       matchedHandler = handler;
       break;

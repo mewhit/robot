@@ -211,7 +211,7 @@ export function getArceuusYellowMarkerTierForAgilityLevel(agilityLevel: number):
     return "agility-69";
   }
 
-  if (agilityLevel > 52) {
+  if (agilityLevel >= 52) {
     return "agility-52";
   }
 

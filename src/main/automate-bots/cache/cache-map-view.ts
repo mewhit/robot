@@ -8,6 +8,7 @@ import {
   getRegionCollisionFlags,
   isKnownWalkableBridgeSurfaceObject,
 } from "./region-collision";
+import { getRuneliteAgilityObstacleKey, isRuneliteAgilityObstacleId } from "./runelite-agility-obstacles";
 import { OsrsObjectDefinition, OsrsObjectDefinitionMap } from "./object-loader";
 import {
   loadOsrsAreaDefinitions,
@@ -15,6 +16,10 @@ import {
   OsrsAreaDefinitionMap,
 } from "./area-loader";
 import { resolveOsrsMapIconLabel } from "./map-icon-labels";
+import {
+  getRuneliteAgilityShortcutForObject,
+  isRuneliteAgilityShortcutObjectId,
+} from "./runelite-agility-shortcuts";
 
 export type OsrsCacheMapTile = {
   localX: number;
@@ -25,6 +30,10 @@ export type OsrsCacheMapTile = {
   flags: number;
   terrainSettings: number;
   height: number;
+  underlayId: number;
+  overlayId: number;
+  overlayPath: number;
+  overlayRotation: number;
   blocked: boolean;
   projectileBlocked: boolean;
 };
@@ -41,8 +50,23 @@ export type OsrsCacheMapObject = {
   z: number;
   sizeX: number;
   sizeY: number;
+  definitionSizeX: number;
+  definitionSizeY: number;
+  interactType: number;
   blocksProjectile: boolean;
+  wallOrDoor: number;
   mapAreaId: number;
+  clipped: boolean;
+  modelClipped: boolean;
+  obstructsGround: boolean;
+  isHollow: boolean;
+  supportsItems: number;
+  agilityObstacle: boolean;
+  agilityObstacleKey: string | null;
+  agilityShortcut: boolean;
+  agilityShortcutKey: string | null;
+  agilityShortcutLevel: number | null;
+  agilityShortcutDescription: string | null;
 };
 
 export type OsrsCacheMapIcon = {
@@ -97,6 +121,14 @@ function getRotatedFootprint(
 }
 
 function shouldIncludeMapObject(location: OsrsLocation, definition: OsrsObjectDefinition): boolean {
+  if (isRuneliteAgilityObstacleId(location.id)) {
+    return true;
+  }
+
+  if (isRuneliteAgilityShortcutObjectId(location.id)) {
+    return true;
+  }
+
   if (definition.interactType === 0) {
     return false;
   }
@@ -123,6 +155,13 @@ function toMapObject(location: OsrsLocation, definition: OsrsObjectDefinition): 
     location.type === 10 || location.type === 11 || location.type >= 12
       ? getRotatedFootprint(definition, location.orientation)
       : { sizeX: 1, sizeY: 1 };
+  const agilityObstacleKey = getRuneliteAgilityObstacleKey(location.id);
+  const agilityShortcut = getRuneliteAgilityShortcutForObject({
+    objectId: location.id,
+    worldX: location.worldX,
+    worldY: location.worldY,
+    z: location.z,
+  });
 
   return {
     id: location.id,
@@ -136,8 +175,23 @@ function toMapObject(location: OsrsLocation, definition: OsrsObjectDefinition): 
     z: location.z,
     sizeX: footprint.sizeX,
     sizeY: footprint.sizeY,
+    definitionSizeX: definition.sizeX,
+    definitionSizeY: definition.sizeY,
+    interactType: definition.interactType,
     blocksProjectile: definition.blocksProjectile,
+    wallOrDoor: definition.wallOrDoor,
     mapAreaId: definition.mapAreaId,
+    clipped: definition.clipped,
+    modelClipped: definition.modelClipped,
+    obstructsGround: definition.obstructsGround,
+    isHollow: definition.isHollow,
+    supportsItems: definition.supportsItems,
+    agilityObstacle: agilityObstacleKey !== null || agilityShortcut !== null,
+    agilityObstacleKey: agilityObstacleKey ?? agilityShortcut?.key ?? null,
+    agilityShortcut: agilityShortcut !== null,
+    agilityShortcutKey: agilityShortcut?.key ?? null,
+    agilityShortcutLevel: agilityShortcut?.level ?? null,
+    agilityShortcutDescription: agilityShortcut?.description ?? null,
   };
 }
 
@@ -211,6 +265,10 @@ export function readOsrsCacheMapRegionView(params: {
             flags,
             terrainSettings: terrainTile.settings,
             height: terrainTile.height,
+            underlayId: terrainTile.underlayId,
+            overlayId: terrainTile.overlayId,
+            overlayPath: terrainTile.overlayPath,
+            overlayRotation: terrainTile.overlayRotation,
             blocked: (flags & CollisionFlag.Blocked) !== 0,
             projectileBlocked: (flags & CollisionFlag.Projectile) !== 0,
           });
