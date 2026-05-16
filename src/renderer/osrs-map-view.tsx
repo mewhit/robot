@@ -16,9 +16,21 @@ type OsrsMapViewProps = {
   ipcRenderer: IpcRenderer;
 };
 
-type SelectedTile = {
+type LocalTile = {
   localX: number;
   localY: number;
+};
+
+type SelectedTile = LocalTile & {
+  regionX: number;
+  regionY: number;
+};
+
+type RegionWindow = {
+  minRegionX: number;
+  maxRegionX: number;
+  minRegionY: number;
+  maxRegionY: number;
 };
 
 type OsrsMapFilterState = {
@@ -40,6 +52,9 @@ type ParsedManualRoutePath = {
 const CANVAS_SIZE = 768;
 const REGION_SIZE = 64;
 const CELL_SIZE = CANVAS_SIZE / REGION_SIZE;
+const MIN_REGION_GRID_WIDTH = 3;
+const MIN_REGION_GRID_HEIGHT = 2;
+const MAX_VISIBLE_REGION_COUNT = 24;
 const FLAG_BLOCKED = 1 << 0;
 const FLAG_NORTH = 1 << 1;
 const FLAG_EAST = 1 << 2;
@@ -55,8 +70,12 @@ const DEFAULT_OSRS_MAP_FILTERS: OsrsMapFilterState = {
   plane: 0,
 };
 
-function getTileKey(localX: number, localY: number, z: number): string {
-  return `${localX},${localY},${z}`;
+function getTileKey(regionX: number, regionY: number, localX: number, localY: number, z: number): string {
+  return `${regionX},${regionY},${localX},${localY},${z}`;
+}
+
+function getRegionKey(regionX: number, regionY: number): string {
+  return `${regionX},${regionY}`;
 }
 
 function clampPlane(value: number): number {
@@ -310,7 +329,117 @@ function formatWorldTile(tile: EndToEndPathTile | null | undefined): string {
 }
 
 function isSameSelectedTile(a: SelectedTile | null, b: SelectedTile | null): boolean {
-  return !!a && !!b && a.localX === b.localX && a.localY === b.localY;
+  return (
+    !!a &&
+    !!b &&
+    a.regionX === b.regionX &&
+    a.regionY === b.regionY &&
+    a.localX === b.localX &&
+    a.localY === b.localY
+  );
+}
+
+function getRegionWindowCount(window: RegionWindow): number {
+  return (window.maxRegionX - window.minRegionX + 1) * (window.maxRegionY - window.minRegionY + 1);
+}
+
+function expandRegionWindow(window: RegionWindow, direction: "x" | "y"): RegionWindow {
+  if (direction === "x") {
+    const expandMin = (window.maxRegionX - window.minRegionX) % 2 === 0;
+    return expandMin
+      ? { ...window, minRegionX: window.minRegionX - 1 }
+      : { ...window, maxRegionX: window.maxRegionX + 1 };
+  }
+
+  const expandMin = (window.maxRegionY - window.minRegionY) % 2 === 0;
+  return expandMin
+    ? { ...window, minRegionY: window.minRegionY - 1 }
+    : { ...window, maxRegionY: window.maxRegionY + 1 };
+}
+
+function ensureMinimumRegionWindow(window: RegionWindow): RegionWindow {
+  let nextWindow = window;
+  while (nextWindow.maxRegionX - nextWindow.minRegionX + 1 < MIN_REGION_GRID_WIDTH) {
+    nextWindow = expandRegionWindow(nextWindow, "x");
+  }
+  while (nextWindow.maxRegionY - nextWindow.minRegionY + 1 < MIN_REGION_GRID_HEIGHT) {
+    nextWindow = expandRegionWindow(nextWindow, "y");
+  }
+  while (getRegionWindowCount(nextWindow) < MIN_REGION_GRID_WIDTH * MIN_REGION_GRID_HEIGHT) {
+    const width = nextWindow.maxRegionX - nextWindow.minRegionX + 1;
+    const height = nextWindow.maxRegionY - nextWindow.minRegionY + 1;
+    nextWindow = expandRegionWindow(nextWindow, width <= height ? "x" : "y");
+  }
+
+  return nextWindow;
+}
+
+function buildDefaultRegionWindow(regionX: number, regionY: number): RegionWindow {
+  return {
+    minRegionX: regionX - 1,
+    maxRegionX: regionX + 1,
+    minRegionY: regionY - 1,
+    maxRegionY: regionY,
+  };
+}
+
+function buildRegionWindowForPath(routePath: EndToEndRoutePathSnapshot): RegionWindow {
+  const allTiles = [
+    routePath.playerTile,
+    routePath.destinationTile,
+    routePath.storeTile,
+    routePath.targetTile,
+    routePath.clickTile,
+    ...routePath.pathTiles,
+  ].filter((tile): tile is EndToEndPathTile => tile !== null && tile !== undefined);
+
+  const regions = allTiles.map((tile) => ({ regionX: tile.x >> 6, regionY: tile.y >> 6 }));
+  const minRegionX = Math.min(...regions.map((region) => region.regionX));
+  const maxRegionX = Math.max(...regions.map((region) => region.regionX));
+  const minRegionY = Math.min(...regions.map((region) => region.regionY));
+  const maxRegionY = Math.max(...regions.map((region) => region.regionY));
+
+  return ensureMinimumRegionWindow({
+    minRegionX,
+    maxRegionX,
+    minRegionY,
+    maxRegionY,
+  });
+}
+
+function enumerateRegionWindow(window: RegionWindow): Array<{ regionX: number; regionY: number }> {
+  const coordinates: Array<{ regionX: number; regionY: number }> = [];
+  for (let regionY = window.maxRegionY; regionY >= window.minRegionY; regionY -= 1) {
+    for (let regionX = window.minRegionX; regionX <= window.maxRegionX; regionX += 1) {
+      coordinates.push({ regionX, regionY });
+    }
+  }
+  return coordinates;
+}
+
+function getRegionsWindow(regions: OsrsCacheMapRegionView[]): RegionWindow | null {
+  if (regions.length === 0) {
+    return null;
+  }
+
+  return {
+    minRegionX: Math.min(...regions.map((region) => region.regionX)),
+    maxRegionX: Math.max(...regions.map((region) => region.regionX)),
+    minRegionY: Math.min(...regions.map((region) => region.regionY)),
+    maxRegionY: Math.max(...regions.map((region) => region.regionY)),
+  };
+}
+
+function sortRegionsForGrid(regions: OsrsCacheMapRegionView[]): OsrsCacheMapRegionView[] {
+  return [...regions].sort((a, b) => b.regionY - a.regionY || a.regionX - b.regionX);
+}
+
+function getLocalTileForRegion(region: OsrsCacheMapRegionView, tile: SelectedTile | null): LocalTile | null {
+  if (!tile || tile.regionX !== region.regionX || tile.regionY !== region.regionY) {
+    return null;
+  }
+
+  return { localX: tile.localX, localY: tile.localY };
 }
 
 function formatDirectionalFlags(flags: number): string {
@@ -518,8 +647,8 @@ function drawMap(
   canvas: HTMLCanvasElement,
   region: OsrsCacheMapRegionView,
   plane: number,
-  selectedTile: SelectedTile | null,
-  hoveredTile: SelectedTile | null,
+  selectedTile: LocalTile | null,
+  hoveredTile: LocalTile | null,
   routePath: EndToEndRoutePathSnapshot | null,
 ): void {
   const ctx = canvas.getContext("2d");
@@ -636,15 +765,113 @@ function drawMap(
   }
 }
 
-export default function OsrsMapView({ ipcRenderer }: OsrsMapViewProps) {
+type OsrsRegionCanvasProps = {
+  region: OsrsCacheMapRegionView;
+  plane: number;
+  selectedTile: SelectedTile | null;
+  hoveredTile: SelectedTile | null;
+  routePath: EndToEndRoutePathSnapshot | null;
+  onSelectTile: (tile: SelectedTile) => void;
+  onHoverTile: (tile: SelectedTile | null) => void;
+};
+
+function OsrsRegionCanvas({
+  region,
+  plane,
+  selectedTile,
+  hoveredTile,
+  routePath,
+  onSelectTile,
+  onHoverTile,
+}: OsrsRegionCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const selectedLocalTile = getLocalTileForRegion(region, selectedTile);
+  const hoveredLocalTile = getLocalTileForRegion(region, hoveredTile);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return;
+    }
+
+    drawMap(canvas, region, plane, selectedLocalTile, hoveredLocalTile, routePath);
+  }, [hoveredLocalTile, plane, region, routePath, selectedLocalTile]);
+
+  const readCanvasTileFromMouseEvent = useCallback((event: React.MouseEvent<HTMLCanvasElement>): SelectedTile | null => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return null;
+    }
+
+    const rect = canvas.getBoundingClientRect();
+    const x = Math.floor(((event.clientX - rect.left) / rect.width) * REGION_SIZE);
+    const topY = Math.floor(((event.clientY - rect.top) / rect.height) * REGION_SIZE);
+    const y = REGION_SIZE - 1 - topY;
+    if (x < 0 || x >= REGION_SIZE || y < 0 || y >= REGION_SIZE) {
+      return null;
+    }
+
+    return {
+      regionX: region.regionX,
+      regionY: region.regionY,
+      localX: x,
+      localY: y,
+    };
+  }, [region.regionX, region.regionY]);
+
+  const handleCanvasClick = useCallback(
+    (event: React.MouseEvent<HTMLCanvasElement>) => {
+      const tile = readCanvasTileFromMouseEvent(event);
+      if (tile) {
+        onSelectTile(tile);
+      }
+    },
+    [onSelectTile, readCanvasTileFromMouseEvent],
+  );
+
+  const handleCanvasMouseMove = useCallback(
+    (event: React.MouseEvent<HTMLCanvasElement>) => {
+      onHoverTile(readCanvasTileFromMouseEvent(event));
+    },
+    [onHoverTile, readCanvasTileFromMouseEvent],
+  );
+
+  const visibleRouteTileCount = routePath
+    ? routePath.pathTiles.filter((tile) => isRouteTileInRegion(region, plane, tile)).length
+    : 0;
+
+  return (
+    <div className="osrs-map-region-cell">
+      <div className="osrs-map-region-title">
+        <strong>
+          Region {region.regionX},{region.regionY}
+        </strong>
+        <span>
+          base {region.baseX},{region.baseY}
+          {routePath ? ` | path ${visibleRouteTileCount}` : ""}
+        </span>
+      </div>
+      <canvas
+        ref={canvasRef}
+        width={CANVAS_SIZE}
+        height={CANVAS_SIZE}
+        className="osrs-map-canvas"
+        onClick={handleCanvasClick}
+        onMouseMove={handleCanvasMouseMove}
+        onMouseLeave={() => onHoverTile(null)}
+      />
+    </div>
+  );
+}
+
+export default function OsrsMapView({ ipcRenderer }: OsrsMapViewProps) {
   const [initialFilters] = useState(readOsrsMapFilters);
   const [regionXInput, setRegionXInput] = useState(initialFilters.regionXInput);
   const [regionYInput, setRegionYInput] = useState(initialFilters.regionYInput);
   const [worldXInput, setWorldXInput] = useState(initialFilters.worldXInput);
   const [worldYInput, setWorldYInput] = useState(initialFilters.worldYInput);
   const [plane, setPlane] = useState(initialFilters.plane);
-  const [region, setRegion] = useState<OsrsCacheMapRegionView | null>(null);
+  const [regions, setRegions] = useState<OsrsCacheMapRegionView[]>([]);
   const [selectedTile, setSelectedTile] = useState<SelectedTile | null>(null);
   const [hoveredTile, setHoveredTile] = useState<SelectedTile | null>(null);
   const [routePath, setRoutePath] = useState<EndToEndRoutePathSnapshot | null>(null);
@@ -655,23 +882,44 @@ export default function OsrsMapView({ ipcRenderer }: OsrsMapViewProps) {
   const [error, setError] = useState<string | null>(null);
   const [pathError, setPathError] = useState<string | null>(null);
 
+  const sortedRegions = useMemo(() => sortRegionsForGrid(regions), [regions]);
+  const regionWindow = useMemo(() => getRegionsWindow(regions), [regions]);
+  const regionGridColumnCount = regionWindow ? regionWindow.maxRegionX - regionWindow.minRegionX + 1 : 1;
+  const selectedRegion = useMemo(() => {
+    if (!selectedTile) {
+      return null;
+    }
+
+    return regions.find((loadedRegion) => (
+      loadedRegion.regionX === selectedTile.regionX &&
+      loadedRegion.regionY === selectedTile.regionY
+    )) ?? null;
+  }, [regions, selectedTile]);
+  const focusedRegion = selectedRegion ?? sortedRegions[0] ?? null;
+
   const tilesByKey = useMemo(() => {
     const map = new Map<string, OsrsCacheMapTile>();
-    for (const tile of region?.tiles ?? []) {
-      map.set(getTileKey(tile.localX, tile.localY, tile.z), tile);
+    for (const loadedRegion of regions) {
+      for (const tile of loadedRegion.tiles) {
+        map.set(getTileKey(loadedRegion.regionX, loadedRegion.regionY, tile.localX, tile.localY, tile.z), tile);
+      }
     }
     return map;
-  }, [region]);
+  }, [regions]);
 
-  const selectedTileData = selectedTile ? tilesByKey.get(getTileKey(selectedTile.localX, selectedTile.localY, plane)) ?? null : null;
-  const hoveredTileData = hoveredTile ? tilesByKey.get(getTileKey(hoveredTile.localX, hoveredTile.localY, plane)) ?? null : null;
+  const selectedTileData = selectedTile
+    ? tilesByKey.get(getTileKey(selectedTile.regionX, selectedTile.regionY, selectedTile.localX, selectedTile.localY, plane)) ?? null
+    : null;
+  const hoveredTileData = hoveredTile
+    ? tilesByKey.get(getTileKey(hoveredTile.regionX, hoveredTile.regionY, hoveredTile.localX, hoveredTile.localY, plane)) ?? null
+    : null;
 
   const selectedTileObjects = useMemo(() => {
-    if (!region || !selectedTile) {
+    if (!selectedRegion || !selectedTile) {
       return [];
     }
 
-    return region.objects.filter((object) => {
+    return selectedRegion.objects.filter((object) => {
       if (object.z !== plane) {
         return false;
       }
@@ -683,19 +931,21 @@ export default function OsrsMapView({ ipcRenderer }: OsrsMapViewProps) {
         selectedTile.localY < object.localY + object.sizeY
       );
     });
-  }, [plane, region, selectedTile]);
+  }, [plane, selectedRegion, selectedTile]);
 
   const selectedTileIcons = useMemo(() => {
-    if (!region || !selectedTile) {
+    if (!selectedRegion || !selectedTile) {
       return [];
     }
 
-    return region.icons.filter(
+    return selectedRegion.icons.filter(
       (icon) => icon.z === plane && icon.localX === selectedTile.localX && icon.localY === selectedTile.localY,
     );
-  }, [plane, region, selectedTile]);
+  }, [plane, selectedRegion, selectedTile]);
 
-  const planeTiles = useMemo(() => region?.tiles.filter((tile) => tile.z === plane) ?? [], [plane, region]);
+  const planeTiles = useMemo(() => regions.flatMap((loadedRegion) => (
+    loadedRegion.tiles.filter((tile) => tile.z === plane)
+  )), [plane, regions]);
   const blockedTileCount = useMemo(() => planeTiles.filter((tile) => tile.blocked).length, [planeTiles]);
   const terrainBlockedTileCount = useMemo(
     () => planeTiles.filter((tile) => (tile.terrainSettings & 1) !== 0).length,
@@ -705,45 +955,57 @@ export default function OsrsMapView({ ipcRenderer }: OsrsMapViewProps) {
     () => planeTiles.filter((tile) => (tile.flags & (FLAG_NORTH | FLAG_EAST | FLAG_SOUTH | FLAG_WEST)) !== 0).length,
     [planeTiles],
   );
-  const planeObjectCount = useMemo(() => region?.objects.filter((object) => object.z === plane).length ?? 0, [plane, region]);
-  const planeIconCount = useMemo(() => region?.icons.filter((icon) => icon.z === plane).length ?? 0, [plane, region]);
+  const planeObjectCount = useMemo(() => (
+    regions.reduce((count, loadedRegion) => count + loadedRegion.objects.filter((object) => object.z === plane).length, 0)
+  ), [plane, regions]);
+  const planeIconCount = useMemo(() => (
+    regions.reduce((count, loadedRegion) => count + loadedRegion.icons.filter((icon) => icon.z === plane).length, 0)
+  ), [plane, regions]);
   const visibleRouteTileCount = useMemo(() => {
-    if (!region || !routePath) {
+    if (regions.length === 0 || !routePath) {
       return 0;
     }
 
-    return routePath.pathTiles.filter((tile) => isRouteTileInRegion(region, plane, tile)).length;
-  }, [plane, region, routePath]);
+    return routePath.pathTiles.filter((tile) => (
+      regions.some((loadedRegion) => isRouteTileInRegion(loadedRegion, plane, tile))
+    )).length;
+  }, [plane, regions, routePath]);
   const selectedRouteIndices = useMemo(() => {
-    if (!region || !selectedTile || !routePath) {
+    if (!selectedRegion || !selectedTile || !routePath) {
       return [];
     }
 
-    const worldX = region.baseX + selectedTile.localX;
-    const worldY = region.baseY + selectedTile.localY;
+    const worldX = selectedRegion.baseX + selectedTile.localX;
+    const worldY = selectedRegion.baseY + selectedTile.localY;
     return routePath.pathTiles
       .map((tile, index) => (tile.x === worldX && tile.y === worldY && tile.z === plane ? index : -1))
       .filter((index) => index >= 0);
-  }, [plane, region, routePath, selectedTile]);
+  }, [plane, routePath, selectedRegion, selectedTile]);
 
-  const loadRegion = useCallback(
-    async (payload?: { regionX?: number; regionY?: number; worldX?: number; worldY?: number }) => {
+  const loadRegionWindow = useCallback(
+    async (window: RegionWindow, focusRegion?: { regionX: number; regionY: number }) => {
+      if (getRegionWindowCount(window) > MAX_VISIBLE_REGION_COUNT) {
+        setError(`Region window is too large (${getRegionWindowCount(window)} regions, max ${MAX_VISIBLE_REGION_COUNT}).`);
+        return;
+      }
+
       setIsLoading(true);
       setError(null);
       try {
-        const result = await ipcRenderer.invoke(CHANNELS.GET_OSRS_CACHE_MAP_REGION, payload ?? {
-          regionX: Number(regionXInput),
-          regionY: Number(regionYInput),
-        });
-        if (!result?.ok || !result.region) {
-          setError(result?.error || "Unable to load cache map region.");
+        const coordinates = enumerateRegionWindow(window);
+        const results = await Promise.all(coordinates.map((coordinate) => (
+          ipcRenderer.invoke(CHANNELS.GET_OSRS_CACHE_MAP_REGION, coordinate)
+        )));
+        const failedResult = results.find((result) => !result?.ok || !result.region);
+        if (failedResult) {
+          setError(failedResult?.error || "Unable to load cache map regions.");
           return;
         }
 
-        const nextRegion = result.region as OsrsCacheMapRegionView;
-        setRegion(nextRegion);
-        setRegionXInput(String(nextRegion.regionX));
-        setRegionYInput(String(nextRegion.regionY));
+        const nextRegions = results.map((result) => result.region as OsrsCacheMapRegionView);
+        setRegions(nextRegions);
+        setRegionXInput(String(focusRegion?.regionX ?? nextRegions[0]?.regionX ?? window.minRegionX));
+        setRegionYInput(String(focusRegion?.regionY ?? nextRegions[0]?.regionY ?? window.maxRegionY));
         setSelectedTile(null);
         setHoveredTile(null);
       } catch (loadError) {
@@ -752,7 +1014,31 @@ export default function OsrsMapView({ ipcRenderer }: OsrsMapViewProps) {
         setIsLoading(false);
       }
     },
-    [ipcRenderer, regionXInput, regionYInput],
+    [ipcRenderer],
+  );
+
+  const loadRegion = useCallback(
+    async (payload?: { regionX?: number; regionY?: number; worldX?: number; worldY?: number }) => {
+      const rawRegionX =
+        typeof payload?.worldX === "number" && Number.isFinite(payload.worldX)
+          ? payload.worldX >> 6
+          : payload?.regionX ?? Number(regionXInput);
+      const rawRegionY =
+        typeof payload?.worldY === "number" && Number.isFinite(payload.worldY)
+          ? payload.worldY >> 6
+          : payload?.regionY ?? Number(regionYInput);
+      if (!Number.isFinite(rawRegionX) || !Number.isFinite(rawRegionY)) {
+        setError("Region X and Y must be valid numbers.");
+        return;
+      }
+
+      const focusRegion = {
+        regionX: Math.trunc(Number(rawRegionX)),
+        regionY: Math.trunc(Number(rawRegionY)),
+      };
+      await loadRegionWindow(buildDefaultRegionWindow(focusRegion.regionX, focusRegion.regionY), focusRegion);
+    },
+    [loadRegionWindow, regionXInput, regionYInput],
   );
 
   useEffect(() => {
@@ -771,50 +1057,6 @@ export default function OsrsMapView({ ipcRenderer }: OsrsMapViewProps) {
       plane,
     });
   }, [plane, regionXInput, regionYInput, worldXInput, worldYInput]);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || !region) {
-      return;
-    }
-
-    drawMap(canvas, region, plane, selectedTile, hoveredTile, routePath);
-  }, [hoveredTile, plane, region, routePath, selectedTile]);
-
-  const readCanvasTileFromMouseEvent = useCallback((event: React.MouseEvent<HTMLCanvasElement>): SelectedTile | null => {
-    const canvas = canvasRef.current;
-    if (!canvas) {
-      return null;
-    }
-
-    const rect = canvas.getBoundingClientRect();
-    const x = Math.floor(((event.clientX - rect.left) / rect.width) * REGION_SIZE);
-    const topY = Math.floor(((event.clientY - rect.top) / rect.height) * REGION_SIZE);
-    const y = REGION_SIZE - 1 - topY;
-    if (x < 0 || x >= REGION_SIZE || y < 0 || y >= REGION_SIZE) {
-      return null;
-    }
-
-    return { localX: x, localY: y };
-  }, []);
-
-  const handleCanvasClick = useCallback(
-    (event: React.MouseEvent<HTMLCanvasElement>) => {
-      const tile = readCanvasTileFromMouseEvent(event);
-      if (tile) {
-        setSelectedTile(tile);
-      }
-    },
-    [readCanvasTileFromMouseEvent],
-  );
-
-  const handleCanvasMouseMove = useCallback(
-    (event: React.MouseEvent<HTMLCanvasElement>) => {
-      const tile = readCanvasTileFromMouseEvent(event);
-      setHoveredTile((current) => (isSameSelectedTile(current, tile) ? current : tile));
-    },
-    [readCanvasTileFromMouseEvent],
-  );
 
   const handleLoadWorldTile = useCallback(() => {
     const worldX = Number(worldXInput);
@@ -848,13 +1090,16 @@ export default function OsrsMapView({ ipcRenderer }: OsrsMapViewProps) {
       setRoutePath(nextPath);
       setRoutePathFilePath(typeof result.filePath === "string" ? result.filePath : null);
       setPlane(clampPlane(nextPath.plane));
-      await loadRegion({ regionX: nextPath.regionX, regionY: nextPath.regionY });
+      await loadRegionWindow(buildRegionWindowForPath(nextPath), {
+        regionX: nextPath.regionX,
+        regionY: nextPath.regionY,
+      });
     } catch (loadError) {
       setPathError(loadError instanceof Error ? loadError.message : String(loadError));
     } finally {
       setIsPathLoading(false);
     }
-  }, [ipcRenderer, loadRegion]);
+  }, [ipcRenderer, loadRegionWindow]);
 
   const drawManualPath = useCallback(async () => {
     setIsPathLoading(true);
@@ -864,13 +1109,24 @@ export default function OsrsMapView({ ipcRenderer }: OsrsMapViewProps) {
       setRoutePath(nextPath);
       setRoutePathFilePath(null);
       setPlane(clampPlane(nextPath.plane));
-      await loadRegion({ regionX: nextPath.regionX, regionY: nextPath.regionY });
+      await loadRegionWindow(buildRegionWindowForPath(nextPath), {
+        regionX: nextPath.regionX,
+        regionY: nextPath.regionY,
+      });
     } catch (drawError) {
       setPathError(drawError instanceof Error ? drawError.message : String(drawError));
     } finally {
       setIsPathLoading(false);
     }
-  }, [loadRegion, manualPathInput, plane]);
+  }, [loadRegionWindow, manualPathInput, plane]);
+
+  const handleSelectTile = useCallback((tile: SelectedTile) => {
+    setSelectedTile(tile);
+  }, []);
+
+  const handleHoverTile = useCallback((tile: SelectedTile | null) => {
+    setHoveredTile((current) => (isSameSelectedTile(current, tile) ? current : tile));
+  }, []);
 
   return (
     <div className="osrs-map-view">
@@ -976,30 +1232,49 @@ export default function OsrsMapView({ ipcRenderer }: OsrsMapViewProps) {
 
       <div className="osrs-map-content">
         <div className="osrs-map-canvas-panel">
-          <canvas
-            ref={canvasRef}
-            width={CANVAS_SIZE}
-            height={CANVAS_SIZE}
-            className="osrs-map-canvas"
-            onClick={handleCanvasClick}
-            onMouseMove={handleCanvasMouseMove}
-            onMouseLeave={() => setHoveredTile(null)}
-          />
+          {sortedRegions.length > 0 ? (
+            <div
+              className="osrs-map-region-grid"
+              style={{ gridTemplateColumns: `repeat(${regionGridColumnCount}, ${CANVAS_SIZE}px)` }}
+            >
+              {sortedRegions.map((loadedRegion) => (
+                <OsrsRegionCanvas
+                  key={getRegionKey(loadedRegion.regionX, loadedRegion.regionY)}
+                  region={loadedRegion}
+                  plane={plane}
+                  selectedTile={selectedTile}
+                  hoveredTile={hoveredTile}
+                  routePath={routePath}
+                  onSelectTile={handleSelectTile}
+                  onHoverTile={handleHoverTile}
+                />
+              ))}
+            </div>
+          ) : (
+            <p className="osrs-map-empty-state">{isLoading ? "Loading cache map..." : "No region loaded."}</p>
+          )}
         </div>
 
         <aside className="osrs-map-details">
-          {region ? (
+          {focusedRegion ? (
             <>
               <dl className="osrs-map-stats">
                 <dt>Cache</dt>
-                <dd title={region.cacheDirectoryPath}>{region.cacheDirectoryPath}</dd>
-                <dt>Region</dt>
+                <dd title={focusedRegion.cacheDirectoryPath}>{focusedRegion.cacheDirectoryPath}</dd>
+                <dt>Regions</dt>
                 <dd>
-                  {region.regionX},{region.regionY} ({region.regionId})
+                  {regions.length}
+                  {regionWindow
+                    ? ` (${regionWindow.minRegionX}-${regionWindow.maxRegionX}, ${regionWindow.minRegionY}-${regionWindow.maxRegionY})`
+                    : ""}
+                </dd>
+                <dt>Focus</dt>
+                <dd>
+                  {focusedRegion.regionX},{focusedRegion.regionY} ({focusedRegion.regionId})
                 </dd>
                 <dt>Base</dt>
                 <dd>
-                  {region.baseX},{region.baseY}
+                  {focusedRegion.baseX},{focusedRegion.baseY}
                 </dd>
                 <dt>Blocked</dt>
                 <dd>{blockedTileCount} tiles</dd>
@@ -1009,12 +1284,12 @@ export default function OsrsMapView({ ipcRenderer }: OsrsMapViewProps) {
                 <dd>{wallTileCount} tiles</dd>
                 <dt>Objects</dt>
                 <dd>
-                  {planeObjectCount}/{region.locationCount}
+                  {planeObjectCount}/{regions.reduce((count, loadedRegion) => count + loadedRegion.locationCount, 0)}
                 </dd>
                 <dt>Icons</dt>
                 <dd>{planeIconCount}</dd>
                 <dt>Defs</dt>
-                <dd>{region.objectDefinitionCount}</dd>
+                <dd>{focusedRegion.objectDefinitionCount}</dd>
               </dl>
 
               <div className="osrs-map-legend">
@@ -1069,7 +1344,9 @@ export default function OsrsMapView({ ipcRenderer }: OsrsMapViewProps) {
                       </dd>
                       <dt>Region</dt>
                       <dd>
-                        {region.regionX},{region.regionY} ({region.regionId})
+                        {selectedRegion
+                          ? `${selectedRegion.regionX},${selectedRegion.regionY} (${selectedRegion.regionId})`
+                          : "Unknown"}
                       </dd>
                       <dt>Local</dt>
                       <dd>

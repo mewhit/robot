@@ -53,7 +53,7 @@ import {
   formatRuneLitePluginPreflightChecks,
   runArceuusBloodRuneV2PluginPreflight,
 } from "./shared/runelite-plugin-preflight";
-import { holdRobotKey } from "./shared/robot-keyboard";
+import { holdRobotKey, tapRobotKey } from "./shared/robot-keyboard";
 import { readStartupPlayerTileCalibration, type StartupPlayerTileCalibration } from "./shared/startup-calibration";
 import {
   MINIMAP_CLICK_CALIBRATION_DEFAULT_STABLE_TICKS,
@@ -118,6 +118,9 @@ const ARCEUUS_MINING_CLICK_CONFIRM_ATTEMPTS = 5;
 const ARCEUUS_ROUTE_PROJECTED_CLICK_MAX_PATH_TILES = 6;
 const ARCEUUS_ALTAR_SHORTCUT_CLICK_DISTANCE_TILES = 2;
 const ARCEUUS_ALTAR_SHORTCUT_GREEN_OUTLINE_MAX_DISTANCE_PX = 150;
+const ARCEUUS_ALTAR_SHORTCUT_GREEN_OUTLINE_MIN_PIXELS = 80;
+const ARCEUUS_ALTAR_SHORTCUT_GREEN_OUTLINE_MIN_WIDTH_PX = 12;
+const ARCEUUS_ALTAR_SHORTCUT_GREEN_OUTLINE_MIN_HEIGHT_PX = 12;
 const ARCEUUS_ALTAR_SHORTCUT_WAIT_TICKS = 8;
 const ARCEUUS_ALTAR_SHORTCUT_CAMERA_SEARCH_DISTANCE_TILES = 6;
 const ARCEUUS_ALTAR_SHORTCUT_CAMERA_ROTATE_HOLD_MS_MIN = 135;
@@ -162,6 +165,13 @@ const ARCEUUS_MINIMAP_PLAYER_DOT_SEARCH_RADIUS_LOGICAL = 30;
 const ARCEUUS_MINIMAP_PLAYER_DOT_MAX_CENTER_OFFSET_LOGICAL = 9;
 const ARCEUUS_MINIMAP_PLAYER_DOT_MAX_SIZE_LOGICAL = 12;
 const ARCEUUS_MINIMAP_PLAYER_DOT_MIN_PIXELS = 2;
+const ARCEUUS_FIXED_CAMERA_DIRECTION_KEY = "p";
+const ARCEUUS_FIXED_CAMERA_DIRECTION_LABEL = "west";
+const ARCEUUS_FIXED_CAMERA_SETTLE_MS = 260;
+const ARCEUUS_FIXED_CAMERA_TAP_MIN_MS = 45;
+const ARCEUUS_FIXED_CAMERA_TAP_MAX_MS = 85;
+const ARCEUUS_FIXED_WEST_CAMERA_NORTH_X = 1;
+const ARCEUUS_FIXED_WEST_CAMERA_NORTH_Y = 0;
 const ARCEUUS_V2_CLICK_DEBUG_IMAGE_DIR = path.join("test-image-debug", "arceuus-v2-clicks");
 const ARCEUUS_V2_CLICK_DEBUG_COMPASS_VECTOR_PX = 55;
 const ARCEUUS_DARK_ALTAR_TARGET_TILE = { x: 1717, y: 3882, z: 0 } as const;
@@ -268,6 +278,11 @@ type ArceuusMinimapSource =
   | "inferred-from-compass"
   | "inferred-from-capture";
 
+type ArceuusMinimapProjectionSource =
+  | "compass-rotated"
+  | "north-up-fallback"
+  | "fixed-west-camera";
+
 type ArceuusMinimapGeometry = {
   centerLocalX: number;
   centerLocalY: number;
@@ -321,7 +336,7 @@ type ArceuusMinimapClickPlan = {
   minimapDetectionScore: number | null;
   minimapDetectionSummary: string;
   minimapCandidates: RuneliteMinimapGeometryCandidate[];
-  projectionSource: "compass-rotated" | "north-up-fallback";
+  projectionSource: ArceuusMinimapProjectionSource;
   northX: number;
   northY: number;
   eastX: number;
@@ -355,7 +370,7 @@ type ArceuusMinimapMovementPendingSample = {
   projectionOffsetLocalYBefore: number;
   wasVectorClamped: boolean;
   minimapSource: ArceuusMinimapSource;
-  projectionSource: "compass-rotated" | "north-up-fallback";
+  projectionSource: ArceuusMinimapProjectionSource;
   northX: number;
   northY: number;
   eastX: number;
@@ -416,6 +431,7 @@ let cachedDarkAltarTarget: ArceuusDarkAltarTarget | null = null;
 let cachedBloodAltarTarget: ArceuusBloodAltarTarget | null = null;
 let arceuusV2ClickDebugImageIndex = 0;
 let arceuusMinimapMovementLearning = createArceuusMinimapMovementLearningState();
+let arceuusFixedCameraPreparedForRun = false;
 
 function toClickDebugLabel(stepLabel: string, suffix: string): string {
   const stepToken = stepLabel.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
@@ -474,6 +490,7 @@ function getSharedMinimapClickCalibrationOptions(): Partial<MinimapClickCalibrat
     tilePxScaleMax: ARCEUUS_MINIMAP_LEARN_TILE_SCALE_MAX,
     radiusRatioMin: ARCEUUS_MINIMAP_LEARN_RADIUS_RATIO_MIN,
     radiusRatioMax: ARCEUUS_MINIMAP_LEARN_RADIUS_RATIO_MAX,
+    trustedErrorTiles: 1,
     warn: warnWithDelta,
   };
 }
@@ -2057,6 +2074,25 @@ function inferArceuusMinimap(
   };
 }
 
+function getFixedWestCameraProjectionAxes(): {
+  northX: number;
+  northY: number;
+  eastX: number;
+  eastY: number;
+  projectionSource: ArceuusMinimapProjectionSource;
+} {
+  const northLength = Math.hypot(ARCEUUS_FIXED_WEST_CAMERA_NORTH_X, ARCEUUS_FIXED_WEST_CAMERA_NORTH_Y);
+  const northX = northLength > 0 ? ARCEUUS_FIXED_WEST_CAMERA_NORTH_X / northLength : 1;
+  const northY = northLength > 0 ? ARCEUUS_FIXED_WEST_CAMERA_NORTH_Y / northLength : 0;
+  return {
+    northX,
+    northY,
+    eastX: -northY,
+    eastY: northX,
+    projectionSource: "fixed-west-camera",
+  };
+}
+
 function projectWorldTileToMinimap(
   calibration: StartupPlayerTileCalibration,
   bitmap: ScreenBitmap | null,
@@ -2079,14 +2115,10 @@ function projectWorldTileToMinimap(
   const distanceTiles = Math.max(Math.abs(dxTiles), Math.abs(dyTiles));
   const learning = arceuusMinimapMovementLearning;
   const effectiveTilePx = minimap.tilePx * learning.tilePxScale;
-  const jitterPx = Math.max(1, Math.round(effectiveTilePx * 0.6));
-  const rawNorthX = calibration.compassNorth?.northVectorX ?? 0;
-  const rawNorthY = calibration.compassNorth?.northVectorY ?? -1;
-  const northLength = Math.hypot(rawNorthX, rawNorthY);
-  const northX = northLength > 0 ? rawNorthX / northLength : 0;
-  const northY = northLength > 0 ? rawNorthY / northLength : -1;
-  const eastX = -northY;
-  const eastY = northX;
+  const calibrationActive = shouldRunArceuusMinimapProjectionCalibration(learning);
+  const jitterPx = calibrationActive ? 0 : Math.max(1, Math.round(effectiveTilePx * 0.6));
+  const axes = getFixedWestCameraProjectionAxes();
+  const { northX, northY, eastX, eastY, projectionSource } = axes;
   let localDx = (eastX * dxTiles + northX * dyTiles) * effectiveTilePx;
   let localDy = (eastY * dxTiles + northY * dyTiles) * effectiveTilePx;
   const vectorLength = Math.hypot(localDx, localDy);
@@ -2138,7 +2170,7 @@ function projectWorldTileToMinimap(
     minimapDetectionScore: minimap.detectionScore,
     minimapDetectionSummary: minimap.detectionSummary,
     minimapCandidates: minimap.candidates,
-    projectionSource: calibration.compassNorth ? "compass-rotated" : "north-up-fallback",
+    projectionSource,
     northX,
     northY,
     eastX,
@@ -2497,6 +2529,42 @@ function getProjectedShortcutLocalPoint(
     : null;
 }
 
+function isArceuusShortcutGreenOutlineInsideRuneLiteUi(
+  outline: GreenOutlineDetection,
+  bitmap: ScreenBitmap,
+): boolean {
+  const topRightUiMinX = Math.round(bitmap.width - 360);
+  const topRightUiMaxY = Math.round(bitmap.height * 0.28);
+  const bottomRightUiMinX = Math.round(bitmap.width - 390);
+  const bottomRightUiMinY = Math.round(bitmap.height * 0.70);
+  const rightPluginRailMinX = Math.round(bitmap.width - 70);
+
+  return (
+    outline.centerX >= rightPluginRailMinX ||
+    (outline.centerX >= topRightUiMinX && outline.centerY <= topRightUiMaxY) ||
+    (outline.centerX >= bottomRightUiMinX && outline.centerY >= bottomRightUiMinY)
+  );
+}
+
+function isArceuusShortcutGreenOutlineClickable(
+  outline: GreenOutlineDetection,
+  bitmap: ScreenBitmap,
+): boolean {
+  return (
+    outline.pixelCount >= ARCEUUS_ALTAR_SHORTCUT_GREEN_OUTLINE_MIN_PIXELS &&
+    outline.width >= ARCEUUS_ALTAR_SHORTCUT_GREEN_OUTLINE_MIN_WIDTH_PX &&
+    outline.height >= ARCEUUS_ALTAR_SHORTCUT_GREEN_OUTLINE_MIN_HEIGHT_PX &&
+    !isArceuusShortcutGreenOutlineInsideRuneLiteUi(outline, bitmap)
+  );
+}
+
+function filterArceuusShortcutGreenOutlines(
+  outlines: readonly GreenOutlineDetection[],
+  bitmap: ScreenBitmap,
+): GreenOutlineDetection[] {
+  return outlines.filter((outline) => isArceuusShortcutGreenOutlineClickable(outline, bitmap));
+}
+
 async function clickArceuusShortcutGreenOutline(
   stepLabel: string,
   tick: ArceuusShortcutClickTick,
@@ -2514,8 +2582,10 @@ async function clickArceuusShortcutGreenOutline(
     projectedLocal,
     ARCEUUS_ALTAR_SHORTCUT_GREEN_OUTLINE_MAX_DISTANCE_PX,
   );
+  const clickableNearGreenOutlines = filterArceuusShortcutGreenOutlines(greenOutlinesNearProjectedTile, tick.bitmap);
+  const clickableGlobalGreenOutlines = filterArceuusShortcutGreenOutlines(tick.greenOutlines, tick.bitmap);
   const greenOutline = pickNearestGreenOutlineToPoint(
-    [...greenOutlinesNearProjectedTile, ...tick.greenOutlines],
+    [...clickableNearGreenOutlines, ...clickableGlobalGreenOutlines],
     projectedLocal,
     ARCEUUS_ALTAR_SHORTCUT_GREEN_OUTLINE_MAX_DISTANCE_PX,
   );
@@ -2544,7 +2614,7 @@ async function clickArceuusShortcutGreenOutline(
     addCompassDebugOverlay(debugShapes, tick.calibration);
     const debugPath = await saveClickDebugImage(`${sanitizeDebugImageLabel(stepLabel)}-shortcut-green-outline-missing`, tick.bitmap, debugShapes);
     warnWithDelta(
-      `${stepLabel} shortcut waiting for green outline near projected map tile: target=${formatWorldRouteAgilityShortcutTarget(target)} projectedLocal=${projectedLocal.x},${projectedLocal.y} maxDistance=${ARCEUUS_ALTAR_SHORTCUT_GREEN_OUTLINE_MAX_DISTANCE_PX}px nearGreen=${greenOutlinesNearProjectedTile.map(formatGreenOutline).join("; ") || "none"} globalGreen=${tick.greenOutlines.map(formatGreenOutline).join("; ") || "none"} debug=${debugPath ?? "none"}.`,
+      `${stepLabel} shortcut waiting for clickable green outline near projected map tile: target=${formatWorldRouteAgilityShortcutTarget(target)} projectedLocal=${projectedLocal.x},${projectedLocal.y} maxDistance=${ARCEUUS_ALTAR_SHORTCUT_GREEN_OUTLINE_MAX_DISTANCE_PX}px nearGreen=${greenOutlinesNearProjectedTile.map(formatGreenOutline).join("; ") || "none"} clickableNear=${clickableNearGreenOutlines.map(formatGreenOutline).join("; ") || "none"} globalGreen=${tick.greenOutlines.map(formatGreenOutline).join("; ") || "none"} clickableGlobal=${clickableGlobalGreenOutlines.map(formatGreenOutline).join("; ") || "none"} filters=minPixels=${ARCEUUS_ALTAR_SHORTCUT_GREEN_OUTLINE_MIN_PIXELS},minSize=${ARCEUUS_ALTAR_SHORTCUT_GREEN_OUTLINE_MIN_WIDTH_PX}x${ARCEUUS_ALTAR_SHORTCUT_GREEN_OUTLINE_MIN_HEIGHT_PX},excludeUi=top-right/bottom-right/rail debug=${debugPath ?? "none"}.`,
     );
     return false;
   }
@@ -2613,7 +2683,7 @@ async function clickArceuusShortcutGreenOutline(
   const debugPath = await saveClickDebugImage(`${sanitizeDebugImageLabel(stepLabel)}-shortcut-green-outline-click`, tick.bitmap, debugShapes);
 
   logWithDelta(
-    `${stepLabel} shortcut click: mode=green-outline-near-projected-tile target=${formatWorldRouteAgilityShortcutTarget(target)} projectedLocal=${projectedLocal.x},${projectedLocal.y} outline=${formatGreenOutline(greenOutline)} nearCandidates=${greenOutlinesNearProjectedTile.length} globalCandidates=${tick.greenOutlines.length} screen=${clicked.x},${clicked.y} local=${clickedLocal.x},${clickedLocal.y} debug=${debugPath ?? "none"}.`,
+    `${stepLabel} shortcut click: mode=green-outline-near-projected-tile target=${formatWorldRouteAgilityShortcutTarget(target)} projectedLocal=${projectedLocal.x},${projectedLocal.y} outline=${formatGreenOutline(greenOutline)} nearCandidates=${greenOutlinesNearProjectedTile.length} clickableNear=${clickableNearGreenOutlines.length} globalCandidates=${tick.greenOutlines.length} clickableGlobal=${clickableGlobalGreenOutlines.length} screen=${clicked.x},${clicked.y} local=${clickedLocal.x},${clickedLocal.y} debug=${debugPath ?? "none"}.`,
   );
 
   await sleepWithAbort(ticksToMs(ARCEUUS_ALTAR_SHORTCUT_WAIT_TICKS, GAME_TICK_MS) + randomIntInclusive(80, 220), () => AppState.automateBotRunning);
@@ -2689,6 +2759,32 @@ async function clickProjectedPlannedRouteWaypoint(
   return { status: "clicked", route };
 }
 
+async function prepareFixedWestCameraForRun(reason: string): Promise<void> {
+  if (arceuusFixedCameraPreparedForRun) {
+    return;
+  }
+
+  focusRuneLiteWindowForAutomation();
+  const result = await tapRobotKey(ARCEUUS_FIXED_CAMERA_DIRECTION_KEY, {
+    minHoldMs: ARCEUUS_FIXED_CAMERA_TAP_MIN_MS,
+    maxHoldMs: ARCEUUS_FIXED_CAMERA_TAP_MAX_MS,
+    afterMs: ARCEUUS_FIXED_CAMERA_SETTLE_MS + randomIntInclusive(20, 80),
+    shouldContinue: () => AppState.automateBotRunning,
+  });
+
+  if (!result.ok) {
+    warnWithDelta(
+      `Fixed camera orientation failed: reason=${reason} key=${ARCEUUS_FIXED_CAMERA_DIRECTION_KEY} direction=${ARCEUUS_FIXED_CAMERA_DIRECTION_LABEL} error=${result.error ?? "stopped"}.`,
+    );
+    return;
+  }
+
+  arceuusFixedCameraPreparedForRun = true;
+  logWithDelta(
+    `Fixed camera orientation prepared once: reason=${reason} tapped '${ARCEUUS_FIXED_CAMERA_DIRECTION_KEY}' for ${ARCEUUS_FIXED_CAMERA_DIRECTION_LABEL}; minimap projection uses fixed-west north=(${ARCEUUS_FIXED_WEST_CAMERA_NORTH_X},${ARCEUUS_FIXED_WEST_CAMERA_NORTH_Y}).`,
+  );
+}
+
 async function clickMinimapPlannedRouteWaypoint(
   tick: ArceuusRouteClickTick,
   playerTile: WorldRouteTile,
@@ -2702,10 +2798,11 @@ async function clickMinimapPlannedRouteWaypoint(
     return { status: "unavailable", route };
   }
 
-  const minimap = inferArceuusMinimap(tick.calibration, tick.bitmap);
+  const activeTick = tick;
+  const minimap = inferArceuusMinimap(activeTick.calibration, activeTick.bitmap);
   if (minimap.source !== "detected-from-contour") {
     warnWithDelta(
-      `${stepLabel} minimap route skipped: minimap contour not detected source=${minimap.source} expectedCenter=${tick.calibration.captureBounds.x + minimap.expectedCenterLocalX},${tick.calibration.captureBounds.y + minimap.expectedCenterLocalY} expectedRadius=${minimap.expectedRadiusPx}px detector=${minimap.detectionSummary}.`,
+      `${stepLabel} minimap route skipped: minimap contour not detected source=${minimap.source} expectedCenter=${activeTick.calibration.captureBounds.x + minimap.expectedCenterLocalX},${activeTick.calibration.captureBounds.y + minimap.expectedCenterLocalY} expectedRadius=${minimap.expectedRadiusPx}px detector=${minimap.detectionSummary}.`,
     );
     return { status: "unavailable", route };
   }
@@ -2717,8 +2814,8 @@ async function clickMinimapPlannedRouteWaypoint(
   }
 
   const clickPlan = projectWorldTileToMinimap(
-    tick.calibration,
-    tick.bitmap,
+    activeTick.calibration,
+    activeTick.bitmap,
     playerTile,
     clickTarget.tile,
     clickTarget.pathStep,
@@ -2729,20 +2826,20 @@ async function clickMinimapPlannedRouteWaypoint(
     return { status: "unavailable", route };
   }
 
-  await moveMouseHumanLike(clickPlan.screenPoint.x, clickPlan.screenPoint.y, tick.calibration.captureBounds, {
+  await moveMouseHumanLike(clickPlan.screenPoint.x, clickPlan.screenPoint.y, activeTick.calibration.captureBounds, {
     maxDurationMs: 260,
     safeEdgeMarginPx: 8,
     shouldContinue: () => AppState.automateBotRunning,
   });
-  const clicked = clickScreenPoint(clickPlan.screenPoint.x, clickPlan.screenPoint.y, tick.calibration.captureBounds, {
+  const clicked = clickScreenPoint(clickPlan.screenPoint.x, clickPlan.screenPoint.y, activeTick.calibration.captureBounds, {
     settleMs: randomIntInclusive(45, 120),
     safeEdgeMarginPx: 8,
   });
   const clickedAtMs = Date.now();
-  const minimapCenterLocal = screenPointToLocal(tick.calibration, clickPlan.minimapCenter);
-  const expectedMinimapCenterLocal = screenPointToLocal(tick.calibration, clickPlan.expectedMinimapCenter);
-  const projectedLocal = screenPointToLocal(tick.calibration, clickPlan.projectedScreenPoint);
-  const clickedLocal = screenPointToLocal(tick.calibration, clicked);
+  const minimapCenterLocal = screenPointToLocal(activeTick.calibration, clickPlan.minimapCenter);
+  const expectedMinimapCenterLocal = screenPointToLocal(activeTick.calibration, clickPlan.expectedMinimapCenter);
+  const projectedLocal = screenPointToLocal(activeTick.calibration, clickPlan.projectedScreenPoint);
+  const clickedLocal = screenPointToLocal(activeTick.calibration, clicked);
   const debugShapes: DebugOverlayShape[] = [
     {
       type: "circle",
@@ -2825,8 +2922,8 @@ async function clickMinimapPlannedRouteWaypoint(
       thickness: 1,
     });
   }
-  addCompassDebugOverlay(debugShapes, tick.calibration);
-  const debugPath = await saveClickDebugImage(`${toClickDebugLabel(stepLabel, "minimap-click")}-${attempt}`, tick.bitmap, debugShapes);
+  addCompassDebugOverlay(debugShapes, activeTick.calibration);
+  const debugPath = await saveClickDebugImage(`${toClickDebugLabel(stepLabel, "minimap-click")}-${attempt}`, activeTick.bitmap, debugShapes);
 
   const maxExpectedTravelTiles = Math.max(
     1,
@@ -2841,7 +2938,7 @@ async function clickMinimapPlannedRouteWaypoint(
   const waitMs = ticksToMs(travelTicks, GAME_TICK_MS) + randomIntInclusive(80, 260);
   const estimatedRunTicks = Math.max(1, Math.ceil(clickTarget.pathStep / 2));
   const estimatedWalkTicks = Math.max(1, clickTarget.pathStep);
-  const compass = tick.calibration.compassNorth;
+  const compass = activeTick.calibration.compassNorth;
   const compassSummary = compass
     ? `compassNorth=(${compass.northVectorX.toFixed(3)},${compass.northVectorY.toFixed(3)}) compassConfidence=${compass.confidence.toFixed(2)} compassCenter=${compass.centerX},${compass.centerY}`
     : "compassNorth=missing";
@@ -2906,7 +3003,7 @@ async function clickMinimapPlannedRouteWaypoint(
     });
     if (stableRead) {
       observeArceuusMinimapMovement(stepLabel, stableRead.tile, {
-        sourceCalibration: tick.calibration,
+        sourceCalibration: activeTick.calibration,
         stableRead,
       });
     } else {
@@ -4227,6 +4324,7 @@ async function runArceuusBloodRuneV2(startStepId: string | null): Promise<void> 
   }
 
   isArceuusV2LoopRunning = true;
+  arceuusFixedCameraPreparedForRun = false;
   if (arceuusV2StartedAtMs === null) {
     arceuusV2StartedAtMs = Date.now();
   }
@@ -4237,6 +4335,11 @@ async function runArceuusBloodRuneV2(startStepId: string | null): Promise<void> 
 
     const startStep = await runInitialPluginCheck(requestedStartStep);
     if (!startStep || !AppState.automateBotRunning) {
+      return;
+    }
+
+    await prepareFixedWestCameraForRun(`before-start-step ${startStep.name}`);
+    if (!AppState.automateBotRunning) {
       return;
     }
 
@@ -4281,6 +4384,7 @@ async function runArceuusBloodRuneV2(startStepId: string | null): Promise<void> 
     stopAutomateBot("bot");
   } finally {
     isArceuusV2LoopRunning = false;
+    arceuusFixedCameraPreparedForRun = false;
     arceuusV2StartedAtMs = null;
     if (!AppState.automateBotRunning) {
       setAutomateBotCurrentStep(null);

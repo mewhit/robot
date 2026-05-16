@@ -639,10 +639,38 @@
     @apply min-h-0 overflow-auto rounded-lg border border-slate-200 bg-slate-100 p-3;
   }
 
+  .osrs-map-region-grid {
+    @apply grid gap-0 w-max overflow-hidden rounded-md border border-slate-300 bg-white;
+  }
+
+  .osrs-map-region-cell {
+    @apply relative w-[768px] bg-white;
+  }
+
+  .osrs-map-region-title {
+    @apply pointer-events-none absolute left-2 top-2 z-10 max-w-[calc(100%-1rem)] rounded bg-white/85 px-2 py-1 shadow-sm flex items-center gap-2 text-xs text-slate-600 tabular-nums;
+  }
+
+  .osrs-map-region-title strong {
+    @apply text-slate-900;
+  }
+
+  .osrs-map-region-title span {
+    @apply min-w-0 truncate text-[11px] text-slate-500;
+  }
+
   .osrs-map-canvas {
     @apply block max-w-full h-auto mx-auto rounded border border-slate-300 bg-white cursor-crosshair;
     image-rendering: pixelated;
     aspect-ratio: 1 / 1;
+  }
+
+  .osrs-map-region-cell .osrs-map-canvas {
+    @apply mx-0 rounded-none border-0;
+  }
+
+  .osrs-map-empty-state {
+    @apply m-0 text-xs text-slate-500;
   }
 
   .osrs-map-details {

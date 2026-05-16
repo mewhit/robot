@@ -8,6 +8,7 @@ import { clamp } from "./osrs-helper";
 export const MINIMAP_CLICK_CALIBRATION_VERSION = 1;
 export const MINIMAP_CLICK_CALIBRATION_FILE_NAME = "minimap-click-calibration-v1.json";
 export const MINIMAP_CLICK_CALIBRATION_DEFAULT_GOOD_ERROR_TILES = 3;
+export const MINIMAP_CLICK_CALIBRATION_DEFAULT_TRUSTED_ERROR_TILES = 1;
 export const MINIMAP_CLICK_CALIBRATION_DEFAULT_TRUSTED_STREAK = 3;
 export const MINIMAP_CLICK_CALIBRATION_DEFAULT_OFFSET_LEARN_RATE = 0.35;
 export const MINIMAP_CLICK_CALIBRATION_DEFAULT_OFFSET_MAX_PX = 48;
@@ -23,6 +24,7 @@ export type MinimapClickCalibrationOptions = {
   radiusRatioMin: number;
   radiusRatioMax: number;
   goodErrorTiles: number;
+  trustedErrorTiles: number;
   trustedStreak: number;
   offsetLearnRate: number;
   offsetMaxPx: number;
@@ -111,6 +113,7 @@ export function resolveMinimapClickCalibrationOptions(
     radiusRatioMin: options.radiusRatioMin ?? 0.66,
     radiusRatioMax: options.radiusRatioMax ?? 0.88,
     goodErrorTiles: options.goodErrorTiles ?? MINIMAP_CLICK_CALIBRATION_DEFAULT_GOOD_ERROR_TILES,
+    trustedErrorTiles: options.trustedErrorTiles ?? MINIMAP_CLICK_CALIBRATION_DEFAULT_TRUSTED_ERROR_TILES,
     trustedStreak: options.trustedStreak ?? MINIMAP_CLICK_CALIBRATION_DEFAULT_TRUSTED_STREAK,
     offsetLearnRate: options.offsetLearnRate ?? MINIMAP_CLICK_CALIBRATION_DEFAULT_OFFSET_LEARN_RATE,
     offsetMaxPx: options.offsetMaxPx ?? MINIMAP_CLICK_CALIBRATION_DEFAULT_OFFSET_MAX_PX,
@@ -232,10 +235,14 @@ export function createMinimapClickCalibrationState(
   options: Partial<MinimapClickCalibrationOptions> = {},
 ): MinimapClickCalibrationState {
   const resolved = resolveMinimapClickCalibrationOptions(options);
+  const savedTrustedGoodStreak =
+    savedCalibration && savedCalibration.lastErrorTiles <= resolved.trustedErrorTiles
+      ? savedCalibration.goodStreak
+      : 0;
   const isTrusted =
     !!savedCalibration &&
-    savedCalibration.goodStreak >= resolved.trustedStreak &&
-    savedCalibration.lastErrorTiles <= resolved.goodErrorTiles;
+    savedTrustedGoodStreak >= resolved.trustedStreak &&
+    savedCalibration.lastErrorTiles <= resolved.trustedErrorTiles;
 
   return {
     tilePxScale: savedCalibration?.tilePxScale ?? resolved.defaultTilePxScale,
@@ -244,7 +251,7 @@ export function createMinimapClickCalibrationState(
     projectionOffsetLocalY: savedCalibration?.projectionOffsetLocalY ?? 0,
     calibrationSampleCount: savedCalibration?.sampleCount ?? 0,
     calibrationErrorSumTiles: (savedCalibration?.averageErrorTiles ?? 0) * (savedCalibration?.sampleCount ?? 0),
-    calibrationGoodStreak: savedCalibration?.goodStreak ?? 0,
+    calibrationGoodStreak: savedTrustedGoodStreak,
     isCalibrationTrusted: isTrusted,
     startupValidationPending: isTrusted,
     savedCalibrationPath: getMinimapClickCalibrationPath(resolved),
@@ -353,7 +360,9 @@ export function observeMinimapClickCalibration(
   );
   state.calibrationSampleCount += 1;
   state.calibrationErrorSumTiles += targetErrorTiles;
-  if (targetErrorTiles <= resolved.goodErrorTiles) {
+  const isGoodSample = targetErrorTiles <= resolved.goodErrorTiles;
+  const isTrustedSample = targetErrorTiles <= resolved.trustedErrorTiles;
+  if (isTrustedSample) {
     state.calibrationGoodStreak += 1;
   } else {
     state.calibrationGoodStreak = 0;
@@ -363,9 +372,13 @@ export function observeMinimapClickCalibration(
   let saved = false;
   if (state.startupValidationPending) {
     state.startupValidationPending = false;
-    if (targetErrorTiles <= resolved.goodErrorTiles) {
+    if (isTrustedSample) {
       state.isCalibrationTrusted = true;
       summary = "startup-check-passed";
+      saved = saveMinimapClickCalibration(state, observation.sourceCalibration ?? null, targetErrorTiles, resolved);
+    } else if (isGoodSample) {
+      state.isCalibrationTrusted = false;
+      summary = `startup-check-refining trustedError=${resolved.trustedErrorTiles}`;
       saved = saveMinimapClickCalibration(state, observation.sourceCalibration ?? null, targetErrorTiles, resolved);
     } else {
       state.isCalibrationTrusted = false;
@@ -381,6 +394,10 @@ export function observeMinimapClickCalibration(
     saved = saveMinimapClickCalibration(state, observation.sourceCalibration ?? null, targetErrorTiles, resolved);
   } else {
     state.isCalibrationTrusted = false;
+    if (isGoodSample) {
+      summary = `refining-goodStreak=${state.calibrationGoodStreak}/${resolved.trustedStreak}`;
+      saved = saveMinimapClickCalibration(state, observation.sourceCalibration ?? null, targetErrorTiles, resolved);
+    }
   }
 
   return {
