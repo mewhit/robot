@@ -360,8 +360,21 @@ export function formatRuneLiteLocalApiSnapshot(
   } equipment=${snapshot.equipment.length}`;
 }
 
+export function getRuneLiteLocalApiSkillLevel(
+  snapshot: RuneLiteLocalApiSnapshot,
+  skillName: string,
+): number | null {
+  const normalizedSkillName = skillName.trim().toLowerCase();
+  const skill = snapshot.skills.find((entry) => entry.stat.trim().toLowerCase() === normalizedSkillName);
+  if (!skill || !Number.isFinite(skill.level)) {
+    return null;
+  }
+
+  return Math.max(1, Math.min(99, Math.round(skill.level)));
+}
+
 export function formatRuneLiteLocalApiSkillSummary(snapshot: RuneLiteLocalApiSnapshot): string {
-  const wanted = ["Attack", "Strength", "Defence", "Hitpoints", "Magic", "Ranged", "Prayer", "Mining", "Runecraft"];
+  const wanted = ["Attack", "Strength", "Defence", "Hitpoints", "Magic", "Ranged", "Prayer", "Mining", "Agility", "Runecraft"];
   const skillsByName = new Map(snapshot.skills.map((skill) => [skill.stat, skill]));
   const skillSummary = wanted
     .map((name) => {

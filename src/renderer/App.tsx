@@ -9,16 +9,9 @@ import {
   AUTOMATE_BOTS,
   DEFAULT_AUTOMATE_BOT_ID,
   END_TO_END_BOT_ID,
-  RUNECRAFTING_ARCEUUS_BLOOD_RUNE_V2_BOT_ID,
   RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID,
   normalizeAutomateBotId,
 } from "../main/automate-bots/definitions";
-import {
-  createDefaultArceuusBloodRuneConfig,
-  normalizeArceuusBloodRuneAgilityLevel,
-  normalizeArceuusBloodRuneConfig,
-  type ArceuusBloodRuneConfig,
-} from "../main/automate-bots/arceuus-blood-rune-config";
 import {
   createDefaultEndToEndConfig,
   normalizeEndToEndConfig,
@@ -240,9 +233,6 @@ export default function App() {
   const [endToEndChecklist, setEndToEndChecklist] = useState<EndToEndGuideChecklist | null>(null);
   const [isEndToEndChecklistLoading, setIsEndToEndChecklistLoading] = useState(false);
   const [endToEndChecklistError, setEndToEndChecklistError] = useState<string | null>(null);
-  const [arceuusBloodRuneConfig, setArceuusBloodRuneConfig] = useState<ArceuusBloodRuneConfig>(() =>
-    createDefaultArceuusBloodRuneConfig(),
-  );
   const [guardianOfTheRiftConfig, setGuardianOfTheRiftConfig] = useState<GuardianOfTheRiftConfig>(() =>
     createDefaultGuardianOfTheRiftConfig(),
   );
@@ -497,19 +487,6 @@ export default function App() {
         }
 
         setEndToEndConfig(normalizeEndToEndConfig(result.config));
-      })
-      .catch(() => {
-        // Ignore non-critical config read failures.
-      });
-
-    void ipcRenderer
-      .invoke(CHANNELS.GET_ARCEUUS_BLOOD_RUNE_CONFIG)
-      .then((result: { ok?: boolean; config?: ArceuusBloodRuneConfig }) => {
-        if (!result?.ok || !result.config) {
-          return;
-        }
-
-        setArceuusBloodRuneConfig(normalizeArceuusBloodRuneConfig(result.config));
       })
       .catch(() => {
         // Ignore non-critical config read failures.
@@ -799,21 +776,6 @@ export default function App() {
     },
     [],
   );
-
-  const handleArceuusBloodRuneAgilityLevelChange = useCallback((level: number) => {
-    setArceuusBloodRuneConfig((prev) => {
-      const next: ArceuusBloodRuneConfig = {
-        ...prev,
-        agilityLevel: normalizeArceuusBloodRuneAgilityLevel(level),
-      };
-
-      void ipcRenderer.invoke(CHANNELS.SET_ARCEUUS_BLOOD_RUNE_CONFIG, next).catch(() => {
-        // Ignore non-critical config write failures.
-      });
-
-      return next;
-    });
-  }, []);
 
   const handleEndToEndChecklistStepChange = useCallback((stepId: string, completed: boolean) => {
     setEndToEndConfig((prev) => {
@@ -1668,8 +1630,6 @@ export default function App() {
             endToEndCompletedGuideStepIds={endToEndConfig.completedGuideStepIds}
             isEndToEndChecklistLoading={isEndToEndChecklistLoading}
             endToEndChecklistError={endToEndChecklistError}
-            showArceuusBloodRuneConfig={selectedTaskNodeId === RUNECRAFTING_ARCEUUS_BLOOD_RUNE_V2_BOT_ID}
-            arceuusBloodRuneAgilityLevel={arceuusBloodRuneConfig.agilityLevel}
             showGuardianOfTheRiftConfig={selectedTaskNodeId === RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}
             guardianOfTheRiftElements={GUARDIAN_OF_THE_RIFT_ACTIVE_ELEMENTS}
             guardianOfTheRiftConfig={guardianOfTheRiftConfig}
@@ -1679,7 +1639,6 @@ export default function App() {
             onStepContextMenu={handleStepContextMenu}
             onEndToEndChecklistRefresh={() => void refreshEndToEndChecklist()}
             onEndToEndChecklistStepChange={handleEndToEndChecklistStepChange}
-            onArceuusBloodRuneAgilityLevelChange={handleArceuusBloodRuneAgilityLevelChange}
             onGuardianOfTheRiftElementEnabledChange={handleGuardianOfTheRiftElementEnabledChange}
             onGuardianOfTheRiftUseAgilityCourseChange={handleGuardianOfTheRiftUseAgilityCourseChange}
             onGuardianOfTheRiftRunecraftLevelChange={handleGuardianOfTheRiftRunecraftLevelChange}
