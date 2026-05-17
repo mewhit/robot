@@ -6,6 +6,7 @@ import { Coordinate, Shape } from "../colorDetection.types";
 import { AppState } from "../global-state";
 import * as logger from "../logger";
 import { getRuneLite } from "../runeLiteWindow";
+import { AGILITY_FALADOR_ROOFTOP_BOT_ID } from "./definitions";
 import {
   TileReadResult,
   lastSegmentDebugLog,
@@ -19,7 +20,8 @@ import { detectOverlayBoxInScreenshot, saveBitmapWithBox } from "./shared/coordi
 import { saveBitmap } from "./shared/save-bitmap";
 import { initBotCoordinateDetection } from "./shared/init-bot";
 
-export const AGILITY_BOT_ID = "agility";
+const BOT_NAME = "Falador Rooftop";
+const BOT_LOG_PREFIX = `Automate Bot (${BOT_NAME})`;
 
 // Debug mode: set to true to save OCR preprocessing screenshots on FAILED reads
 const DEBUG_OCR_SCREENSHOTS = false;
@@ -273,23 +275,23 @@ function applyClick(state: LoopState, color: "magenta" | "green", now: number): 
 
 async function runFaladorV2Loop(window: Window): Promise<void> {
   if (isFaladorV2LoopRunning) {
-    logWithDelta("Automate Bot (Falador Roof Top V2): loop already running; skipping new start.");
+    logWithDelta(`${BOT_LOG_PREFIX}: loop already running; skipping new start.`);
     return;
   }
 
   isFaladorV2LoopRunning = true;
-  setAutomateBotCurrentStep("falador-rooftop-v2-step-watch");
+  setAutomateBotCurrentStep(`${AGILITY_FALADOR_ROOFTOP_BOT_ID}-step-watch`);
 
   try {
     // Initialize bot: verify RuneLite window and detect coordinates overlay
     const initResult = initBotCoordinateDetection();
     if (!initResult.ok) {
-      logWithDelta(`Automate Bot (Agility): initialization failed - ${initResult.error}`);
+      logWithDelta(`${BOT_LOG_PREFIX}: initialization failed - ${initResult.error}`);
       return;
     }
 
     logWithDelta(
-      `Automate Bot (Agility): initialization successful - overlay detected at '${initResult.overlay?.matchedLine}'`,
+      `${BOT_LOG_PREFIX}: initialization successful - overlay detected at '${initResult.overlay?.matchedLine}'`,
     );
 
     await sleepWithAbort(OCR_STARTUP_WARMUP_MS);
@@ -305,7 +307,7 @@ async function runFaladorV2Loop(window: Window): Promise<void> {
         const bounds = getPlayableBounds(window);
 
         if (!bounds) {
-          warnWithDelta(`Automate Bot (Agility): loop #${loopIndex} - invalid RuneLite bounds.`);
+          warnWithDelta(`${BOT_LOG_PREFIX}: loop #${loopIndex} - invalid RuneLite bounds.`);
         } else {
           // --- OCR: tile ---
           const loopRawScreenshotPath = DEBUG_OCR_SCREENSHOTS
@@ -316,12 +318,12 @@ async function runFaladorV2Loop(window: Window): Promise<void> {
           state = applyTileRead(state, playerTile, Date.now());
 
           logWithDelta(
-            `Automate Bot (Agility): loop #${loopIndex} - tile OCR raw='${playerTile.rawLine ?? ""}' parsed=${playerTile.tile?.x},${playerTile.tile?.y},${playerTile.tile?.z}.`,
+            `${BOT_LOG_PREFIX}: loop #${loopIndex} - tile OCR raw='${playerTile.rawLine ?? ""}' parsed=${playerTile.tile?.x},${playerTile.tile?.y},${playerTile.tile?.z}.`,
           );
 
           if (state.hasMoved) {
             logWithDelta(
-              `Automate Bot (Agility): loop #${loopIndex} - player moved, skipping color detection and click logic.`,
+              `${BOT_LOG_PREFIX}: loop #${loopIndex} - player moved, skipping color detection and click logic.`,
             );
             await sleepWithAbort(GAME_TICK_MS);
             continue;
@@ -334,7 +336,7 @@ async function runFaladorV2Loop(window: Window): Promise<void> {
           const targetColor = resolveTargetColor(state.lastClickedShapeType, magentaShape, greenShape);
 
           if (!targetColor) {
-            logWithDelta(`Automate Bot (Agility): loop #${loopIndex} - no target shapes detected.`);
+            logWithDelta(`${BOT_LOG_PREFIX}: loop #${loopIndex} - no target shapes detected.`);
             await sleepWithAbort(GAME_TICK_MS);
             continue;
           }
@@ -342,7 +344,7 @@ async function runFaladorV2Loop(window: Window): Promise<void> {
           // --- Click gating (pure checks, async delays as side effects) ---
           if (!isTileReadyForClick(playerTile.tile, state.lastObservedTile, state.tileStableSinceMs, Date.now())) {
             logWithDelta(
-              `Automate Bot (Agility): loop #${loopIndex} - tile unavailable/unstable, waiting before click.`,
+              `${BOT_LOG_PREFIX}: loop #${loopIndex} - tile unavailable/unstable, waiting before click.`,
             );
             await sleepWithAbort(GAME_TICK_MS);
             continue;
@@ -350,7 +352,7 @@ async function runFaladorV2Loop(window: Window): Promise<void> {
 
           const cooldown = clickCooldownRemainingMs(state.lastClickAtMs, Date.now());
           if (cooldown > 0) {
-            logWithDelta(`Automate Bot (Agility): loop #${loopIndex} - click cooldown ${cooldown}ms.`);
+            logWithDelta(`${BOT_LOG_PREFIX}: loop #${loopIndex} - click cooldown ${cooldown}ms.`);
             await sleepWithAbort(cooldown);
             if (!AppState.automateBotRunning) break;
           }
@@ -363,12 +365,12 @@ async function runFaladorV2Loop(window: Window): Promise<void> {
           const freshShape = targetColor === "magenta" ? findStrictMagentaShape(bounds) : findStrictGreenShape(bounds);
           if (!freshShape) {
             logWithDelta(
-              `Automate Bot (Agility): loop #${loopIndex} - ${targetColor} shape gone after delays, skipping click.`,
+              `${BOT_LOG_PREFIX}: loop #${loopIndex} - ${targetColor} shape gone after delays, skipping click.`,
             );
           } else {
             const clickPoint = getRandomPointInsideShape(freshShape);
             logWithDelta(
-              `Automate Bot (Agility): loop #${loopIndex} - clicking ${targetColor} at (${clickPoint.x},${clickPoint.y}).`,
+              `${BOT_LOG_PREFIX}: loop #${loopIndex} - clicking ${targetColor} at (${clickPoint.x},${clickPoint.y}).`,
             );
             moveMouse(clickPoint.x, clickPoint.y);
             mouseClick("left", false);
@@ -377,7 +379,7 @@ async function runFaladorV2Loop(window: Window): Promise<void> {
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        errorWithDelta(`Automate Bot (Agility): loop #${loopIndex} failed: ${message}`);
+        errorWithDelta(`${BOT_LOG_PREFIX}: loop #${loopIndex} failed: ${message}`);
       }
 
       const waitToNextTickMs = Math.max(0, GAME_TICK_MS - (Date.now() - tickStartedAt));
@@ -392,14 +394,14 @@ async function runFaladorV2Loop(window: Window): Promise<void> {
   }
 }
 
-export function onAgilityBotStart(): void {
+export function onAgilityFaladorRooftopBotStart(): void {
   if (!isFaladorV2LoopRunning) {
     faladorV2StartedAtMs = Date.now();
   }
-  logWithDelta("Automate Bot STARTED (Agility).");
+  logWithDelta(`Automate Bot STARTED (${BOT_NAME}).`);
   const window = getRuneLite();
   if (!window) {
-    warnWithDelta("Automate Bot (Agility): RuneLite window not found.");
+    warnWithDelta(`${BOT_LOG_PREFIX}: RuneLite window not found.`);
     return;
   }
 
@@ -410,4 +412,12 @@ export function onAgilityBotStart(): void {
   window.bringToTop();
 
   void runFaladorV2Loop(window);
+}
+
+export function onAgilityFaladorRooftopBotStartFromStep(stepId: string): void {
+  if (stepId !== `${AGILITY_FALADOR_ROOFTOP_BOT_ID}-step-watch`) {
+    warnWithDelta(`${BOT_LOG_PREFIX}: unsupported start step '${stepId}', starting from watch loop.`);
+  }
+
+  onAgilityFaladorRooftopBotStart();
 }

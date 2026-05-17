@@ -1,4 +1,7 @@
-export const AGILITY_BOT_ID = "agility";
+const LEGACY_AGILITY_BOT_ID = "agility";
+
+export const AGILITY_FALADOR_ROOFTOP_BOT_ID = "agility-falador-rooftop";
+export const AGILITY_BOT_ID = AGILITY_FALADOR_ROOFTOP_BOT_ID;
 export const ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID = "attack-zamorak-warrior-safe-spot";
 export const COMBAT_AUTO_BOT_ID = "combat-auto";
 export const END_TO_END_BOT_ID = "end-to-end";
@@ -15,6 +18,10 @@ export type AutomateBotStepDefinition = {
   id: string;
   name: string;
 };
+
+export const AGILITY_FALADOR_ROOFTOP_STEPS = [
+  { id: `${AGILITY_FALADOR_ROOFTOP_BOT_ID}-step-watch`, name: "Watch Highlights" },
+] as const satisfies readonly AutomateBotStepDefinition[];
 
 export const RUNECRAFTING_ARCEUUS_BLOOD_RUNE_V2_STEPS = [
   { id: `${RUNECRAFTING_ARCEUUS_BLOOD_RUNE_V2_BOT_ID}-step-00-plugin-check`, name: "Step 00 Plugin Check" },
@@ -37,7 +44,7 @@ export const RUNECRAFTING_ARCEUUS_BLOOD_RUNE_V2_STEPS = [
 ] as const satisfies readonly AutomateBotStepDefinition[];
 
 export type AutomateBotId =
-  | typeof AGILITY_BOT_ID
+  | typeof AGILITY_FALADOR_ROOFTOP_BOT_ID
   | typeof ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID
   | typeof COMBAT_AUTO_BOT_ID
   | typeof END_TO_END_BOT_ID
@@ -59,8 +66,11 @@ export type AutomateBotDefinition = {
 
 export const AUTOMATE_BOTS: AutomateBotDefinition[] = [
   {
-    id: AGILITY_BOT_ID,
-    name: "Agility",
+    id: AGILITY_FALADOR_ROOFTOP_BOT_ID,
+    name: "Falador Rooftop",
+    group: "Agility",
+    versionName: "falador-rooftop-v2",
+    steps: AGILITY_FALADOR_ROOFTOP_STEPS,
   },
   {
     id: END_TO_END_BOT_ID,
@@ -122,6 +132,10 @@ export function normalizeAutomateBotId(value: string | null | undefined): Automa
   const normalized = typeof value === "string" ? value.trim() : "";
   if (!normalized) {
     return null;
+  }
+
+  if (normalized === LEGACY_AGILITY_BOT_ID) {
+    return AGILITY_FALADOR_ROOFTOP_BOT_ID;
   }
 
   if (normalized === LEGACY_RUNECRAFTING_ARCEUUS_BLOOD_RUNE_BOT_ID) {

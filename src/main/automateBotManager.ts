@@ -1,5 +1,8 @@
 import { AppState } from "./global-state";
-import { onAgilityBotStart } from "./automate-bots/agility-bot";
+import {
+  onAgilityFaladorRooftopBotStart,
+  onAgilityFaladorRooftopBotStartFromStep,
+} from "./automate-bots/agility-bot";
 import { onAttackZamorakWarriorSafeSpotBotStart } from "./automate-bots/attack-zamorak-warrior-safe-spot-bot";
 import { onCombatAutoBotStart } from "./automate-bots/combat/auto-bot";
 import { onEndToEndBotStart } from "./automate-bots/end-to-end-bot";
@@ -17,7 +20,7 @@ import {
 import { onRunecraftingGuardianOfTheRiftBotStart } from "./automate-bots/runecrafting-guardian-of-the-rift-bot";
 import {
   AUTOMATE_BOTS,
-  AGILITY_BOT_ID,
+  AGILITY_FALADOR_ROOFTOP_BOT_ID,
   ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID,
   COMBAT_AUTO_BOT_ID,
   END_TO_END_BOT_ID,
@@ -39,7 +42,7 @@ import { getSavedSelectedAutomateBotId, setSavedSelectedAutomateBotId } from "./
 import { alignRuneLiteWindowBoundsForAutomateBot, getRuneLite } from "./runeLiteWindow";
 
 const botStartHandlers = new Map<string, () => void>([
-  [AGILITY_BOT_ID, onAgilityBotStart],
+  [AGILITY_FALADOR_ROOFTOP_BOT_ID, onAgilityFaladorRooftopBotStart],
   [ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID, onAttackZamorakWarriorSafeSpotBotStart],
   [COMBAT_AUTO_BOT_ID, onCombatAutoBotStart],
   [END_TO_END_BOT_ID, onEndToEndBotStart],
@@ -53,6 +56,7 @@ const botStartHandlers = new Map<string, () => void>([
 ]);
 
 const botStartFromStepHandlers = new Map<string, (stepId: string) => void>([
+  [AGILITY_FALADOR_ROOFTOP_BOT_ID, onAgilityFaladorRooftopBotStartFromStep],
   [RUNECRAFTING_ARCEUUS_BLOOD_RUNE_V2_BOT_ID, onRunecraftingArceuusBloodRuneV2BotStartFromStep],
 ]);
 

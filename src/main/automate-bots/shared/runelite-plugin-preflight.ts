@@ -42,7 +42,7 @@ const REQUIRED_PLUGIN_NAMES: Record<RuneLiteRequiredPluginId, string> = {
 };
 
 const REQUIRED_PLUGIN_FIXES: Record<RuneLiteRequiredPluginId, string> = {
-  mining: "Enable the RuneLite Mining plugin and keep its mining status overlay visible.",
+  mining: "Enable the RuneLite Mining plugin.",
   "world-location": "Enable the World Location plugin and turn on Grid Info.",
   "http-api": "Install/enable the Http Server/Http Api plugin and make sure localhost:8080 responds.",
   agility: "Enable the RuneLite Agility plugin, including shortcut/object highlights.",
@@ -207,24 +207,75 @@ function formatProfilePath(config: RuneLiteProfileConfig | null): string {
   return config ? path.basename(config.path) : "unavailable";
 }
 
+function isEvidenceOnlyDiagnostic(evidence: string): boolean {
+  return evidence.startsWith("screenScan=");
+}
+
+function formatCheckEvidence(check: RuneLiteRequiredPluginCheck): string {
+  const evidence = check.evidence.filter((entry) => !isEvidenceOnlyDiagnostic(entry));
+  return evidence.length > 0 ? ` Evidence: ${evidence.join("; ")}.` : "";
+}
+
+function hasEvidence(check: RuneLiteRequiredPluginCheck, value: string): boolean {
+  return check.evidence.some((entry) => entry === value);
+}
+
+function getPreflightFailureReason(check: RuneLiteRequiredPluginCheck): string {
+  if (hasEvidence(check, "RuneLite window not found")) {
+    return "RuneLite window was not found";
+  }
+
+  if (hasEvidence(check, "invalid RuneLite bounds")) {
+    return "RuneLite window bounds are invalid";
+  }
+
+  switch (check.id) {
+    case "mining":
+      return "Mining plugin is disabled";
+    case "world-location":
+      if (hasEvidence(check, "gridInfo=false")) {
+        return "World Location Grid Info is disabled";
+      }
+      if (hasEvidence(check, "runelite.worldlocationplugin=false")) {
+        return "World Location plugin is disabled";
+      }
+      return check.available ? "World Location is disabled" : "World Location plugin/config was not found";
+    case "http-api":
+      if (check.available && !check.enabled) {
+        return "Http Api plugin is installed/configured, but localhost:8080 did not respond";
+      }
+      return "Http Api plugin was not found and localhost:8080 did not respond";
+    case "agility":
+      return "Agility plugin is disabled";
+    case "minimap-disabled":
+      return "RuneLite Minimap plugin is enabled, but it must be disabled";
+    default:
+      return check.available ? "disabled" : "not available";
+  }
+}
+
 function buildPreflightError(checks: RuneLiteRequiredPluginCheck[]): string {
   const missing = checks.filter((check) => !check.available || !check.enabled);
   if (missing.length === 0) {
     return "";
   }
 
-  const missingText = missing
-    .map((check) => {
-      const state = check.id === "minimap-disabled"
-        ? "enabled but must be disabled"
-        : !check.available
-          ? "not available"
-          : "disabled or not visible";
-      return `${check.name} (${state})`;
-    })
-    .join(", ");
-  const fixes = missing.map((check) => check.fix).join(" ");
-  return `Arceuus Blood Rune V2 startup check failed. Required RuneLite plugin issue(s): ${missingText}. ${fixes}`;
+  const windowNotFound = missing.every((check) => hasEvidence(check, "RuneLite window not found"));
+  if (windowNotFound) {
+    const profile = missing[0]?.evidence.find((entry) => entry.startsWith("profile=")) ?? "profile=unavailable";
+    return `Arceuus Blood Rune V2 startup check failed.\n- RuneLite window was not found. Evidence: ${profile}. Fix: Open RuneLite and keep the game window visible.`;
+  }
+
+  const invalidBounds = missing.every((check) => hasEvidence(check, "invalid RuneLite bounds"));
+  if (invalidBounds) {
+    const profile = missing[0]?.evidence.find((entry) => entry.startsWith("profile=")) ?? "profile=unavailable";
+    return `Arceuus Blood Rune V2 startup check failed.\n- RuneLite window bounds are invalid. Evidence: ${profile}. Fix: Resize or restart RuneLite.`;
+  }
+
+  const lines = missing.map(
+    (check) => `- ${check.name}: ${getPreflightFailureReason(check)}.${formatCheckEvidence(check)} Fix: ${check.fix}`,
+  );
+  return ["Arceuus Blood Rune V2 startup check failed.", ...lines].join("\n");
 }
 
 export function formatRuneLitePluginPreflightChecks(result: RuneLitePluginPreflightResult): string {
@@ -322,7 +373,7 @@ export async function runArceuusBloodRuneV2PluginPreflight(): Promise<RuneLitePl
     createCheck("mining", true, miningEnabled, [
       profileEvidence,
       `runelite.miningplugin=${formatOptionalBoolean(miningPluginEnabled)}`,
-      "screenScan=skipped",
+      "screenScan=not-required",
     ]),
     createCheck("world-location", worldLocationAvailable, worldLocationEnabled, [
       profileEvidence,
@@ -330,7 +381,7 @@ export async function runArceuusBloodRuneV2PluginPreflight(): Promise<RuneLitePl
       `jar=${worldLocationJarInstalled}`,
       `runelite.worldlocationplugin=${formatOptionalBoolean(worldLocationPluginEnabled)}`,
       `gridInfo=${formatOptionalBoolean(worldLocationGridInfo)}`,
-      "screenScan=skipped",
+      "screenScan=not-required",
     ]),
     createCheck("http-api", httpApiAvailable, httpApiResponded, [
       profileEvidence,
@@ -341,7 +392,7 @@ export async function runArceuusBloodRuneV2PluginPreflight(): Promise<RuneLitePl
     createCheck("agility", true, agilityEnabled, [
       profileEvidence,
       `runelite.agilityplugin=${formatOptionalBoolean(agilityPluginEnabled)}`,
-      "screenScan=skipped",
+      "screenScan=not-required",
     ]),
     createCheck("minimap-disabled", true, minimapPluginEnabled !== true, [
       profileEvidence,

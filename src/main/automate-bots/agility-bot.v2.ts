@@ -1,8 +1,9 @@
 import * as logger from "../logger";
 import { stopAutomateBot } from "../automateBotManager";
+import { AGILITY_FALADOR_ROOFTOP_BOT_ID } from "./definitions";
 import { initAgilityBotV2 } from "./shared/init-bot.v2";
 
-export const AGILITY_BOT_ID = "agility";
+export const AGILITY_BOT_ID = AGILITY_FALADOR_ROOFTOP_BOT_ID;
 
 let isAgilityV2StartupRunning = false;
 let agilityV2StartedAtMs: number | null = null;
