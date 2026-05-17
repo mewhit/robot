@@ -1,7 +1,13 @@
 import { loadOsrsRegionLocations, OsrsLocation } from "./locations-loader";
 import { loadOsrsMapRegion } from "./map-loader";
 import { loadOsrsObjectDefinitionsFromCache, getOsrsRegionArchiveId } from "./osrs-region-cache";
-import { OSRS_CACHE_INDEX_CONFIGS, openOsrsCacheStore } from "./cache-store";
+import {
+  OSRS_CACHE_INDEX_CONFIGS,
+  OSRS_CACHE_INDEX_MAPS,
+  OSRS_MAP_LOCATIONS_FILE_ID,
+  OSRS_MAP_TERRAIN_FILE_ID,
+  openOsrsCacheStore,
+} from "./cache-store";
 import {
   buildOsrsRegionCollision,
   CollisionFlag,
@@ -93,6 +99,8 @@ export type OsrsCacheMapRegionView = {
   regionY: number;
   baseX: number;
   baseY: number;
+  missing?: boolean;
+  error?: string;
   objectDefinitionCount: number;
   locationCount: number;
   tiles: OsrsCacheMapTile[];
@@ -102,6 +110,31 @@ export type OsrsCacheMapRegionView = {
 
 let cachedObjectDefinitions: OsrsObjectDefinitionMap | null = null;
 let cachedAreaDefinitions: OsrsAreaDefinitionMap | null = null;
+
+function createEmptyCacheMapRegionView(params: {
+  cacheDirectoryPath: string;
+  regionX: number;
+  regionY: number;
+  objectDefinitionCount?: number;
+  error?: string;
+}): OsrsCacheMapRegionView {
+  const archiveId = getOsrsRegionArchiveId(params.regionX, params.regionY);
+  return {
+    cacheDirectoryPath: params.cacheDirectoryPath,
+    regionId: archiveId,
+    regionX: params.regionX,
+    regionY: params.regionY,
+    baseX: params.regionX * 64,
+    baseY: params.regionY * 64,
+    missing: true,
+    error: params.error,
+    objectDefinitionCount: params.objectDefinitionCount ?? 0,
+    locationCount: 0,
+    tiles: [],
+    objects: [],
+    icons: [],
+  };
+}
 
 function getRotatedFootprint(
   definition: Pick<OsrsObjectDefinition, "sizeX" | "sizeY">,
@@ -242,8 +275,21 @@ export function readOsrsCacheMapRegionView(params: {
     cachedAreaDefinitions = areaDefinitions;
 
     const archiveId = getOsrsRegionArchiveId(params.regionX, params.regionY);
-    const mapData = store.readArchiveFile(5, archiveId, 0);
-    const locationData = store.readArchiveFile(5, archiveId, 1);
+    let mapData: Buffer;
+    let locationData: Buffer;
+    try {
+      mapData = store.readArchiveFile(OSRS_CACHE_INDEX_MAPS, archiveId, OSRS_MAP_TERRAIN_FILE_ID);
+      locationData = store.readArchiveFile(OSRS_CACHE_INDEX_MAPS, archiveId, OSRS_MAP_LOCATIONS_FILE_ID);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return createEmptyCacheMapRegionView({
+        cacheDirectoryPath: store.directoryPath,
+        regionX: params.regionX,
+        regionY: params.regionY,
+        objectDefinitionCount: objectDefinitions.size,
+        error: message,
+      });
+    }
     const mapRegion = loadOsrsMapRegion(mapData, params.regionX, params.regionY);
     const regionLocations = loadOsrsRegionLocations(locationData, params.regionX, params.regionY);
     const collision = buildOsrsRegionCollision(mapRegion, regionLocations, objectDefinitions);

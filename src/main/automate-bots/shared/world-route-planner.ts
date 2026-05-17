@@ -73,6 +73,7 @@ export type PlanWorldRouteOptions = {
 type WorldCollisionGrid = {
   collisions: Map<string, OsrsRegionCollision>;
   blockedTileKeys: ReadonlySet<string>;
+  missingRegionSummaries: string[];
   minRegionX: number;
   maxRegionX: number;
   minRegionY: number;
@@ -219,23 +220,30 @@ function loadWorldCollisionGrid(
   collisionOptions: BuildRegionCollisionOptions = DEFAULT_WORLD_ROUTE_COLLISION_OPTIONS,
 ): WorldCollisionGrid {
   const collisions = new Map<string, OsrsRegionCollision>();
+  const missingRegionSummaries: string[] = [];
   for (let regionX = bounds.minRegionX; regionX <= bounds.maxRegionX; regionX += 1) {
     for (let regionY = bounds.minRegionY; regionY <= bounds.maxRegionY; regionY += 1) {
-      collisions.set(
-        getRegionKey(regionX, regionY),
-        loadOsrsRegionCollisionFromCache({
-          regionX,
-          regionY,
-          cacheDirectoryPath,
-          collisionOptions,
-        }),
-      );
+      try {
+        collisions.set(
+          getRegionKey(regionX, regionY),
+          loadOsrsRegionCollisionFromCache({
+            regionX,
+            regionY,
+            cacheDirectoryPath,
+            collisionOptions,
+          }),
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        missingRegionSummaries.push(`${regionX},${regionY}: ${message}`);
+      }
     }
   }
 
   return {
     ...bounds,
     collisions,
+    missingRegionSummaries,
     blockedTileKeys: new Set(blockedTiles.map(getTileKey)),
   };
 }
@@ -592,6 +600,7 @@ export function planWorldRouteToTiles(playerTile: WorldTile, options: PlanWorldR
   }));
   let result: WorldRouteSearchResult | null = null;
   let searchedRegionWindowCount = 0;
+  const missingRegionSummaries = new Set<string>();
   for (const regionBounds of regionBoundCandidates) {
     searchedRegionWindowCount += 1;
     const collisionGrid = loadWorldCollisionGrid(
@@ -600,6 +609,9 @@ export function planWorldRouteToTiles(playerTile: WorldTile, options: PlanWorldR
       options.blockedTiles ?? [],
       options.collisionOptions ?? DEFAULT_WORLD_ROUTE_COLLISION_OPTIONS,
     );
+    for (const summary of collisionGrid.missingRegionSummaries) {
+      missingRegionSummaries.add(summary);
+    }
     result = findWorldPath(collisionGrid, playerTile, sortedTargets, samePlaneLinks);
     if (result) {
       break;
@@ -609,7 +621,11 @@ export function planWorldRouteToTiles(playerTile: WorldTile, options: PlanWorldR
   if (!result) {
     return {
       status: "unavailable",
-      reason: `No reachable tile found for ${options.destinationLabel} from region ${playerTile.regionX},${playerTile.regionY} after searching ${searchedRegionWindowCount} region window(s)`,
+      reason: `No reachable tile found for ${options.destinationLabel} from region ${playerTile.regionX},${playerTile.regionY} after searching ${searchedRegionWindowCount} region window(s)${
+        missingRegionSummaries.size > 0
+          ? `; missingRegions=${[...missingRegionSummaries].slice(0, 6).join(" | ")}`
+          : ""
+      }`,
       playerTile,
       destinationLabel: options.destinationLabel,
       destinationTile,
