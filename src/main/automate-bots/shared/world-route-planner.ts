@@ -667,18 +667,36 @@ export function planWorldRouteToTiles(playerTile: WorldTile, options: PlanWorldR
 export function rebaseWorldRoutePlanFromTile(
   plan: WorldRoutePlan,
   playerTile: WorldRouteTile,
-  options: { waypointStepLimit?: number } = {},
+  options: { waypointStepLimit?: number; maxPathDistanceTiles?: number } = {},
 ): WorldRoutePlan | null {
   if (plan.status === "unavailable" || plan.pathTiles.length === 0) {
     return null;
   }
 
-  const pathIndex = plan.pathTiles.findIndex((tile) => isSameWorldTile(tile, playerTile));
-  if (pathIndex < 0) {
+  const maxPathDistanceTiles = Math.max(0, Math.floor(options.maxPathDistanceTiles ?? 0));
+  let pathIndex = -1;
+  let pathDistance = Number.POSITIVE_INFINITY;
+  for (let index = 0; index < plan.pathTiles.length; index += 1) {
+    const tile = plan.pathTiles[index];
+    const distance = tile.z === playerTile.z
+      ? getWorldTileChebyshevDistance(tile, playerTile)
+      : Number.POSITIVE_INFINITY;
+    if (distance < pathDistance) {
+      pathDistance = distance;
+      pathIndex = index;
+      if (distance === 0) {
+        break;
+      }
+    }
+  }
+
+  if (pathIndex < 0 || pathDistance > maxPathDistanceTiles) {
     return null;
   }
 
-  const path = plan.pathTiles.slice(pathIndex);
+  const path = pathDistance === 0
+    ? plan.pathTiles.slice(pathIndex)
+    : [deriveWorldTile(playerTile.x, playerTile.y, playerTile.z), ...plan.pathTiles.slice(pathIndex)];
   const targetTile = path[path.length - 1] ?? plan.targetTile;
   if (!targetTile) {
     return null;
@@ -688,7 +706,7 @@ export function rebaseWorldRoutePlanFromTile(
     .filter((linkUsage) => linkUsage.pathIndex >= pathIndex)
     .map((linkUsage) => ({
       ...linkUsage,
-      pathIndex: linkUsage.pathIndex - pathIndex,
+      pathIndex: linkUsage.pathIndex - pathIndex + (pathDistance === 0 ? 0 : 1),
     }));
   const pathStepCount = Math.max(0, path.length - 1);
   const directDistanceToDestinationTiles = plan.destinationTile

@@ -152,13 +152,17 @@ const ARCEUUS_MINIMAP_PLAYER_CENTER_FROM_COMPASS_X_LOGICAL = 88;
 const ARCEUUS_MINIMAP_PLAYER_CENTER_FROM_COMPASS_Y_LOGICAL = 35;
 const ARCEUUS_MINIMAP_RADIUS_LOGICAL = 73;
 const ARCEUUS_MINIMAP_TILE_PX_LOGICAL = 4;
-const ARCEUUS_MINIMAP_MAX_CLICK_RADIUS_RATIO = 0.84;
+const ARCEUUS_MINIMAP_MAX_CLICK_RADIUS_RATIO = 0.89;
 const ARCEUUS_MINIMAP_LEARN_TILE_SCALE_MIN = 0.9;
 const ARCEUUS_MINIMAP_LEARN_TILE_SCALE_MAX = 1.14;
 const ARCEUUS_MINIMAP_LEARN_RADIUS_RATIO_MIN = 0.66;
-const ARCEUUS_MINIMAP_LEARN_RADIUS_RATIO_MAX = 0.86;
+const ARCEUUS_MINIMAP_LEARN_RADIUS_RATIO_MAX = 0.92;
 const ARCEUUS_MINIMAP_LEARN_PENDING_EXPIRE_MS = 18_000;
-const ARCEUUS_MINIMAP_LEARN_MAX_PATH_DISTANCE_TILES = 3;
+const ARCEUUS_MINIMAP_LEARN_MAX_PATH_DISTANCE_TILES = 4;
+const ARCEUUS_MINIMAP_RUNTIME_OFFSET_CORRECTION_MAX_ERROR_TILES = 4;
+const ARCEUUS_MINIMAP_RUNTIME_OFFSET_CORRECTION_MAX_STEP_PX = 7;
+const ARCEUUS_MINIMAP_RUNTIME_OFFSET_CORRECTION_MAX_OFFSET_PX = 48;
+const ARCEUUS_ROUTE_REBASE_MAX_PATH_DISTANCE_TILES = 4;
 const ARCEUUS_MINIMAP_EDGE_CENTER_SEARCH_X_LOGICAL = 14;
 const ARCEUUS_MINIMAP_EDGE_CENTER_SEARCH_Y_LOGICAL = 14;
 const ARCEUUS_MINIMAP_EDGE_RADIUS_SEARCH_LOGICAL = 7;
@@ -170,6 +174,10 @@ const ARCEUUS_MINIMAP_PLAYER_DOT_SEARCH_RADIUS_LOGICAL = 30;
 const ARCEUUS_MINIMAP_PLAYER_DOT_MAX_CENTER_OFFSET_LOGICAL = 9;
 const ARCEUUS_MINIMAP_PLAYER_DOT_MAX_SIZE_LOGICAL = 12;
 const ARCEUUS_MINIMAP_PLAYER_DOT_MIN_PIXELS = 2;
+const ARCEUUS_MINIMAP_TRAVEL_WAIT_TICK_BUFFER = 0;
+const ARCEUUS_MINIMAP_TRAVEL_CHAIN_MAX_CLICKS = 2;
+const ARCEUUS_MINIMAP_TRAVEL_CHAIN_MIN_REMAINING_PATH_TILES = 28;
+const ARCEUUS_MINIMAP_SHORTCUT_APPROACH_EXTRA_TILES = 4;
 const ARCEUUS_FIXED_CAMERA_DIRECTION_KEY = "p";
 const ARCEUUS_FIXED_CAMERA_DIRECTION_LABEL = "west";
 const ARCEUUS_FIXED_CAMERA_SETTLE_MS = 260;
@@ -522,11 +530,18 @@ function resetArceuusMinimapMovementLearning(reason: string): void {
   const savedCalibrationIsCompatible =
     !savedCalibration ||
     savedCalibration.radiusRatio <= ARCEUUS_MINIMAP_LEARN_RADIUS_RATIO_MAX + 0.001;
-  const effectiveSavedCalibration = savedCalibrationIsCompatible ? savedCalibration : null;
+  const effectiveSavedCalibration = savedCalibrationIsCompatible && savedCalibration
+    ? {
+        ...savedCalibration,
+        radiusRatio: Math.max(savedCalibration.radiusRatio, ARCEUUS_MINIMAP_MAX_CLICK_RADIUS_RATIO),
+      }
+    : null;
   arceuusMinimapMovementLearning = createArceuusMinimapMovementLearningState(effectiveSavedCalibration);
   const calibrationSource = savedCalibration
     ? savedCalibrationIsCompatible
-      ? "loaded"
+      ? effectiveSavedCalibration && effectiveSavedCalibration.radiusRatio !== savedCalibration.radiusRatio
+        ? `loaded-radius-bumped ${savedCalibration.radiusRatio.toFixed(3)}->${effectiveSavedCalibration.radiusRatio.toFixed(3)}`
+        : "loaded"
       : `stale-reset savedRadiusRatio=${savedCalibration.radiusRatio.toFixed(3)} maxRadiusRatio=${ARCEUUS_MINIMAP_LEARN_RADIUS_RATIO_MAX.toFixed(3)}`
     : "fresh";
   logWithDelta(
@@ -583,6 +598,66 @@ function formatMovementSpeedMode(tilesPerTick: number): string {
 
 function getDetectedTravelSpeedTilesPerTick(runMode: OsrsRunModeDetection): number {
   return runMode.mode === "run" ? 2 : 1;
+}
+
+function getArceuusTravelWaitTicks(pathTiles: number, speedTilesPerTick: number): number {
+  const safeSpeedTilesPerTick = Math.max(1, speedTilesPerTick);
+  return clamp(
+    Math.ceil(Math.max(1, pathTiles) / safeSpeedTilesPerTick) + ARCEUUS_MINIMAP_TRAVEL_WAIT_TICK_BUFFER,
+    2,
+    18,
+  );
+}
+
+function applyArceuusRuntimeMinimapOffsetCorrection(
+  state: ArceuusMinimapMovementLearningState,
+  pending: ArceuusMinimapMovementPendingSample,
+  actualTile: WorldRouteTile,
+  targetErrorTiles: number,
+): string | null {
+  if (
+    pending.calibrationActive ||
+    targetErrorTiles <= 0 ||
+    targetErrorTiles > ARCEUUS_MINIMAP_RUNTIME_OFFSET_CORRECTION_MAX_ERROR_TILES ||
+    actualTile.z !== pending.waypointTile.z
+  ) {
+    return null;
+  }
+
+  const correctionWorldX = pending.waypointTile.x - actualTile.x;
+  const correctionWorldY = pending.waypointTile.y - actualTile.y;
+  const correctionLocalX =
+    (pending.eastX * correctionWorldX + pending.northX * correctionWorldY) * pending.effectiveMinimapTilePx;
+  const correctionLocalY =
+    (pending.eastY * correctionWorldX + pending.northY * correctionWorldY) * pending.effectiveMinimapTilePx;
+  const learnRate = pending.wasVectorClamped ? 0.1 : 0.2;
+  const stepX = clamp(
+    correctionLocalX * learnRate,
+    -ARCEUUS_MINIMAP_RUNTIME_OFFSET_CORRECTION_MAX_STEP_PX,
+    ARCEUUS_MINIMAP_RUNTIME_OFFSET_CORRECTION_MAX_STEP_PX,
+  );
+  const stepY = clamp(
+    correctionLocalY * learnRate,
+    -ARCEUUS_MINIMAP_RUNTIME_OFFSET_CORRECTION_MAX_STEP_PX,
+    ARCEUUS_MINIMAP_RUNTIME_OFFSET_CORRECTION_MAX_STEP_PX,
+  );
+
+  if (Math.abs(stepX) < 0.05 && Math.abs(stepY) < 0.05) {
+    return null;
+  }
+
+  state.projectionOffsetLocalX = clamp(
+    state.projectionOffsetLocalX + stepX,
+    -ARCEUUS_MINIMAP_RUNTIME_OFFSET_CORRECTION_MAX_OFFSET_PX,
+    ARCEUUS_MINIMAP_RUNTIME_OFFSET_CORRECTION_MAX_OFFSET_PX,
+  );
+  state.projectionOffsetLocalY = clamp(
+    state.projectionOffsetLocalY + stepY,
+    -ARCEUUS_MINIMAP_RUNTIME_OFFSET_CORRECTION_MAX_OFFSET_PX,
+    ARCEUUS_MINIMAP_RUNTIME_OFFSET_CORRECTION_MAX_OFFSET_PX,
+  );
+
+  return `runtimeOffsetCorrection=error:${targetErrorTiles} world=${correctionWorldX},${correctionWorldY} local=${correctionLocalX.toFixed(1)},${correctionLocalY.toFixed(1)} step=${stepX.toFixed(1)},${stepY.toFixed(1)} rate=${learnRate.toFixed(2)}`;
 }
 
 function formatDetectedTravelMode(runMode: OsrsRunModeDetection): string {
@@ -708,6 +783,16 @@ function observeArceuusMinimapMovement(
     } else {
       adjustmentReason = "travel-observed-calibration-frozen";
       calibrationSummary = state.isCalibrationTrusted ? "trusted-frozen" : "inactive";
+      const runtimeCorrectionSummary = applyArceuusRuntimeMinimapOffsetCorrection(
+        state,
+        pending,
+        playerTile,
+        targetErrorTiles,
+      );
+      if (runtimeCorrectionSummary) {
+        adjustmentReason = "travel-observed-runtime-offset-corrected";
+        calibrationSummary = `${calibrationSummary} ${runtimeCorrectionSummary}`;
+      }
     }
   } else {
     state.rejectedSamples += 1;
@@ -876,6 +961,7 @@ function getOrPlanArceuusRoute(params: {
   if (hadMatchingCache && params.routeCache?.route) {
     const rebasedRoute = rebaseWorldRoutePlanFromTile(params.routeCache.route, params.playerTile, {
       waypointStepLimit: params.waypointStepLimit,
+      maxPathDistanceTiles: ARCEUUS_ROUTE_REBASE_MAX_PATH_DISTANCE_TILES,
     });
     if (rebasedRoute) {
       params.routeCache.route = rebasedRoute;
@@ -1532,6 +1618,28 @@ async function readAltarTravelTick(
     playerTile,
     runMode,
     greenOutlines,
+  };
+}
+
+function readRouteClickTick(
+  window: NonNullable<ReturnType<typeof getRuneLite>>,
+  expectedTile: WorldRouteTile | null,
+): (ArceuusRouteClickTick & { playerTile: WorldTile | null }) | null {
+  const calibration = readStartupPlayerTileCalibration(window, {
+    expectedTile,
+    maxTileJump: expectedTile ? 256 : undefined,
+  });
+  if (!calibration) {
+    return null;
+  }
+
+  const bitmap = captureScreenBitmap(calibration.captureBounds);
+  return {
+    calibration,
+    bitmap,
+    greenOutlines: detectGreenOutlines(bitmap),
+    runMode: detectOsrsRunModeFromMinimap(bitmap, inferArceuusMinimap(calibration, bitmap)),
+    playerTile: calibration.playerTile,
   };
 }
 
@@ -2213,10 +2321,18 @@ function selectArceuusMinimapRouteClickTarget(
   const maxClickDistancePx = Math.max(1, Math.round(minimap.radiusPx * learning.radiusRatio));
   const maxClickPathTiles = Math.max(1, Math.floor(maxClickDistancePx / effectiveTilePx));
   const routeMaxIndex = Math.max(1, route.pathTiles.length - 1);
-  const pathStep = Math.max(
+  let pathStep = Math.max(
     1,
     Math.min(route.nextWaypointPathLength, routeMaxIndex, maxClickPathTiles),
   );
+  const nextLinkPathIndex = route.nextLinkUsage?.pathIndex;
+  if (
+    typeof nextLinkPathIndex === "number" &&
+    nextLinkPathIndex > 0 &&
+    nextLinkPathIndex <= Math.min(routeMaxIndex, maxClickPathTiles + ARCEUUS_MINIMAP_SHORTCUT_APPROACH_EXTRA_TILES)
+  ) {
+    pathStep = Math.max(1, Math.min(routeMaxIndex, nextLinkPathIndex));
+  }
   const tile = route.pathTiles[pathStep] ?? route.nextWaypoint;
 
   return {
@@ -2587,6 +2703,74 @@ function filterArceuusShortcutGreenOutlines(
   return outlines.filter((outline) => isArceuusShortcutGreenOutlineClickable(outline, bitmap));
 }
 
+function canSearchArceuusShortcutFromCurrentView(
+  tick: ArceuusShortcutClickTick,
+  playerTile: WorldRouteTile,
+  target: WorldRouteAgilityShortcutTarget,
+): boolean {
+  const projectedLocal = getProjectedShortcutLocalPoint(tick, playerTile, target);
+  if (!projectedLocal) {
+    return false;
+  }
+
+  const searchRadius = ARCEUUS_ALTAR_SHORTCUT_GREEN_OUTLINE_MAX_DISTANCE_PX;
+  const projectedNearCapture =
+    projectedLocal.x >= -searchRadius &&
+    projectedLocal.y >= -searchRadius &&
+    projectedLocal.x <= tick.bitmap.width + searchRadius &&
+    projectedLocal.y <= tick.bitmap.height + searchRadius;
+  if (!projectedNearCapture) {
+    return false;
+  }
+
+  const greenOutlinesNearProjectedTile = detectGreenOutlinesNearPoint(
+    tick.bitmap,
+    projectedLocal,
+    searchRadius,
+  );
+  return filterArceuusShortcutGreenOutlines(greenOutlinesNearProjectedTile, tick.bitmap).length > 0;
+}
+
+function getArceuusMinimapTravelChainStopReason(
+  tick: ArceuusRouteClickTick,
+  playerTile: WorldRouteTile,
+  route: WorldRoutePlan,
+  routeContext: WorldRouteAgilityContext,
+): string | null {
+  if (route.status === "unavailable" || !route.nextWaypoint) {
+    return "route-unavailable";
+  }
+
+  if (route.pathLength <= ARCEUUS_MINIMAP_TRAVEL_CHAIN_MIN_REMAINING_PATH_TILES) {
+    return `near-destination:${route.pathLength}`;
+  }
+
+  if (route.nextWaypointPathLength <= ARCEUUS_ROUTE_PROJECTED_CLICK_MAX_PATH_TILES) {
+    return `projected-click-range:${route.nextWaypointPathLength}`;
+  }
+
+  const plannedLinkUsage = route.nextLinkUsage;
+  const plannedShortcut = plannedLinkUsage ? routeContext.shortcutByLinkId.get(plannedLinkUsage.id) ?? null : null;
+  if (!plannedShortcut) {
+    return null;
+  }
+
+  const distanceToShortcut = getWorldTileDistanceToRectangle(playerTile, plannedShortcut.rectangle);
+  const pathDistanceToShortcut = Math.max(0, plannedLinkUsage?.pathIndex ?? Number.POSITIVE_INFINITY);
+  if (
+    distanceToShortcut <= ARCEUUS_ALTAR_SHORTCUT_CAMERA_SEARCH_DISTANCE_TILES ||
+    pathDistanceToShortcut <= ARCEUUS_ALTAR_SHORTCUT_CAMERA_SEARCH_DISTANCE_TILES
+  ) {
+    return `shortcut-near:${distanceToShortcut}/path:${pathDistanceToShortcut}`;
+  }
+
+  if (canSearchArceuusShortcutFromCurrentView(tick, playerTile, plannedShortcut)) {
+    return "shortcut-visible";
+  }
+
+  return null;
+}
+
 async function clickArceuusShortcutGreenOutline(
   stepLabel: string,
   tick: ArceuusShortcutClickTick,
@@ -2774,7 +2958,7 @@ async function clickProjectedPlannedRouteWaypoint(
   }
 
   const detectedTravelSpeedTilesPerTick = getDetectedTravelSpeedTilesPerTick(tick.runMode);
-  const travelTicks = clamp(Math.ceil(route.nextWaypointPathLength / detectedTravelSpeedTilesPerTick) + 1, 2, 18);
+  const travelTicks = getArceuusTravelWaitTicks(route.nextWaypointPathLength, detectedTravelSpeedTilesPerTick);
   const waitMs = ticksToMs(travelTicks, GAME_TICK_MS) + randomIntInclusive(80, 260);
   logWithDelta(
     `${stepLabel} movement click ${attempt}: mode=projected waypoint=${formatWorldTile(route.nextWaypoint)} pathStep=${route.nextWaypointPathLength}/${route.pathLength} runMode=${formatOsrsRunModeDetection(tick.runMode)} detectedTravel=${formatDetectedTravelMode(tick.runMode)}@${detectedTravelSpeedTilesPerTick.toFixed(1)}tiles/tick detectedTravelTicks=${travelTicks} wait=${waitMs}ms screen=${clicked.x},${clicked.y}.`,
@@ -2813,9 +2997,11 @@ async function clickMinimapPlannedRouteWaypoint(
   tick: ArceuusRouteClickTick,
   playerTile: WorldRouteTile,
   route: WorldRoutePlan,
-  attempt: number,
+  attempt: number | string,
   stepLabel: string,
   destinationLabel: string,
+  routeContext: WorldRouteAgilityContext,
+  chainRemaining = ARCEUUS_MINIMAP_TRAVEL_CHAIN_MAX_CLICKS,
 ): Promise<ArceuusAltarRouteClickResult> {
   if (!route.nextWaypoint) {
     warnWithDelta(`${stepLabel} minimap route skipped: missing minimap waypoint.`);
@@ -2959,7 +3145,7 @@ async function clickMinimapPlannedRouteWaypoint(
     Math.max(1, clickPlan.distanceTiles),
   );
   const detectedTravelSpeedTilesPerTick = getDetectedTravelSpeedTilesPerTick(activeTick.runMode);
-  const travelTicks = clamp(Math.ceil(waitPathTiles / detectedTravelSpeedTilesPerTick) + 1, 2, 18);
+  const travelTicks = getArceuusTravelWaitTicks(waitPathTiles, detectedTravelSpeedTilesPerTick);
   const waitMs = ticksToMs(travelTicks, GAME_TICK_MS) + randomIntInclusive(80, 260);
   const estimatedRunTicks = Math.max(1, Math.ceil(clickTarget.pathStep / 2));
   const estimatedWalkTicks = Math.max(1, clickTarget.pathStep);
@@ -3043,6 +3229,60 @@ async function clickMinimapPlannedRouteWaypoint(
       warnWithDelta(`${stepLabel} minimap calibration: stable player tile unavailable after click target=${formatWorldTile(clickTarget.tile)}.`);
     }
   }
+
+  if (!calibrationActive && chainRemaining > 0 && AppState.automateBotRunning) {
+    const window = getRuneLite();
+    if (!window) {
+      warnWithDelta(`${stepLabel} travel chain stopped: RuneLite window unavailable after minimap click ${attempt}.`);
+      return { status: "clicked", route };
+    }
+
+    const chainTick = readRouteClickTick(window, clickTarget.tile);
+    if (!chainTick?.playerTile) {
+      warnWithDelta(`${stepLabel} travel chain stopped: player tile unavailable after minimap click ${attempt}.`);
+      return { status: "clicked", route };
+    }
+
+    observeArceuusMinimapMovement(stepLabel, chainTick.playerTile);
+    const rebasedRoute = rebaseWorldRoutePlanFromTile(route, chainTick.playerTile, {
+      waypointStepLimit: ARCEUUS_ALTAR_MINIMAP_ROUTE_WAYPOINT_STEP_LIMIT,
+      maxPathDistanceTiles: ARCEUUS_ROUTE_REBASE_MAX_PATH_DISTANCE_TILES,
+    });
+    if (!rebasedRoute) {
+      logWithDelta(
+        `${stepLabel} travel chain stopped: cannot rebase route from player=${formatWorldTile(chainTick.playerTile)} after click ${attempt}.`,
+      );
+      return { status: "clicked", route };
+    }
+
+    const stopReason = getArceuusMinimapTravelChainStopReason(chainTick, chainTick.playerTile, rebasedRoute, routeContext);
+    if (stopReason) {
+      logWithDelta(
+        `${stepLabel} travel chain stopped: reason=${stopReason} player=${formatWorldTile(
+          chainTick.playerTile,
+        )} remainingPath=${rebasedRoute.pathLength} nextWaypoint=${rebasedRoute.nextWaypoint ? formatWorldTile(rebasedRoute.nextWaypoint) : "none"}.`,
+      );
+      return { status: "clicked", route: rebasedRoute };
+    }
+
+    const nextAttempt = `${attempt}.${ARCEUUS_MINIMAP_TRAVEL_CHAIN_MAX_CLICKS - chainRemaining + 1}`;
+    logWithDelta(
+      `${stepLabel} travel chain continuing: nextClick=${nextAttempt} player=${formatWorldTile(
+        chainTick.playerTile,
+      )} remainingPath=${rebasedRoute.pathLength} nextWaypoint=${rebasedRoute.nextWaypoint ? formatWorldTile(rebasedRoute.nextWaypoint) : "none"} chainRemaining=${chainRemaining - 1}.`,
+    );
+    return clickMinimapPlannedRouteWaypoint(
+      chainTick,
+      chainTick.playerTile,
+      rebasedRoute,
+      nextAttempt,
+      stepLabel,
+      destinationLabel,
+      routeContext,
+      chainRemaining - 1,
+    );
+  }
+
   return { status: "clicked", route };
 }
 
@@ -3064,14 +3304,23 @@ async function clickPlannedRouteWaypoint(
   const plannedShortcut = plannedLinkUsage ? routeContext.shortcutByLinkId.get(plannedLinkUsage.id) ?? null : null;
   if (plannedShortcut) {
     const distanceToShortcut = getWorldTileDistanceToRectangle(playerTile, plannedShortcut.rectangle);
-    if (tick.greenOutlines.length > 0 || distanceToShortcut <= ARCEUUS_ALTAR_SHORTCUT_CAMERA_SEARCH_DISTANCE_TILES) {
+    const pathDistanceToShortcut = Math.max(0, plannedLinkUsage?.pathIndex ?? Number.POSITIVE_INFINITY);
+    const shortcutLikelyVisible = canSearchArceuusShortcutFromCurrentView(tick, playerTile, plannedShortcut);
+    if (
+      shortcutLikelyVisible ||
+      distanceToShortcut <= ARCEUUS_ALTAR_SHORTCUT_CAMERA_SEARCH_DISTANCE_TILES ||
+      pathDistanceToShortcut <= ARCEUUS_ALTAR_SHORTCUT_CAMERA_SEARCH_DISTANCE_TILES
+    ) {
       const clickedShortcut = await clickArceuusShortcutGreenOutline(stepLabel, tick, playerTile, plannedShortcut);
       if (clickedShortcut) {
         return { status: "clicked", route, shortcutTarget: plannedShortcut };
       }
     }
 
-    if (distanceToShortcut <= ARCEUUS_ALTAR_SHORTCUT_CLICK_DISTANCE_TILES) {
+    if (
+      distanceToShortcut <= ARCEUUS_ALTAR_SHORTCUT_CLICK_DISTANCE_TILES ||
+      pathDistanceToShortcut <= ARCEUUS_ALTAR_SHORTCUT_CLICK_DISTANCE_TILES
+    ) {
       return {
         status: "missing-shortcut-green",
         route,
@@ -3080,11 +3329,14 @@ async function clickPlannedRouteWaypoint(
       };
     }
 
-    if (distanceToShortcut <= ARCEUUS_ALTAR_SHORTCUT_CAMERA_SEARCH_DISTANCE_TILES) {
+    if (
+      distanceToShortcut <= ARCEUUS_ALTAR_SHORTCUT_CAMERA_SEARCH_DISTANCE_TILES ||
+      pathDistanceToShortcut <= ARCEUUS_ALTAR_SHORTCUT_CAMERA_SEARCH_DISTANCE_TILES
+    ) {
       logWithDelta(
         `${stepLabel} route planned shortcut is not visible yet; closing distance before camera search: player=${formatWorldTile(
           playerTile,
-        )} distance=${distanceToShortcut} target=${formatWorldRouteAgilityShortcutTarget(plannedShortcut)} linkPathIndex=${plannedLinkUsage?.pathIndex ?? "n/a"}.`,
+        )} distance=${distanceToShortcut} pathDistance=${pathDistanceToShortcut} target=${formatWorldRouteAgilityShortcutTarget(plannedShortcut)} linkPathIndex=${plannedLinkUsage?.pathIndex ?? "n/a"}.`,
       );
     }
   }
@@ -3093,7 +3345,7 @@ async function clickPlannedRouteWaypoint(
     return clickProjectedPlannedRouteWaypoint(tick, playerTile, route, attempt, stepLabel);
   }
 
-  return clickMinimapPlannedRouteWaypoint(tick, playerTile, route, attempt, stepLabel, destinationLabel);
+  return clickMinimapPlannedRouteWaypoint(tick, playerTile, route, attempt, stepLabel, destinationLabel, routeContext);
 }
 
 async function clickAltarRouteWaypoint(

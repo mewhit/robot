@@ -3,6 +3,7 @@ import { deriveWorldTile } from "../mapping/world-coordinate";
 import { buildWorldRouteAgilityContext } from "./world-route-agility-shortcuts";
 import {
   buildWorldRouteRectanglePerimeterTiles,
+  getWorldTileChebyshevDistance,
   getWorldTileDistanceToRectangle,
   planWorldRouteToTiles,
   rebaseWorldRoutePlanFromTile,
@@ -82,6 +83,44 @@ describe("world route planner", () => {
     expect(rebasedRoute!.playerTile).toEqual(newPlayerTile);
     expect(rebasedRoute!.pathLength).toBe(route.pathLength - 10);
     expect(rebasedRoute!.pathTiles[0]).toEqual(newPlayerTile);
+    expect(rebasedRoute!.targetTile).toEqual(route.targetTile);
+  });
+
+  it("rebases an existing route when the player is close to its planned path", () => {
+    const playerTile = deriveWorldTile(1714, 3884, 0);
+    const bloodAltarRectangle: WorldRouteRectangle = {
+      x: 1715,
+      y: 3828,
+      z: 0,
+      width: 4,
+      height: 4,
+    };
+    const bloodAltarClickTile = { x: 1717, y: 3830, z: 0 };
+    const bloodAltarTargetTiles = buildWorldRouteRectanglePerimeterTiles(bloodAltarRectangle, 3);
+    const routeContext = buildWorldRouteAgilityContext({ agilityLevel: 59 });
+
+    const route = planWorldRouteToTiles(playerTile, {
+      destinationLabel: "Arceuus blood altar",
+      destinationTile: bloodAltarClickTile,
+      targetTiles: bloodAltarTargetTiles,
+      blockedTiles: routeContext.blockedShortcutTiles,
+      links: routeContext.routeLinks,
+      waypointStepLimit: 24,
+    });
+    const nearPathTile = route.pathTiles[10];
+    const newPlayerTile = deriveWorldTile(nearPathTile.x + 2, nearPathTile.y - 1, nearPathTile.z);
+
+    const rebasedRoute = rebaseWorldRoutePlanFromTile(route, newPlayerTile, {
+      waypointStepLimit: 24,
+      maxPathDistanceTiles: 4,
+    });
+
+    expect(rebasedRoute).not.toBeNull();
+    expect(rebasedRoute!.status).toBe("ready");
+    expect(rebasedRoute!.playerTile).toEqual(newPlayerTile);
+    expect(rebasedRoute!.pathTiles[0]).toEqual(newPlayerTile);
+    expect(route.pathTiles).toContainEqual(rebasedRoute!.pathTiles[1]);
+    expect(getWorldTileChebyshevDistance(newPlayerTile, rebasedRoute!.pathTiles[1])).toBeLessThanOrEqual(4);
     expect(rebasedRoute!.targetTile).toEqual(route.targetTile);
   });
 
