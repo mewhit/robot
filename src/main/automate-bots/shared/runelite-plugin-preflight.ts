@@ -1,15 +1,12 @@
 import fs from "fs";
 import path from "path";
-import { screen as electronScreen } from "electron";
 import { Window } from "node-window-manager";
 import { getRuneLite } from "../../runeLiteWindow";
-import { captureScreenRect, type ScreenCaptureBounds } from "../../windowsScreenCapture";
-import { detectBestAgilityBoxInScreenshot } from "./agility-box-detector";
-import { detectArceuusYellowMarkers } from "./arceuus-yellow-marker-detector";
-import { detectOverlayBoxInScreenshot } from "./coordinate-box-detector";
-import { detectMiningBoxStatusInScreenshot } from "./mining-box-status-detector";
-import { detectTileLocationBoxInScreenshot } from "./tile-location-detection";
-import { formatRuneLiteLocalApiProbe, probeRuneLiteLocalApis } from "../runelite-local-api/runelite-local-api";
+import { type ScreenCaptureBounds } from "../../windowsScreenCapture";
+import {
+  fetchRuneLiteLocalApiSnapshot,
+  formatRuneLiteLocalApiSnapshot,
+} from "../runelite-local-api/runelite-local-api";
 
 export type RuneLiteRequiredPluginId = "mining" | "world-location" | "http-api" | "agility" | "minimap-disabled";
 
@@ -52,13 +49,7 @@ const REQUIRED_PLUGIN_FIXES: Record<RuneLiteRequiredPluginId, string> = {
   "minimap-disabled": "Disable the RuneLite Minimap plugin so the native minimap scale remains unchanged.",
 };
 
-const POST_FOCUS_SETTLE_MS = 200;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
+const PREFLIGHT_HTTP_API_TIMEOUT_MS = 180;
 
 function getPlayableBounds(window: Window): { x: number; y: number; width: number; height: number } | null {
   const bounds = window.getBounds();
@@ -72,16 +63,6 @@ function getPlayableBounds(window: Window): { x: number; y: number; width: numbe
   }
 
   return { x, y, width, height };
-}
-
-function getWindowsScalePercent(bounds: ScreenCaptureBounds): number {
-  const display = electronScreen.getDisplayMatching({
-    x: bounds.x,
-    y: bounds.y,
-    width: Math.max(1, bounds.width),
-    height: Math.max(1, bounds.height),
-  });
-  return Math.round((Number.isFinite(display.scaleFactor) && display.scaleFactor > 0 ? display.scaleFactor : 1) * 100);
 }
 
 function getRuneLiteHomeDirectory(): string | null {
@@ -284,7 +265,6 @@ export async function runArceuusBloodRuneV2PluginPreflight(): Promise<RuneLitePl
     window.show();
   }
   window.bringToTop();
-  await sleep(POST_FOCUS_SETTLE_MS);
 
   const bounds = getPlayableBounds(window);
   if (!bounds) {
@@ -307,69 +287,61 @@ export async function runArceuusBloodRuneV2PluginPreflight(): Promise<RuneLitePl
     };
   }
 
-  const bitmap = captureScreenRect(bounds.x, bounds.y, bounds.width, bounds.height);
-  const windowsScalePercent = getWindowsScalePercent(bounds);
   const externalPlugins = readExternalPluginSlugs(profileConfig);
   const miningPluginEnabled = readBooleanConfig(profileConfig, "runelite.miningplugin");
   const agilityPluginEnabled = readBooleanConfig(profileConfig, "runelite.agilityplugin");
   const worldLocationPluginEnabled = readBooleanConfig(profileConfig, "runelite.worldlocationplugin");
   const worldLocationGridInfo = readBooleanConfig(profileConfig, "worldlocation.gridInfo");
 
-  const miningStatus = detectMiningBoxStatusInScreenshot(bitmap);
-  const coordinateBox = detectOverlayBoxInScreenshot(bitmap, windowsScalePercent);
-  const tileLocation = detectTileLocationBoxInScreenshot(bitmap);
-  const agilityBox = detectBestAgilityBoxInScreenshot(bitmap);
-  const arceuusYellowMarkers = detectArceuusYellowMarkers(bitmap);
+  const worldLocationJarInstalled = hasInstalledPluginJar("world-location");
+  const httpServerJarInstalled = hasInstalledPluginJar("http-server");
 
-  let httpApiProbeEvidence = "probe=not-run";
+  let httpApiProbeEvidence = "snapshot=not-run";
   let httpApiResponded = false;
   try {
-    const probe = await probeRuneLiteLocalApis();
+    const snapshot = await fetchRuneLiteLocalApiSnapshot(PREFLIGHT_HTTP_API_TIMEOUT_MS);
     httpApiResponded = true;
-    httpApiProbeEvidence = formatRuneLiteLocalApiProbe(probe);
+    httpApiProbeEvidence = `snapshot=${formatRuneLiteLocalApiSnapshot(snapshot, { includeSkills: true })}`;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    httpApiProbeEvidence = `probe=failed ${message}`;
+    httpApiProbeEvidence = `snapshot=failed ${message}`;
   }
 
   const worldLocationAvailable =
     worldLocationPluginEnabled !== null ||
     externalPlugins.has("world-location") ||
-    hasInstalledPluginJar("world-location") ||
+    worldLocationJarInstalled ||
     hasConfigPrefix(profileConfig, "worldlocation.");
   const httpApiAvailable =
-    httpApiResponded || externalPlugins.has("http-server") || hasInstalledPluginJar("http-server");
-  const miningEnabled = miningPluginEnabled === true || miningStatus.status !== "unknown";
-  const worldLocationEnabled = coordinateBox !== null;
-  const agilityEnabled =
-    agilityPluginEnabled === true || agilityBox !== null || arceuusYellowMarkers.length > 0;
+    httpApiResponded || externalPlugins.has("http-server") || httpServerJarInstalled;
+  const miningEnabled = miningPluginEnabled !== false;
+  const worldLocationEnabled = worldLocationAvailable && worldLocationPluginEnabled !== false && worldLocationGridInfo !== false;
+  const agilityEnabled = agilityPluginEnabled !== false;
 
   const checks = [
     createCheck("mining", true, miningEnabled, [
       profileEvidence,
       `runelite.miningplugin=${formatOptionalBoolean(miningPluginEnabled)}`,
-      `status=${miningStatus.status} confidence=${miningStatus.confidence.toFixed(2)} pixels=${miningStatus.totalStatusPixelCount} text=${miningStatus.textComponentCount}c/${miningStatus.textColumnCount}col/${miningStatus.textWidth}x${miningStatus.textHeight}`,
+      "screenScan=skipped",
     ]),
     createCheck("world-location", worldLocationAvailable, worldLocationEnabled, [
       profileEvidence,
       `external=${externalPlugins.has("world-location")}`,
-      `jar=${hasInstalledPluginJar("world-location")}`,
+      `jar=${worldLocationJarInstalled}`,
       `runelite.worldlocationplugin=${formatOptionalBoolean(worldLocationPluginEnabled)}`,
       `gridInfo=${formatOptionalBoolean(worldLocationGridInfo)}`,
-      `coordinate=${coordinateBox?.matchedLine ?? "not-detected"}`,
-      `tileLocation=${tileLocation?.matchedLine ?? "not-detected"}`,
+      "screenScan=skipped",
     ]),
     createCheck("http-api", httpApiAvailable, httpApiResponded, [
       profileEvidence,
       `external=${externalPlugins.has("http-server")}`,
-      `jar=${hasInstalledPluginJar("http-server")}`,
+      `jar=${httpServerJarInstalled}`,
       httpApiProbeEvidence,
     ]),
     createCheck("agility", true, agilityEnabled, [
       profileEvidence,
       `runelite.agilityplugin=${formatOptionalBoolean(agilityPluginEnabled)}`,
-      `agilityBox=${agilityBox ? `${agilityBox.color}@${agilityBox.x},${agilityBox.y}` : "not-detected"}`,
-      `arceuusYellowMarkers=${arceuusYellowMarkers.length}`,
+      "screenScan=skipped",
     ]),
     createCheck("minimap-disabled", true, minimapPluginEnabled !== true, [
       profileEvidence,

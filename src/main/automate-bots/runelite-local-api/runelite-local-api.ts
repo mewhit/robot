@@ -66,17 +66,21 @@ function previewText(text: string): string {
   return text.replace(/\s+/g, " ").trim().slice(0, 160);
 }
 
-async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
+async function fetchTextWithTimeout(url: string, timeoutMs: number): Promise<{ response: Response; text: string }> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, {
+    const response = await fetch(url, {
       signal: controller.signal,
       headers: {
         Accept: "application/json,text/plain,*/*",
         "User-Agent": "robot-end-to-end-bot",
       },
     });
+    return {
+      response,
+      text: await response.text(),
+    };
   } finally {
     clearTimeout(timeout);
   }
@@ -84,13 +88,12 @@ async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Respons
 
 async function probeUrl(url: string, timeoutMs: number): Promise<RuneLiteLocalApiResponse | null> {
   try {
-    const response = await fetchWithTimeout(url, timeoutMs);
+    const { response, text } = await fetchTextWithTimeout(url, timeoutMs);
     if (!response.ok) {
       return null;
     }
 
     const contentType = response.headers.get("content-type") ?? "";
-    const text = await response.text();
     if (contentType.toLowerCase().includes("application/json") || /^[\[{]/.test(text.trim())) {
       try {
         return {
@@ -122,13 +125,9 @@ async function probeUrl(url: string, timeoutMs: number): Promise<RuneLiteLocalAp
 
 export async function probeRuneLiteLocalApis(timeoutMs = 350): Promise<RuneLiteLocalApiProbe> {
   for (const baseUrl of DEFAULT_BASE_URLS) {
-    const responses: RuneLiteLocalApiResponse[] = [];
-    for (const path of PROBE_PATHS) {
-      const result = await probeUrl(`${baseUrl}${path}`, timeoutMs);
-      if (result) {
-        responses.push(result);
-      }
-    }
+    const responses = (await Promise.all(PROBE_PATHS.map((path) => probeUrl(`${baseUrl}${path}`, timeoutMs)))).filter(
+      (response): response is RuneLiteLocalApiResponse => response !== null,
+    );
 
     if (responses.length > 0) {
       return { baseUrl, responses };

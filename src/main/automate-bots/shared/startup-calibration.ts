@@ -56,6 +56,7 @@ type StartupCoordinateBoxCandidate = {
 let lastSuccessfulCoordinateBox: CoordinateBox | null = null;
 
 export type StartupPlayerTileCalibration = {
+  windowBounds: ScreenCaptureBounds;
   captureBounds: ScreenCaptureBounds;
   windowsScalePercent: number;
   playerTile: WorldTile | null;
@@ -411,6 +412,10 @@ function formatCoordinateBox(calibration: StartupPlayerTileCalibration): string 
   return `local=(${box.x},${box.y}) screen=(${calibration.captureBounds.x + box.x},${calibration.captureBounds.y + box.y}) size=${box.width}x${box.height}`;
 }
 
+function formatScreenBounds(bounds: ScreenCaptureBounds): string {
+  return `${bounds.width}x${bounds.height}@${bounds.x},${bounds.y}`;
+}
+
 function formatPlayerBox(calibration: StartupPlayerTileCalibration): string {
   const playerBox = calibration.playerBox;
   if (!playerBox) {
@@ -491,6 +496,7 @@ export function readStartupPlayerTileCalibration(
   });
 
   return {
+    windowBounds: logicalBounds,
     captureBounds,
     windowsScalePercent,
     playerTile,
@@ -541,7 +547,8 @@ export function formatStartupPlayerTileCalibrationLog(
     `rawTilePx=${calibration.rawTilePx ?? "unavailable"}px`,
     `tilePxSource=${calibration.tilePxSource}`,
     `tilePxSafetyClamp=${STARTUP_TILE_PX_MIN}-${STARTUP_TILE_PX_MAX}px`,
-    `capture=${calibration.captureBounds.width}x${calibration.captureBounds.height}`,
+    `window=${formatScreenBounds(calibration.windowBounds)}`,
+    `capture=${formatScreenBounds(calibration.captureBounds)}`,
     `scale=${calibration.windowsScalePercent}%.`,
   ].join(" ");
 }

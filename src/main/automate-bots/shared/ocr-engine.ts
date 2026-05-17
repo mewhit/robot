@@ -184,8 +184,26 @@ export function debugSaveAllStagesForRaw(bitmap: RobotBitmap, rawScreenshotPath:
 }
 
 export function flushOcrDebugDirectory(outputDir: string = DEFAULT_OCR_DEBUG_DIR): void {
-  fs.rmSync(outputDir, { recursive: true, force: true });
-  fs.mkdirSync(outputDir, { recursive: true });
+  const parentDir = path.dirname(outputDir);
+  fs.mkdirSync(parentDir, { recursive: true });
+
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true });
+    return;
+  }
+
+  const staleDir = path.join(
+    parentDir,
+    `${path.basename(outputDir)}.deleting-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  );
+
+  try {
+    fs.renameSync(outputDir, staleDir);
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.promises.rm(staleDir, { recursive: true, force: true }).catch(() => {});
+  } catch {
+    fs.mkdirSync(outputDir, { recursive: true });
+  }
 }
 
 // ============================================

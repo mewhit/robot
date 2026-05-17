@@ -394,6 +394,7 @@ type ArceuusMinimapMovementPendingSample = {
   eastX: number;
   eastY: number;
   calibrationActive: boolean;
+  boundsSummary: string;
   debugPath: string | null;
 };
 
@@ -664,6 +665,16 @@ function formatDetectedTravelMode(runMode: OsrsRunModeDetection): string {
   return `${runMode.mode}:${runMode.confidence.toFixed(2)}`;
 }
 
+function formatArceuusScreenBounds(bounds: StartupPlayerTileCalibration["captureBounds"]): string {
+  return `${bounds.width}x${bounds.height}@${bounds.x},${bounds.y}`;
+}
+
+function formatArceuusCalibrationBounds(calibration: StartupPlayerTileCalibration): string {
+  return `window=${formatArceuusScreenBounds(calibration.windowBounds)} capture=${formatArceuusScreenBounds(
+    calibration.captureBounds,
+  )} scale=${calibration.windowsScalePercent}%`;
+}
+
 function registerArceuusMinimapMovementSample(params: Omit<ArceuusMinimapMovementPendingSample, "id">): void {
   const state = arceuusMinimapMovementLearning;
   if (state.pending) {
@@ -681,7 +692,7 @@ function registerArceuusMinimapMovementSample(params: Omit<ArceuusMinimapMovemen
   logWithDelta(
     `Movement learn sample ${id}: pending step='${params.stepLabel}' destination='${params.destinationLabel}' start=${formatWorldTile(
       params.startTile,
-    )} waypoint=${formatWorldTile(params.waypointTile)} pathStep=${params.pathStep}/${params.pathLength} waitPath=${params.waitPathTiles} estimatedRunTicks=${params.estimatedRunTicks} estimatedWalkTicks=${params.estimatedWalkTicks} detectedTravel=${params.detectedTravelMode}@${params.detectedTravelSpeedTilesPerTick.toFixed(1)}tiles/tick detectedTravelTicks=${params.detectedTravelTicks} wait=${params.waitMs}ms clickVector=${params.clickVectorX},${params.clickVectorY} tilePx=${params.minimapTilePx}px effectiveTilePx=${params.effectiveMinimapTilePx.toFixed(2)} tilePxScale=${params.tilePxScaleBefore.toFixed(3)} radiusRatio=${params.radiusRatioBefore.toFixed(3)} offset=${params.projectionOffsetLocalXBefore.toFixed(1)},${params.projectionOffsetLocalYBefore.toFixed(1)} clamped=${params.wasVectorClamped ? "yes" : "no"} calibration=${params.calibrationActive ? "active" : "frozen"} minimap=${params.minimapSource}/${params.projectionSource} debug=${params.debugPath ?? "none"}.`,
+    )} waypoint=${formatWorldTile(params.waypointTile)} pathStep=${params.pathStep}/${params.pathLength} waitPath=${params.waitPathTiles} estimatedRunTicks=${params.estimatedRunTicks} estimatedWalkTicks=${params.estimatedWalkTicks} detectedTravel=${params.detectedTravelMode}@${params.detectedTravelSpeedTilesPerTick.toFixed(1)}tiles/tick detectedTravelTicks=${params.detectedTravelTicks} wait=${params.waitMs}ms clickVector=${params.clickVectorX},${params.clickVectorY} tilePx=${params.minimapTilePx}px effectiveTilePx=${params.effectiveMinimapTilePx.toFixed(2)} tilePxScale=${params.tilePxScaleBefore.toFixed(3)} radiusRatio=${params.radiusRatioBefore.toFixed(3)} offset=${params.projectionOffsetLocalXBefore.toFixed(1)},${params.projectionOffsetLocalYBefore.toFixed(1)} clamped=${params.wasVectorClamped ? "yes" : "no"} calibration=${params.calibrationActive ? "active" : "frozen"} minimap=${params.minimapSource}/${params.projectionSource} ${params.boundsSummary} debug=${params.debugPath ?? "none"}.`,
   );
 }
 
@@ -824,7 +835,7 @@ function observeArceuusMinimapMovement(
   logWithDelta(
     `Movement learn sample ${pending.id}: observed step='${pending.stepLabel}' observer='${stepLabel}' accepted=${usable ? "yes" : "no"} reason=${adjustmentReason} start=${formatWorldTile(
       pending.startTile,
-    )} waypoint=${formatWorldTile(pending.waypointTile)} actual=${formatWorldTile(playerTile)} targetError=${Number.isFinite(targetErrorTiles) ? targetErrorTiles : "n/a"} targetDelta=${targetErrorX},${targetErrorY} actualPath=${actualPathTiles} actualCheb=${actualChebyshevTiles} nearestPathIndex=${nearest.index} nearestPathDistance=${Number.isFinite(nearest.distance) ? nearest.distance : "n/a"} exactPath=${nearest.exact ? "yes" : "no"} expectedRunTiles=${expectedRunTiles} expectedWalkTiles=${expectedWalkTiles} runError=${expectedRunError} walkError=${expectedWalkError} elapsed=${elapsedMs}ms elapsedTicks=${elapsedTicks.toFixed(2)} speed=${actualTilesPerTick.toFixed(2)}tiles/tick mode=${modeEstimate} detectedTravel=${pending.detectedTravelMode}@${pending.detectedTravelSpeedTilesPerTick.toFixed(1)}tiles/tick detectedTravelTicks=${pending.detectedTravelTicks} wait=${pending.waitMs}ms pathStep=${pending.pathStep}/${pending.pathLength} waitPath=${pending.waitPathTiles} clamped=${pending.wasVectorClamped ? "yes" : "no"} tilePxScale=${oldTilePxScale.toFixed(3)}->${state.tilePxScale.toFixed(3)} radiusRatio=${oldRadiusRatio.toFixed(3)}->${state.radiusRatio.toFixed(3)} offset=${oldProjectionOffsetLocalX.toFixed(1)},${oldProjectionOffsetLocalY.toFixed(1)}->${state.projectionOffsetLocalX.toFixed(1)},${state.projectionOffsetLocalY.toFixed(1)} calibration=${calibrationSummary} trusted=${state.isCalibrationTrusted ? "yes" : "no"} startupCheck=${state.startupValidationPending ? "pending" : "none"} calibrationSamples=${state.calibrationSampleCount} acceptedSamples=${state.acceptedSamples} rejectedSamples=${state.rejectedSamples}.${stableSummary}`,
+    )} waypoint=${formatWorldTile(pending.waypointTile)} actual=${formatWorldTile(playerTile)} targetError=${Number.isFinite(targetErrorTiles) ? targetErrorTiles : "n/a"} targetDelta=${targetErrorX},${targetErrorY} actualPath=${actualPathTiles} actualCheb=${actualChebyshevTiles} nearestPathIndex=${nearest.index} nearestPathDistance=${Number.isFinite(nearest.distance) ? nearest.distance : "n/a"} exactPath=${nearest.exact ? "yes" : "no"} expectedRunTiles=${expectedRunTiles} expectedWalkTiles=${expectedWalkTiles} runError=${expectedRunError} walkError=${expectedWalkError} elapsed=${elapsedMs}ms elapsedTicks=${elapsedTicks.toFixed(2)} speed=${actualTilesPerTick.toFixed(2)}tiles/tick mode=${modeEstimate} detectedTravel=${pending.detectedTravelMode}@${pending.detectedTravelSpeedTilesPerTick.toFixed(1)}tiles/tick detectedTravelTicks=${pending.detectedTravelTicks} wait=${pending.waitMs}ms pathStep=${pending.pathStep}/${pending.pathLength} waitPath=${pending.waitPathTiles} clamped=${pending.wasVectorClamped ? "yes" : "no"} tilePxScale=${oldTilePxScale.toFixed(3)}->${state.tilePxScale.toFixed(3)} radiusRatio=${oldRadiusRatio.toFixed(3)}->${state.radiusRatio.toFixed(3)} offset=${oldProjectionOffsetLocalX.toFixed(1)},${oldProjectionOffsetLocalY.toFixed(1)}->${state.projectionOffsetLocalX.toFixed(1)},${state.projectionOffsetLocalY.toFixed(1)} calibration=${calibrationSummary} trusted=${state.isCalibrationTrusted ? "yes" : "no"} startupCheck=${state.startupValidationPending ? "pending" : "none"} calibrationSamples=${state.calibrationSampleCount} acceptedSamples=${state.acceptedSamples} rejectedSamples=${state.rejectedSamples} ${pending.boundsSummary}.${stableSummary}`,
   );
 }
 
@@ -2961,7 +2972,7 @@ async function clickProjectedPlannedRouteWaypoint(
   const travelTicks = getArceuusTravelWaitTicks(route.nextWaypointPathLength, detectedTravelSpeedTilesPerTick);
   const waitMs = ticksToMs(travelTicks, GAME_TICK_MS) + randomIntInclusive(80, 260);
   logWithDelta(
-    `${stepLabel} movement click ${attempt}: mode=projected waypoint=${formatWorldTile(route.nextWaypoint)} pathStep=${route.nextWaypointPathLength}/${route.pathLength} runMode=${formatOsrsRunModeDetection(tick.runMode)} detectedTravel=${formatDetectedTravelMode(tick.runMode)}@${detectedTravelSpeedTilesPerTick.toFixed(1)}tiles/tick detectedTravelTicks=${travelTicks} wait=${waitMs}ms screen=${clicked.x},${clicked.y}.`,
+    `${stepLabel} movement click ${attempt}: mode=projected waypoint=${formatWorldTile(route.nextWaypoint)} pathStep=${route.nextWaypointPathLength}/${route.pathLength} runMode=${formatOsrsRunModeDetection(tick.runMode)} detectedTravel=${formatDetectedTravelMode(tick.runMode)}@${detectedTravelSpeedTilesPerTick.toFixed(1)}tiles/tick detectedTravelTicks=${travelTicks} wait=${waitMs}ms screen=${clicked.x},${clicked.y} ${formatArceuusCalibrationBounds(tick.calibration)}.`,
   );
   await sleepWithAbort(waitMs, () => AppState.automateBotRunning);
   return { status: "clicked", route };
@@ -3012,7 +3023,7 @@ async function clickMinimapPlannedRouteWaypoint(
   const minimap = inferArceuusMinimap(activeTick.calibration, activeTick.bitmap);
   if (minimap.source !== "detected-from-contour") {
     warnWithDelta(
-      `${stepLabel} minimap route skipped: minimap contour not detected source=${minimap.source} expectedCenter=${activeTick.calibration.captureBounds.x + minimap.expectedCenterLocalX},${activeTick.calibration.captureBounds.y + minimap.expectedCenterLocalY} expectedRadius=${minimap.expectedRadiusPx}px detector=${minimap.detectionSummary}.`,
+      `${stepLabel} minimap route skipped: minimap contour not detected source=${minimap.source} expectedCenter=${activeTick.calibration.captureBounds.x + minimap.expectedCenterLocalX},${activeTick.calibration.captureBounds.y + minimap.expectedCenterLocalY} expectedRadius=${minimap.expectedRadiusPx}px ${formatArceuusCalibrationBounds(activeTick.calibration)} detector=${minimap.detectionSummary}.`,
     );
     return { status: "unavailable", route };
   }
@@ -3158,7 +3169,7 @@ async function clickMinimapPlannedRouteWaypoint(
   const expectedCenterSummary = ` expectedCenter=${clickPlan.expectedMinimapCenter.x},${clickPlan.expectedMinimapCenter.y} centerDelta=${clickPlan.minimapCenter.x - clickPlan.expectedMinimapCenter.x},${clickPlan.minimapCenter.y - clickPlan.expectedMinimapCenter.y} expectedRadius=${clickPlan.expectedMinimapRadiusPx}px detectionScore=${clickPlan.minimapDetectionScore?.toFixed(2) ?? "n/a"}`;
   const calibrationActive = shouldRunArceuusMinimapProjectionCalibration();
   logWithDelta(
-    `${stepLabel} movement click ${attempt}: mode=minimap destination=${destinationLabel} player=${formatWorldTile(playerTile)} clickTarget=${formatWorldTile(clickTarget.tile)} routeWaypoint=${formatWorldTile(route.nextWaypoint)} pathStep=${clickTarget.pathStep}/${route.pathLength} routeWaypointStep=${route.nextWaypointPathLength} maxClickPath=${clickTarget.maxClickPathTiles} delta=${clickPlan.dxTiles},${clickPlan.dyTiles} distance=${clickPlan.distanceTiles} waitPath=${waitPathTiles} estimatedRunTicks=${estimatedRunTicks} estimatedWalkTicks=${estimatedWalkTicks} runMode=${formatOsrsRunModeDetection(activeTick.runMode)} detectedTravel=${formatDetectedTravelMode(activeTick.runMode)}@${detectedTravelSpeedTilesPerTick.toFixed(1)}tiles/tick detectedTravelTicks=${travelTicks} minimap=${clickPlan.minimapSource}/${clickPlan.projectionSource} radius=${clickPlan.minimapRadiusPx}px maxClick=${clickPlan.maxClickDistancePx}px clamped=${clickPlan.wasVectorClamped ? "yes" : "no"} tilePx=${clickPlan.minimapTilePx}px effectiveTilePx=${clickPlan.effectiveMinimapTilePx.toFixed(2)} learnTileScale=${clickPlan.learnedTilePxScale.toFixed(3)} learnRadiusRatio=${clickPlan.learnedRadiusRatio.toFixed(3)} offset=${clickPlan.projectionOffsetLocalX.toFixed(1)},${clickPlan.projectionOffsetLocalY.toFixed(1)} calibration=${calibrationActive ? "active" : "frozen"} center=${clickPlan.minimapCenter.x},${clickPlan.minimapCenter.y}${expectedCenterSummary} detector=${clickPlan.minimapDetectionSummary} projected=${clickPlan.projectedScreenPoint.x},${clickPlan.projectedScreenPoint.y} screen=${clicked.x},${clicked.y} local=${clickedLocal.x},${clickedLocal.y} clickVector=${clickVectorX},${clickVectorY} ${compassSummary} wait=${waitMs}ms debug=${debugPath ?? "none"}.`,
+    `${stepLabel} movement click ${attempt}: mode=minimap destination=${destinationLabel} player=${formatWorldTile(playerTile)} clickTarget=${formatWorldTile(clickTarget.tile)} routeWaypoint=${formatWorldTile(route.nextWaypoint)} pathStep=${clickTarget.pathStep}/${route.pathLength} routeWaypointStep=${route.nextWaypointPathLength} maxClickPath=${clickTarget.maxClickPathTiles} delta=${clickPlan.dxTiles},${clickPlan.dyTiles} distance=${clickPlan.distanceTiles} waitPath=${waitPathTiles} estimatedRunTicks=${estimatedRunTicks} estimatedWalkTicks=${estimatedWalkTicks} runMode=${formatOsrsRunModeDetection(activeTick.runMode)} detectedTravel=${formatDetectedTravelMode(activeTick.runMode)}@${detectedTravelSpeedTilesPerTick.toFixed(1)}tiles/tick detectedTravelTicks=${travelTicks} minimap=${clickPlan.minimapSource}/${clickPlan.projectionSource} radius=${clickPlan.minimapRadiusPx}px maxClick=${clickPlan.maxClickDistancePx}px clamped=${clickPlan.wasVectorClamped ? "yes" : "no"} tilePx=${clickPlan.minimapTilePx}px effectiveTilePx=${clickPlan.effectiveMinimapTilePx.toFixed(2)} learnTileScale=${clickPlan.learnedTilePxScale.toFixed(3)} learnRadiusRatio=${clickPlan.learnedRadiusRatio.toFixed(3)} offset=${clickPlan.projectionOffsetLocalX.toFixed(1)},${clickPlan.projectionOffsetLocalY.toFixed(1)} calibration=${calibrationActive ? "active" : "frozen"} center=${clickPlan.minimapCenter.x},${clickPlan.minimapCenter.y}${expectedCenterSummary} detector=${clickPlan.minimapDetectionSummary} projected=${clickPlan.projectedScreenPoint.x},${clickPlan.projectedScreenPoint.y} screen=${clicked.x},${clicked.y} local=${clickedLocal.x},${clickedLocal.y} clickVector=${clickVectorX},${clickVectorY} ${compassSummary} wait=${waitMs}ms ${formatArceuusCalibrationBounds(activeTick.calibration)} debug=${debugPath ?? "none"}.`,
   );
   registerArceuusMinimapMovementSample({
     stepLabel,
@@ -3195,6 +3206,7 @@ async function clickMinimapPlannedRouteWaypoint(
     eastX: clickPlan.eastX,
     eastY: clickPlan.eastY,
     calibrationActive,
+    boundsSummary: formatArceuusCalibrationBounds(activeTick.calibration),
     debugPath,
   });
   await sleepWithAbort(waitMs, () => AppState.automateBotRunning);
@@ -3706,7 +3718,7 @@ async function clickChiselOnDarkEssenceBlock(
 
 function formatMiningTick(tick: ArceuusMiningTick, inventoryStatus: ArceuusInventoryStatus | null): string {
   const api = tick.apiSnapshot ? formatRuneLiteLocalApiSnapshot(tick.apiSnapshot) : "api=unavailable";
-  return `player=${tick.playerTile ? formatWorldTile(tick.playerTile) : "unavailable"} overlay=${tick.calibration.coordinateLine ?? "unavailable"} runMode=${formatOsrsRunModeDetection(tick.runMode)} mining=${tick.miningStatus.status}:${tick.miningStatus.confidence.toFixed(2)} box=${tick.miningStatus.x},${tick.miningStatus.y},${tick.miningStatus.width}x${tick.miningStatus.height} pixels green=${tick.miningStatus.greenPixelCount} red=${tick.miningStatus.redPixelCount} text=${tick.miningStatus.textComponentCount}c/${tick.miningStatus.textColumnCount}col/${tick.miningStatus.textWidth}x${tick.miningStatus.textHeight} visibleActive=${tick.visibleTarget ? `${tick.visibleTarget.centerX},${tick.visibleTarget.centerY}` : "none"} greenOutlines=${tick.greenOutlines.map(formatGreenOutline).join("; ") || "none"} ${formatInventoryStatus(inventoryStatus)} ${api}`;
+  return `player=${tick.playerTile ? formatWorldTile(tick.playerTile) : "unavailable"} overlay=${tick.calibration.coordinateLine ?? "unavailable"} ${formatArceuusCalibrationBounds(tick.calibration)} runMode=${formatOsrsRunModeDetection(tick.runMode)} mining=${tick.miningStatus.status}:${tick.miningStatus.confidence.toFixed(2)} box=${tick.miningStatus.x},${tick.miningStatus.y},${tick.miningStatus.width}x${tick.miningStatus.height} pixels green=${tick.miningStatus.greenPixelCount} red=${tick.miningStatus.redPixelCount} text=${tick.miningStatus.textComponentCount}c/${tick.miningStatus.textColumnCount}col/${tick.miningStatus.textWidth}x${tick.miningStatus.textHeight} visibleActive=${tick.visibleTarget ? `${tick.visibleTarget.centerX},${tick.visibleTarget.centerY}` : "none"} greenOutlines=${tick.greenOutlines.map(formatGreenOutline).join("; ") || "none"} ${formatInventoryStatus(inventoryStatus)} ${api}`;
 }
 
 function formatAltarTravelTick(
@@ -3721,7 +3733,7 @@ function formatAltarTravelTick(
     : Number.POSITIVE_INFINITY;
   return `player=${tick.playerTile ? formatWorldTile(tick.playerTile) : "unavailable"} altar=${formatWorldTile(
     altarTile,
-  )} distance=${Number.isFinite(distanceToAltar) ? distanceToAltar : "unavailable"} darkAltar=${formatDarkAltarTarget(darkAltarTarget)} overlay=${tick.calibration.coordinateLine ?? "unavailable"} runMode=${formatOsrsRunModeDetection(tick.runMode)} availableShortcuts=${formatWorldRouteAgilityShortcutSummary(routeContext.availableShortcuts)} unavailableShortcuts=${formatWorldRouteAgilityShortcutSummary(routeContext.unavailableShortcuts)} green=${tick.greenOutlines.map(formatGreenOutline).join("; ") || "none"} ${api}`;
+  )} distance=${Number.isFinite(distanceToAltar) ? distanceToAltar : "unavailable"} darkAltar=${formatDarkAltarTarget(darkAltarTarget)} overlay=${tick.calibration.coordinateLine ?? "unavailable"} ${formatArceuusCalibrationBounds(tick.calibration)} runMode=${formatOsrsRunModeDetection(tick.runMode)} availableShortcuts=${formatWorldRouteAgilityShortcutSummary(routeContext.availableShortcuts)} unavailableShortcuts=${formatWorldRouteAgilityShortcutSummary(routeContext.unavailableShortcuts)} green=${tick.greenOutlines.map(formatGreenOutline).join("; ") || "none"} ${api}`;
 }
 
 function formatBloodAltarTravelTick(
@@ -3736,7 +3748,7 @@ function formatBloodAltarTravelTick(
     : Number.POSITIVE_INFINITY;
   return `player=${tick.playerTile ? formatWorldTile(tick.playerTile) : "unavailable"} altar=${formatWorldTile(
     altarTile,
-  )} distance=${Number.isFinite(distanceToAltar) ? distanceToAltar : "unavailable"} bloodAltar=${formatBloodAltarTarget(bloodAltarTarget)} overlay=${tick.calibration.coordinateLine ?? "unavailable"} runMode=${formatOsrsRunModeDetection(tick.runMode)} availableShortcuts=${formatWorldRouteAgilityShortcutSummary(routeContext.availableShortcuts)} unavailableShortcuts=${formatWorldRouteAgilityShortcutSummary(routeContext.unavailableShortcuts)} green=${tick.greenOutlines.map(formatGreenOutline).join("; ") || "none"} ${api}`;
+  )} distance=${Number.isFinite(distanceToAltar) ? distanceToAltar : "unavailable"} bloodAltar=${formatBloodAltarTarget(bloodAltarTarget)} overlay=${tick.calibration.coordinateLine ?? "unavailable"} ${formatArceuusCalibrationBounds(tick.calibration)} runMode=${formatOsrsRunModeDetection(tick.runMode)} availableShortcuts=${formatWorldRouteAgilityShortcutSummary(routeContext.availableShortcuts)} unavailableShortcuts=${formatWorldRouteAgilityShortcutSummary(routeContext.unavailableShortcuts)} green=${tick.greenOutlines.map(formatGreenOutline).join("; ") || "none"} ${api}`;
 }
 
 type ArceuusDarkAltarTravelOptions = {

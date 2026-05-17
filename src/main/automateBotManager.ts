@@ -67,6 +67,10 @@ function getAutomateBotVersionName(botId: string): string | undefined {
 function cacheStartupPlayerTileCalibration(botId: string): void {
   AppState.automateBotStartupRawTilePx = null;
 
+  if (botId !== RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID) {
+    return;
+  }
+
   try {
     const window = alignRuneLiteWindowBoundsForAutomateBot(botId) ?? getRuneLite();
     if (!window) {

@@ -1,4 +1,10 @@
-import { loadOsrsRegionCollisionFromCache } from "../cache/osrs-region-cache";
+import { openOsrsCacheStore, type OsrsCacheStore } from "../cache/cache-store";
+import {
+  loadOsrsObjectDefinitionsFromCache,
+  loadOsrsRegionCacheDataFromStore,
+  loadOsrsRegionCollisionFromCacheData,
+} from "../cache/osrs-region-cache";
+import type { OsrsObjectDefinitionMap } from "../cache/object-loader";
 import {
   CollisionFlag,
   getRegionCollisionFlags,
@@ -78,6 +84,11 @@ type WorldCollisionGrid = {
   maxRegionX: number;
   minRegionY: number;
   maxRegionY: number;
+};
+
+type WorldCollisionLoadCache = {
+  collisions: Map<string, OsrsRegionCollision>;
+  missingRegions: Map<string, string>;
 };
 
 const DEFAULT_WAYPOINT_STEP_LIMIT = 14;
@@ -215,7 +226,9 @@ function buildRegionBoundCandidates(
 
 function loadWorldCollisionGrid(
   bounds: Pick<WorldCollisionGrid, "minRegionX" | "maxRegionX" | "minRegionY" | "maxRegionY">,
-  cacheDirectoryPath?: string,
+  store: OsrsCacheStore,
+  objectDefinitions: OsrsObjectDefinitionMap,
+  loadCache: WorldCollisionLoadCache,
   blockedTiles: readonly WorldRouteTile[] = [],
   collisionOptions: BuildRegionCollisionOptions = DEFAULT_WORLD_ROUTE_COLLISION_OPTIONS,
 ): WorldCollisionGrid {
@@ -223,19 +236,36 @@ function loadWorldCollisionGrid(
   const missingRegionSummaries: string[] = [];
   for (let regionX = bounds.minRegionX; regionX <= bounds.maxRegionX; regionX += 1) {
     for (let regionY = bounds.minRegionY; regionY <= bounds.maxRegionY; regionY += 1) {
+      const regionKey = getRegionKey(regionX, regionY);
+      const cachedCollision = loadCache.collisions.get(regionKey);
+      if (cachedCollision) {
+        collisions.set(regionKey, cachedCollision);
+        continue;
+      }
+
+      const cachedMissingReason = loadCache.missingRegions.get(regionKey);
+      if (cachedMissingReason) {
+        missingRegionSummaries.push(cachedMissingReason);
+        continue;
+      }
+
       try {
-        collisions.set(
-          getRegionKey(regionX, regionY),
-          loadOsrsRegionCollisionFromCache({
+        const collision = loadOsrsRegionCollisionFromCacheData(
+          loadOsrsRegionCacheDataFromStore({
+            store,
             regionX,
             regionY,
-            cacheDirectoryPath,
-            collisionOptions,
+            objectDefinitions,
           }),
+          collisionOptions,
         );
+        loadCache.collisions.set(regionKey, collision);
+        collisions.set(regionKey, collision);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        missingRegionSummaries.push(`${regionX},${regionY}: ${message}`);
+        const missingSummary = `${regionX},${regionY}: ${message}`;
+        loadCache.missingRegions.set(regionKey, missingSummary);
+        missingRegionSummaries.push(missingSummary);
       }
     }
   }
@@ -601,20 +631,54 @@ export function planWorldRouteToTiles(playerTile: WorldTile, options: PlanWorldR
   let result: WorldRouteSearchResult | null = null;
   let searchedRegionWindowCount = 0;
   const missingRegionSummaries = new Set<string>();
-  for (const regionBounds of regionBoundCandidates) {
-    searchedRegionWindowCount += 1;
-    const collisionGrid = loadWorldCollisionGrid(
-      regionBounds,
-      options.cacheDirectoryPath,
-      options.blockedTiles ?? [],
-      options.collisionOptions ?? DEFAULT_WORLD_ROUTE_COLLISION_OPTIONS,
-    );
-    for (const summary of collisionGrid.missingRegionSummaries) {
-      missingRegionSummaries.add(summary);
+  const loadCache: WorldCollisionLoadCache = {
+    collisions: new Map(),
+    missingRegions: new Map(),
+  };
+  let store: OsrsCacheStore | null = null;
+  let objectDefinitions: OsrsObjectDefinitionMap;
+  try {
+    store = openOsrsCacheStore(options.cacheDirectoryPath);
+    objectDefinitions = loadOsrsObjectDefinitionsFromCache(store);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      status: "unavailable",
+      reason: `Could not load OSRS cache for ${options.destinationLabel}: ${message}`,
+      playerTile,
+      destinationLabel: options.destinationLabel,
+      destinationTile,
+      directDistanceToDestinationTiles,
+      directDistanceToTargetTiles: 0,
+      pathTiles: [],
+      linkUsages: [],
+      nextWaypointPathLength: 0,
+      pathLength: 0,
+    };
+  }
+
+  try {
+    for (const regionBounds of regionBoundCandidates) {
+      searchedRegionWindowCount += 1;
+      const collisionGrid = loadWorldCollisionGrid(
+        regionBounds,
+        store,
+        objectDefinitions,
+        loadCache,
+        options.blockedTiles ?? [],
+        options.collisionOptions ?? DEFAULT_WORLD_ROUTE_COLLISION_OPTIONS,
+      );
+      for (const summary of collisionGrid.missingRegionSummaries) {
+        missingRegionSummaries.add(summary);
+      }
+      result = findWorldPath(collisionGrid, playerTile, sortedTargets, samePlaneLinks);
+      if (result) {
+        break;
+      }
     }
-    result = findWorldPath(collisionGrid, playerTile, sortedTargets, samePlaneLinks);
-    if (result) {
-      break;
+  } finally {
+    if (store) {
+      store.close();
     }
   }
 
