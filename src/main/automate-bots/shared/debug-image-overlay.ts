@@ -43,6 +43,12 @@ export type DebugOverlayShape =
       y2: number;
       color: DebugOverlayColor;
       thickness?: number;
+    }
+  | {
+      type: "points";
+      points: readonly { x: number; y: number }[];
+      color: DebugOverlayColor;
+      thickness?: number;
     };
 
 function clampInt(value: number, min: number, max: number): number {
@@ -164,6 +170,13 @@ function drawCircle(png: PNG, shape: Extract<DebugOverlayShape, { type: "circle"
   }
 }
 
+function drawPoints(png: PNG, shape: Extract<DebugOverlayShape, { type: "points" }>): void {
+  const thickness = Math.max(1, Math.round(shape.thickness ?? 1));
+  for (const point of shape.points) {
+    setPngPixel(png, point.x, point.y, shape.color, thickness);
+  }
+}
+
 function drawShape(png: PNG, shape: DebugOverlayShape): void {
   if (shape.type === "box") {
     drawBox(png, shape);
@@ -171,6 +184,8 @@ function drawShape(png: PNG, shape: DebugOverlayShape): void {
     drawCircle(png, shape);
   } else if (shape.type === "cross") {
     drawCross(png, shape);
+  } else if (shape.type === "points") {
+    drawPoints(png, shape);
   } else {
     drawLine(png, shape);
   }
