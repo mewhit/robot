@@ -78,8 +78,8 @@ const MARK_OF_GRACE_IGNORE_MATCH_RADIUS_PX = 80;
 const MARK_OF_GRACE_CLICK_CENTER_RADIUS_PX = 0;
 const MARK_OF_GRACE_MIN_WIDTH_PX = 20;
 const MARK_OF_GRACE_MIN_HEIGHT_PX = 10;
-const MARK_OF_GRACE_MAX_HEIGHT_PX = 36;
-const MARK_OF_GRACE_MIN_ASPECT_RATIO = 1.2;
+const MARK_OF_GRACE_MAX_HEIGHT_PX = 52;
+const MARK_OF_GRACE_MIN_ASPECT_RATIO = 0.85;
 const MARK_OF_GRACE_OBSTACLE_OUTLINE_EXCLUSION_MARGIN_PX = 80;
 const CACHE_OBSTACLE_OUTLINE_EXCLUSION_MARGIN_PX = 18;
 const STATUS_LOG_INTERVAL_MS = 2200;
@@ -88,7 +88,8 @@ const CLICK_DEBUG_DIR = "test-image-debug";
 const ROOFTOP_MINIMAP_MAX_CLICK_RADIUS_RATIO = 0.8;
 const ROOFTOP_MINIMAP_MIN_MOVE_DISTANCE_TILES = 6;
 const ROOFTOP_MINIMAP_ASSUMED_RUN_TILES_PER_TICK = 2;
-const POST_MINIMAP_3D_CLICK_STABLE_MS = GAME_TICK_MS;
+const ROOFTOP_COURSE_REGION_SEARCH_RADIUS = 1;
+const POST_MINIMAP_3D_CLICK_STABLE_MS = GAME_TICK_MS * 2;
 const ROOFTOP_MINIMAP_GEOMETRY_MIN_SCORE = 0.84;
 const ROOFTOP_MINIMAP_GEOMETRY_MAX_CENTER_DRIFT_RATIO = 0.09;
 const ROOFTOP_MINIMAP_GEOMETRY_MAX_RADIUS_DRIFT_RATIO = 0.08;
@@ -1062,30 +1063,76 @@ function pickNearestMapObject(
   return [...objects].sort(compareMapObjectsByDistanceToPlayer(playerTile))[0] ?? null;
 }
 
-function pickNearestRooftopCourseKey(
-  objectsByCourse: ReadonlyMap<string, readonly OsrsCacheMapObject[]>,
-  playerTile: WorldTile,
-): string | null {
-  return (
-    [...objectsByCourse.entries()]
-      .map(([courseKey, objects]) => ({
-        courseKey,
-        nearestObject: pickNearestMapObject(objects, playerTile),
-      }))
-      .filter(
-        (candidate): candidate is { courseKey: string; nearestObject: OsrsCacheMapObject } =>
-          candidate.nearestObject !== null,
-      )
-      .sort((a, b) => {
-        const distanceDelta =
-          getMapObjectDistanceToPlayer(a.nearestObject, playerTile) -
-          getMapObjectDistanceToPlayer(b.nearestObject, playerTile);
-        if (distanceDelta !== 0) {
-          return distanceDelta;
-        }
+type RooftopRegionCoordinate = {
+  regionX: number;
+  regionY: number;
+};
 
-        return a.courseKey.localeCompare(b.courseKey);
-      })[0]?.courseKey ?? null
+type RooftopRegionView = ReturnType<typeof readOsrsCacheMapRegionView>;
+
+type NearbyRooftopObject = {
+  view: RooftopRegionView;
+  object: OsrsCacheMapObject;
+};
+
+type NearbyRooftopCourseCandidate = {
+  view: RooftopRegionView;
+  courseKey: string;
+  nearestObject: OsrsCacheMapObject;
+  rooftopObjectCount: number;
+};
+
+type NearbyRooftopCourseScan = {
+  regionKey: string;
+  regionLabels: string[];
+  views: RooftopRegionView[];
+  rooftopObjects: NearbyRooftopObject[];
+  candidates: NearbyRooftopCourseCandidate[];
+};
+
+type LoadedNearbyRooftopCourse = {
+  course: FaladorCourse;
+  candidate: NearbyRooftopCourseCandidate;
+  scan: NearbyRooftopCourseScan;
+};
+
+function formatRooftopRegionCoordinate(region: RooftopRegionCoordinate): string {
+  return `${region.regionX},${region.regionY}`;
+}
+
+function getNearbyRooftopSearchRegions(playerTile: WorldTile): RooftopRegionCoordinate[] {
+  const regions: RooftopRegionCoordinate[] = [];
+  for (let dx = -ROOFTOP_COURSE_REGION_SEARCH_RADIUS; dx <= ROOFTOP_COURSE_REGION_SEARCH_RADIUS; dx += 1) {
+    for (let dy = -ROOFTOP_COURSE_REGION_SEARCH_RADIUS; dy <= ROOFTOP_COURSE_REGION_SEARCH_RADIUS; dy += 1) {
+      regions.push({
+        regionX: playerTile.regionX + dx,
+        regionY: playerTile.regionY + dy,
+      });
+    }
+  }
+
+  return regions.sort((a, b) => {
+    const aDistance = Math.max(Math.abs(a.regionX - playerTile.regionX), Math.abs(a.regionY - playerTile.regionY));
+    const bDistance = Math.max(Math.abs(b.regionX - playerTile.regionX), Math.abs(b.regionY - playerTile.regionY));
+    if (aDistance !== bDistance) {
+      return aDistance - bDistance;
+    }
+
+    return a.regionX - b.regionX || a.regionY - b.regionY;
+  });
+}
+
+function getNearbyRooftopSearchRegionKey(playerTile: WorldTile): string {
+  return getNearbyRooftopSearchRegions(playerTile).map(formatRooftopRegionCoordinate).join("|");
+}
+
+function isRegionWithinRooftopCourseSearchRadius(
+  region: RooftopRegionCoordinate,
+  playerTile: WorldTile,
+): boolean {
+  return (
+    Math.abs(region.regionX - playerTile.regionX) <= ROOFTOP_COURSE_REGION_SEARCH_RADIUS &&
+    Math.abs(region.regionY - playerTile.regionY) <= ROOFTOP_COURSE_REGION_SEARCH_RADIUS
   );
 }
 
@@ -1103,6 +1150,74 @@ function buildRooftopObjectsByCourse(objects: readonly OsrsCacheMapObject[]): Ma
   }
 
   return objectsByCourse;
+}
+
+function compareNearbyRooftopCourseCandidates(
+  playerTile: WorldTile,
+): (a: NearbyRooftopCourseCandidate, b: NearbyRooftopCourseCandidate) => number {
+  const compareObjects = compareMapObjectsByDistanceToPlayer(playerTile);
+  return (a, b) =>
+    compareObjects(a.nearestObject, b.nearestObject) ||
+    a.courseKey.localeCompare(b.courseKey) ||
+    a.view.regionX - b.view.regionX ||
+    a.view.regionY - b.view.regionY;
+}
+
+function scanNearbyRooftopCourseRegions(playerTile: WorldTile): NearbyRooftopCourseScan {
+  const regions = getNearbyRooftopSearchRegions(playerTile);
+  const views = regions.map((region) =>
+    readOsrsCacheMapRegionView({ regionX: region.regionX, regionY: region.regionY }),
+  );
+  const rooftopObjects: NearbyRooftopObject[] = [];
+  const candidates: NearbyRooftopCourseCandidate[] = [];
+
+  for (const view of views) {
+    const objectsByCourse = buildRooftopObjectsByCourse(view.objects);
+    for (const [courseKey, objects] of objectsByCourse.entries()) {
+      for (const object of objects) {
+        rooftopObjects.push({ view, object });
+      }
+
+      const nearestObject = pickNearestMapObject(objects, playerTile);
+      if (!nearestObject) {
+        continue;
+      }
+
+      candidates.push({
+        view,
+        courseKey,
+        nearestObject,
+        rooftopObjectCount: objects.length,
+      });
+    }
+  }
+
+  return {
+    regionKey: regions.map(formatRooftopRegionCoordinate).join("|"),
+    regionLabels: regions.map(formatRooftopRegionCoordinate),
+    views,
+    rooftopObjects,
+    candidates: candidates.sort(compareNearbyRooftopCourseCandidates(playerTile)),
+  };
+}
+
+function formatNearbyRooftopMapObjectSummary(candidate: NearbyRooftopObject, playerTile: WorldTile): string {
+  return `${candidate.view.regionX},${candidate.view.regionY}:${formatRooftopMapObjectSummary(
+    candidate.object,
+    playerTile,
+  )}`;
+}
+
+function formatNearbyRooftopCourseCandidateSummary(
+  candidate: NearbyRooftopCourseCandidate,
+  playerTile: WorldTile,
+): string {
+  return `${formatRooftopCourseKey(candidate.courseKey)}@${candidate.view.regionX},${
+    candidate.view.regionY
+  } objects=${candidate.rooftopObjectCount} nearest=${formatRooftopMapObjectSummary(
+    candidate.nearestObject,
+    playerTile,
+  )}`;
 }
 
 function pickCourseObjectForOrderEntry(
@@ -1187,30 +1302,49 @@ function buildDynamicRooftopCourseFromRegionView(params: {
   };
 }
 
-function loadNearestRooftopCourseFromPlayerRegion(playerTile: WorldTile): FaladorCourse | null {
-  const view = readOsrsCacheMapRegionView({ regionX: playerTile.regionX, regionY: playerTile.regionY });
-  const objectsByCourse = buildRooftopObjectsByCourse(view.objects);
-  const courseKey = pickNearestRooftopCourseKey(objectsByCourse, playerTile);
-  if (!courseKey) {
-    return null;
+function loadNearestRooftopCourseFromNearbyRegions(playerTile: WorldTile): LoadedNearbyRooftopCourse | null {
+  const scan = scanNearbyRooftopCourseRegions(playerTile);
+  for (const candidate of scan.candidates) {
+    const course = buildDynamicRooftopCourseFromRegionView({
+      view: candidate.view,
+      playerTile,
+      courseKey: candidate.courseKey,
+    });
+    if (!course) {
+      continue;
+    }
+
+    return {
+      course,
+      candidate,
+      scan,
+    };
   }
 
-  return buildDynamicRooftopCourseFromRegionView({ view, playerTile, courseKey });
+  return null;
 }
 
 function withDynamicRooftopCourse(state: FaladorState, playerTile: WorldTile): FaladorState {
   const currentCourse = state.course;
-  if (currentCourse && currentCourse.regionX === playerTile.regionX && currentCourse.regionY === playerTile.regionY) {
+  if (
+    currentCourse &&
+    isRegionWithinRooftopCourseSearchRadius(
+      { regionX: currentCourse.regionX, regionY: currentCourse.regionY },
+      playerTile,
+    )
+  ) {
     return state;
   }
 
-  const course = loadNearestRooftopCourseFromPlayerRegion(playerTile);
-  if (!course) {
+  const loaded = loadNearestRooftopCourseFromNearbyRegions(playerTile);
+  if (!loaded) {
     if (currentCourse) {
       warnWithDelta(
-        `${BOT_LOG_PREFIX}: no rooftop agility course found in current player region; clearing active course. player=${toWorldTileLabel(
+        `${BOT_LOG_PREFIX}: no rooftop agility course found in nearby player regions; clearing active course. player=${toWorldTileLabel(
           playerTile,
-        )} region=${playerTile.regionX},${playerTile.regionY}.`,
+        )} playerRegion=${playerTile.regionX},${playerTile.regionY} searchedRegions=${getNearbyRooftopSearchRegionKey(
+          playerTile,
+        )}.`,
       );
     }
 
@@ -1224,10 +1358,16 @@ function withDynamicRooftopCourse(state: FaladorState, playerTile: WorldTile): F
     };
   }
 
+  const { course, candidate, scan } = loaded;
   logWithDelta(
-    `${BOT_LOG_PREFIX}: selected nearest rooftop course from player region. course=${course.courseKey} label=${course.label} player=${toWorldTileLabel(
+    `${BOT_LOG_PREFIX}: selected nearest rooftop course from nearby regions. course=${course.courseKey} label=${course.label} player=${toWorldTileLabel(
       playerTile,
-    )} region=${course.regionX},${course.regionY} obstacles=${course.targets.length} mapCacheObstacles=${
+    )} playerRegion=${playerTile.regionX},${playerTile.regionY} courseRegion=${course.regionX},${
+      course.regionY
+    } searchedRegions=${scan.regionLabels.join(";")} nearest=${formatRooftopMapObjectSummary(
+      candidate.nearestObject,
+      playerTile,
+    )} obstacles=${course.targets.length} mapCacheObstacles=${
       course.mapCacheObstacleCount
     }/${course.targets.length} cache=${course.cacheDirectoryPath ?? "unavailable"} order=${course.targets
       .map((target) => toTargetLabel(target, course))
@@ -1252,63 +1392,52 @@ function withPlayerRegionAgilityCourseScanLog(state: FaladorState, tick: Rooftop
     return state;
   }
 
-  const regionKey = `${playerTile.regionX},${playerTile.regionY}`;
+  const regionKey = getNearbyRooftopSearchRegionKey(playerTile);
   if (state.lastLoggedPlayerRegionAgilityScanKey === regionKey) {
     return state;
   }
 
   try {
-    const view = readOsrsCacheMapRegionView({ regionX: playerTile.regionX, regionY: playerTile.regionY });
-    const rooftopObjects = view.objects
-      .filter((object) => getRooftopCourseKey(object) !== null)
-      .sort(compareMapObjectsByDistanceToPlayer(playerTile));
-    if (rooftopObjects.length === 0) {
+    const scan = scanNearbyRooftopCourseRegions(playerTile);
+    const objectCount = scan.views.reduce((total, view) => total + view.objects.length, 0);
+    const missingRegions = scan.views.filter((view) => view.missing === true);
+    const errorRegions = scan.views.filter((view) => view.error);
+    if (scan.rooftopObjects.length === 0) {
       logWithDelta(
-        `${BOT_LOG_PREFIX}: current player region rooftop scan found no rooftop agility course objects. player=${toWorldTileLabel(
+        `${BOT_LOG_PREFIX}: nearby region rooftop scan found no rooftop agility course objects. player=${toWorldTileLabel(
           playerTile,
-        )} region=${regionKey} cache=${view.cacheDirectoryPath} missing=${view.missing === true} error=${
-          view.error ?? "none"
-        } objects=${view.objects.length}.`,
+        )} playerRegion=${playerTile.regionX},${playerTile.regionY} searchedRegions=${scan.regionLabels.join(
+          ";",
+        )} missingRegions=${missingRegions.map((view) => `${view.regionX},${view.regionY}`).join(";") || "none"} errors=${
+          errorRegions.map((view) => `${view.regionX},${view.regionY}:${view.error}`).join(" | ") || "none"
+        } objects=${objectCount}.`,
       );
       return { ...state, lastLoggedPlayerRegionAgilityScanKey: regionKey };
     }
 
-    const objectsByCourse = new Map<string, OsrsCacheMapObject[]>();
-    for (const object of rooftopObjects) {
-      const courseKey = getRooftopCourseKey(object);
-      if (!courseKey) {
-        continue;
-      }
-
-      const objects = objectsByCourse.get(courseKey) ?? [];
-      objects.push(object);
-      objectsByCourse.set(courseKey, objects);
-    }
-
-    const courseSummaries = [...objectsByCourse.entries()]
-      .map(([courseKey, objects]) => {
-        const nearest = [...objects].sort(compareMapObjectsByDistanceToPlayer(playerTile))[0];
-        return `${formatRooftopCourseKey(courseKey)} objects=${objects.length} nearest=${formatRooftopMapObjectSummary(
-          nearest,
-          playerTile,
-        )}`;
-      })
+    const courseSummaries = scan.candidates
+      .map((candidate) => formatNearbyRooftopCourseCandidateSummary(candidate, playerTile))
       .join(" | ");
-    const nearestObjects = rooftopObjects
+    const nearestObjects = [...scan.rooftopObjects]
+      .sort((a, b) => compareMapObjectsByDistanceToPlayer(playerTile)(a.object, b.object))
       .slice(0, 8)
-      .map((object) => formatRooftopMapObjectSummary(object, playerTile));
+      .map((candidate) => formatNearbyRooftopMapObjectSummary(candidate, playerTile));
 
     logWithDelta(
-      `${BOT_LOG_PREFIX}: current player region rooftop scan. player=${toWorldTileLabel(
+      `${BOT_LOG_PREFIX}: nearby region rooftop scan. player=${toWorldTileLabel(
         playerTile,
-      )} region=${regionKey} cache=${view.cacheDirectoryPath} rooftopObjects=${rooftopObjects.length} courses=${courseSummaries} nearestObjects=${nearestObjects.join(
+      )} playerRegion=${playerTile.regionX},${playerTile.regionY} searchedRegions=${scan.regionLabels.join(
+        ";",
+      )} rooftopObjects=${scan.rooftopObjects.length} missingRegions=${
+        missingRegions.map((view) => `${view.regionX},${view.regionY}`).join(";") || "none"
+      } errors=${errorRegions.map((view) => `${view.regionX},${view.regionY}:${view.error}`).join(" | ") || "none"} courses=${courseSummaries} nearestObjects=${nearestObjects.join(
         "; ",
       )}.`,
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     warnWithDelta(
-      `${BOT_LOG_PREFIX}: current player region rooftop scan failed. player=${toWorldTileLabel(
+      `${BOT_LOG_PREFIX}: nearby region rooftop scan failed. player=${toWorldTileLabel(
         playerTile,
       )} region=${regionKey}: ${message}.`,
     );
@@ -3461,9 +3590,11 @@ async function handleFaladorLoop(params: {
     return withStatusLog(
       { ...state, missingTargetTicks: state.missingTargetTicks + 1 },
       nowMs,
-      `${BOT_LOG_PREFIX}: waiting for rooftop course selection from current player region. player=${toWorldTileLabel(
+      `${BOT_LOG_PREFIX}: waiting for rooftop course selection from nearby player regions. player=${toWorldTileLabel(
         playerTile,
-      )} region=${playerTile.regionX},${playerTile.regionY} outlines=${tickCapture.outlines.length}.`,
+      )} playerRegion=${playerTile.regionX},${playerTile.regionY} searchedRegions=${getNearbyRooftopSearchRegionKey(
+        playerTile,
+      )} outlines=${tickCapture.outlines.length}.`,
     );
   }
 
@@ -3487,14 +3618,14 @@ async function handleFaladorLoop(params: {
     return state;
   }
 
-  const postMinimapStability = resolvePostMinimap3dClickStability(state, nowMs, playerTile);
-  state = postMinimapStability.state;
-  if (postMinimapStability.handled) {
-    return state;
-  }
-
   const markOfGrace = pickMarkOfGraceRedOutline(state, tickWithCourse, nowMs);
   if (markOfGrace) {
+    const postMinimapStability = resolvePostMinimap3dClickStability(state, nowMs, playerTile);
+    state = postMinimapStability.state;
+    if (postMinimapStability.handled) {
+      return state;
+    }
+
     const beforeInventory = await readMarkOfGraceInventoryQuantity();
     const markClickPoint = getOutlineBoxCenterPoint(markOfGrace.outline);
     const result = await clickOutline(
@@ -3566,6 +3697,12 @@ async function handleFaladorLoop(params: {
       nowMs,
       `${BOT_LOG_PREFIX}: cache selected no clickable obstacle outline confirmation. course=${course.courseKey} player=${toWorldTileLabel(playerTile)}${groundStartDetails} cacheTarget=${formatAllowedTargetReachability(tickWithCourse)} ${minimapDetails} ${formatObstacleSearchProjectionDebug(tickWithCourse)} outlines=${tickWithCourse.outlines.map(formatAgilityOutline).join("; ") || "none"} missing=${state.missingTargetTicks + 1}.`,
     );
+  }
+
+  const postMinimapStability = resolvePostMinimap3dClickStability(state, nowMs, playerTile);
+  state = postMinimapStability.state;
+  if (postMinimapStability.handled) {
+    return state;
   }
 
   const result = await clickOutline(
