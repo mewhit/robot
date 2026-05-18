@@ -21,7 +21,9 @@ import { clickScreenPoint, moveMouseHumanLike, type ScreenPoint } from "./shared
 import { saveBitmapWithDebugOverlay, type DebugOverlayShape } from "./shared/debug-image-overlay";
 import {
   executeMinimapWorldClickPlan,
+  inferRuneliteMinimapWorldClickGeometry,
   projectWorldTileToMinimapClick,
+  type MinimapWorldClickGeometry,
   type MinimapWorldClickPlan,
 } from "./shared/minimap-world-clicker";
 import {
@@ -87,6 +89,10 @@ const ROOFTOP_MINIMAP_MAX_CLICK_RADIUS_RATIO = 0.8;
 const ROOFTOP_MINIMAP_MIN_MOVE_DISTANCE_TILES = 6;
 const ROOFTOP_MINIMAP_ASSUMED_RUN_TILES_PER_TICK = 2;
 const POST_MINIMAP_3D_CLICK_STABLE_MS = GAME_TICK_MS;
+const ROOFTOP_MINIMAP_GEOMETRY_MIN_SCORE = 0.84;
+const ROOFTOP_MINIMAP_GEOMETRY_MAX_CENTER_DRIFT_RATIO = 0.09;
+const ROOFTOP_MINIMAP_GEOMETRY_MAX_RADIUS_DRIFT_RATIO = 0.08;
+const ROOFTOP_MINIMAP_GEOMETRY_SMOOTHING_ALPHA = 0.18;
 
 type CourseStep = { dx: -1 | 0 | 1; dy: -1 | 0 | 1 };
 
@@ -211,6 +217,16 @@ type PendingPostMinimap3dStability = {
   reason: string;
 };
 
+type StableMinimapGeometryState = {
+  geometry: MinimapWorldClickGeometry;
+  captureWidth: number;
+  captureHeight: number;
+  scalePercent: number;
+  acceptedCount: number;
+  rejectedCount: number;
+  updatedAtMs: number;
+};
+
 type FaladorState = BotEngineLoopState<FaladorFunctionKey> & {
   course: FaladorCourse | null;
   nextClickAllowedAtMs: number;
@@ -220,6 +236,7 @@ type FaladorState = BotEngineLoopState<FaladorFunctionKey> & {
   pendingObstacle: PendingObstacleTraversal | null;
   pendingMarkOfGracePickup: PendingMarkOfGracePickup | null;
   pendingPostMinimap3dStability: PendingPostMinimap3dStability | null;
+  stableMinimapGeometry: StableMinimapGeometryState | null;
   ignoredMarkOfGraceOutlines: IgnoredMarkOfGraceOutline[];
   lapIndex: number;
   observedPlayerTile: WorldTile | null;
@@ -351,6 +368,7 @@ function createInitialState(): FaladorState {
     pendingObstacle: null,
     pendingMarkOfGracePickup: null,
     pendingPostMinimap3dStability: null,
+    stableMinimapGeometry: null,
     ignoredMarkOfGraceOutlines: [],
     lapIndex: 1,
     observedPlayerTile: null,
@@ -2774,6 +2792,230 @@ function pickRooftopMinimapNavigationTarget(tick: FaladorTickCapture): RooftopMi
   };
 }
 
+type ResolvedStableMinimapGeometry = {
+  geometry: MinimapWorldClickGeometry;
+  stableState: StableMinimapGeometryState;
+  logDetails: string;
+};
+
+function hasStableMinimapGeometryForCapture(
+  stable: StableMinimapGeometryState | null,
+  calibration: StartupPlayerTileCalibration,
+  bitmap: ScreenBitmap,
+): stable is StableMinimapGeometryState {
+  return (
+    !!stable &&
+    stable.captureWidth === bitmap.width &&
+    stable.captureHeight === bitmap.height &&
+    stable.scalePercent === calibration.windowsScalePercent
+  );
+}
+
+function cloneMinimapGeometry(
+  geometry: MinimapWorldClickGeometry,
+  overrides: Partial<MinimapWorldClickGeometry> = {},
+): MinimapWorldClickGeometry {
+  const hasSourceOverride = Object.prototype.hasOwnProperty.call(overrides, "source");
+  const hasDetectionScoreOverride = Object.prototype.hasOwnProperty.call(overrides, "detectionScore");
+
+  return {
+    centerLocalX: overrides.centerLocalX ?? geometry.centerLocalX,
+    centerLocalY: overrides.centerLocalY ?? geometry.centerLocalY,
+    radiusPx: overrides.radiusPx ?? geometry.radiusPx,
+    tilePx: overrides.tilePx ?? geometry.tilePx,
+    source: hasSourceOverride ? overrides.source : geometry.source,
+    detectionScore: hasDetectionScoreOverride ? overrides.detectionScore ?? null : geometry.detectionScore,
+    detectionSummary: overrides.detectionSummary ?? geometry.detectionSummary,
+    candidates: overrides.candidates ?? [...geometry.candidates],
+    expectedCenterLocalX: overrides.expectedCenterLocalX ?? geometry.expectedCenterLocalX,
+    expectedCenterLocalY: overrides.expectedCenterLocalY ?? geometry.expectedCenterLocalY,
+    expectedRadiusPx: overrides.expectedRadiusPx ?? geometry.expectedRadiusPx,
+  };
+}
+
+function getMinimapGeometryDrift(stable: MinimapWorldClickGeometry, detected: MinimapWorldClickGeometry): {
+  centerPx: number;
+  centerRatio: number;
+  radiusPx: number;
+  radiusRatio: number;
+} {
+  const radiusBase = Math.max(1, stable.radiusPx);
+  const centerPx = Math.hypot(detected.centerLocalX - stable.centerLocalX, detected.centerLocalY - stable.centerLocalY);
+  const radiusPx = Math.abs(detected.radiusPx - stable.radiusPx);
+
+  return {
+    centerPx,
+    centerRatio: centerPx / radiusBase,
+    radiusPx,
+    radiusRatio: radiusPx / radiusBase,
+  };
+}
+
+function smoothMinimapGeometry(
+  stable: MinimapWorldClickGeometry,
+  detected: MinimapWorldClickGeometry,
+): MinimapWorldClickGeometry {
+  const alpha = ROOFTOP_MINIMAP_GEOMETRY_SMOOTHING_ALPHA;
+  const smooth = (current: number, next: number) => Math.round(current + (next - current) * alpha);
+
+  return cloneMinimapGeometry(detected, {
+    centerLocalX: smooth(stable.centerLocalX, detected.centerLocalX),
+    centerLocalY: smooth(stable.centerLocalY, detected.centerLocalY),
+    radiusPx: smooth(stable.radiusPx, detected.radiusPx),
+    tilePx: smooth(stable.tilePx, detected.tilePx),
+    source: "stable-smoothed",
+    detectionSummary: `smoothed-from=${detected.detectionSummary}`,
+  });
+}
+
+function formatMinimapGeometry(geometry: MinimapWorldClickGeometry): string {
+  return `${geometry.centerLocalX},${geometry.centerLocalY}/r${geometry.radiusPx}/tile=${geometry.tilePx}`;
+}
+
+function formatMinimapGeometryScore(geometry: MinimapWorldClickGeometry | null): string {
+  return geometry?.detectionScore?.toFixed(2) ?? "n/a";
+}
+
+function resolveStableRooftopMinimapGeometry(
+  state: FaladorState,
+  calibration: StartupPlayerTileCalibration,
+  bitmap: ScreenBitmap,
+  nowMs: number,
+): ResolvedStableMinimapGeometry | null {
+  const stable = hasStableMinimapGeometryForCapture(state.stableMinimapGeometry, calibration, bitmap)
+    ? state.stableMinimapGeometry
+    : null;
+  const detected = inferRuneliteMinimapWorldClickGeometry(calibration, bitmap, {
+    maxClickRadiusRatio: ROOFTOP_MINIMAP_MAX_CLICK_RADIUS_RATIO,
+  });
+  const detectionScore = detected?.detectionScore ?? null;
+
+  if (!detected) {
+    if (!stable) {
+      return null;
+    }
+
+    const stableState = {
+      ...stable,
+      rejectedCount: stable.rejectedCount + 1,
+    };
+    return {
+      geometry: cloneMinimapGeometry(stable.geometry, {
+        source: "stable-no-detection",
+        detectionScore: null,
+        detectionSummary: "no-current-detection",
+      }),
+      stableState,
+      logDetails: `minimapGeometry=stable-no-detection stable=${formatMinimapGeometry(
+        stable.geometry,
+      )} accepted=${stableState.acceptedCount} rejected=${stableState.rejectedCount}`,
+    };
+  }
+
+  if (detectionScore === null || detectionScore < ROOFTOP_MINIMAP_GEOMETRY_MIN_SCORE) {
+    if (!stable) {
+      return null;
+    }
+
+    const stableState = {
+      ...stable,
+      rejectedCount: stable.rejectedCount + 1,
+    };
+    return {
+      geometry: cloneMinimapGeometry(stable.geometry, {
+        source: "stable-low-score",
+        detectionScore,
+        detectionSummary: `rejected-low-score=${detected.detectionSummary}`,
+        candidates: detected.candidates,
+      }),
+      stableState,
+      logDetails: `minimapGeometry=stable-low-score stable=${formatMinimapGeometry(
+        stable.geometry,
+      )} detected=${formatMinimapGeometry(detected)} score=${formatMinimapGeometryScore(
+        detected,
+      )} minScore=${ROOFTOP_MINIMAP_GEOMETRY_MIN_SCORE.toFixed(2)} accepted=${
+        stableState.acceptedCount
+      } rejected=${stableState.rejectedCount}`,
+    };
+  }
+
+  if (!stable) {
+    const geometry = cloneMinimapGeometry(detected, { source: "stable-bootstrap" });
+    const stableState: StableMinimapGeometryState = {
+      geometry,
+      captureWidth: bitmap.width,
+      captureHeight: bitmap.height,
+      scalePercent: calibration.windowsScalePercent,
+      acceptedCount: 1,
+      rejectedCount: 0,
+      updatedAtMs: nowMs,
+    };
+
+    return {
+      geometry,
+      stableState,
+      logDetails: `minimapGeometry=bootstrap stable=${formatMinimapGeometry(geometry)} score=${formatMinimapGeometryScore(
+        detected,
+      )} accepted=1 rejected=0`,
+    };
+  }
+
+  const drift = getMinimapGeometryDrift(stable.geometry, detected);
+  const acceptDrift =
+    drift.centerRatio <= ROOFTOP_MINIMAP_GEOMETRY_MAX_CENTER_DRIFT_RATIO &&
+    drift.radiusRatio <= ROOFTOP_MINIMAP_GEOMETRY_MAX_RADIUS_DRIFT_RATIO;
+  if (!acceptDrift) {
+    const stableState = {
+      ...stable,
+      rejectedCount: stable.rejectedCount + 1,
+    };
+    return {
+      geometry: cloneMinimapGeometry(stable.geometry, {
+        source: "stable-rejected-drift",
+        detectionScore,
+        detectionSummary: `rejected-drift=${detected.detectionSummary}`,
+        candidates: detected.candidates,
+      }),
+      stableState,
+      logDetails: `minimapGeometry=rejected-drift stable=${formatMinimapGeometry(
+        stable.geometry,
+      )} detected=${formatMinimapGeometry(detected)} centerDrift=${drift.centerPx.toFixed(
+        1,
+      )}px/${drift.centerRatio.toFixed(2)}r radiusDrift=${drift.radiusPx.toFixed(
+        1,
+      )}px/${drift.radiusRatio.toFixed(2)}r max=${ROOFTOP_MINIMAP_GEOMETRY_MAX_CENTER_DRIFT_RATIO.toFixed(
+        2,
+      )}/${ROOFTOP_MINIMAP_GEOMETRY_MAX_RADIUS_DRIFT_RATIO.toFixed(2)} score=${formatMinimapGeometryScore(
+        detected,
+      )} accepted=${stableState.acceptedCount} rejected=${stableState.rejectedCount}`,
+    };
+  }
+
+  const geometry = smoothMinimapGeometry(stable.geometry, detected);
+  const stableState: StableMinimapGeometryState = {
+    ...stable,
+    geometry,
+    acceptedCount: stable.acceptedCount + 1,
+    updatedAtMs: nowMs,
+  };
+
+  return {
+    geometry,
+    stableState,
+    logDetails: `minimapGeometry=accepted stable=${formatMinimapGeometry(
+      stable.geometry,
+    )} detected=${formatMinimapGeometry(detected)} smoothed=${formatMinimapGeometry(
+      geometry,
+    )} centerDrift=${drift.centerPx.toFixed(1)}px/${drift.centerRatio.toFixed(
+      2,
+    )}r radiusDrift=${drift.radiusPx.toFixed(1)}px/${drift.radiusRatio.toFixed(
+      2,
+    )}r score=${formatMinimapGeometryScore(detected)} accepted=${stableState.acceptedCount} rejected=${
+      stableState.rejectedCount
+    }`,
+  };
+}
+
 function saveRooftopMinimapClickDebugImage(
   tick: FaladorTickCapture,
   plan: MinimapWorldClickPlan,
@@ -2886,11 +3128,24 @@ async function clickRooftopMinimapNavigation(
     return { state, clicked: false, skipReason: "missing-calibration-bitmap-or-player" };
   }
 
+  const geometry = resolveStableRooftopMinimapGeometry(state, calibration, bitmap, Date.now());
+  if (!geometry) {
+    return { state, clicked: false, skipReason: "minimap-geometry-unavailable" };
+  }
+
   const plan = projectWorldTileToMinimapClick(calibration, bitmap, playerTile, navTarget.waypointTile, {
+    geometry: geometry.geometry,
     maxClickRadiusRatio: ROOFTOP_MINIMAP_MAX_CLICK_RADIUS_RATIO,
   });
   if (!plan) {
-    return { state, clicked: false, skipReason: "projection-unavailable" };
+    return {
+      state: {
+        ...state,
+        stableMinimapGeometry: geometry.stableState,
+      },
+      clicked: false,
+      skipReason: "projection-unavailable",
+    };
   }
 
   const execution = await executeMinimapWorldClickPlan(calibration, plan, {
@@ -2920,7 +3175,7 @@ async function clickRooftopMinimapNavigation(
       2,
     )} center=${plan.minimapCenter.x},${plan.minimapCenter.y} detectionScore=${
       plan.minimapDetectionScore?.toFixed(2) ?? "n/a"
-    } detector=${plan.minimapDetectionSummary} projected=${plan.projectedScreenPoint.x},${plan.projectedScreenPoint.y} screen=${
+    } ${geometry.logDetails} detector=${plan.minimapDetectionSummary} projected=${plan.projectedScreenPoint.x},${plan.projectedScreenPoint.y} screen=${
       clicked.x
     },${clicked.y} local=${clickedLocal.x},${clickedLocal.y} clickVector=${execution.clickVectorX},${
       execution.clickVectorY
@@ -2934,6 +3189,7 @@ async function clickRooftopMinimapNavigation(
       ...state,
       nextClickAllowedAtMs: clickedAtMs + waitMs,
       lastClickPoint: clicked,
+      stableMinimapGeometry: geometry.stableState,
       pendingPostMinimap3dStability: {
         clickedAtMs,
         targetLabel: toTargetLabel(navTarget.target, tick.course),
