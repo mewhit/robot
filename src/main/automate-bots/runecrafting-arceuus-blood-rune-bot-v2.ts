@@ -73,6 +73,11 @@ import {
   type RuneliteMinimapGeometryCandidate,
 } from "./shared/minimap-geometry-detector";
 import {
+  executeMinimapWorldClickPlan,
+  projectWorldTileToMinimapClick,
+  type MinimapWorldProjectionAxes,
+} from "./shared/minimap-world-clicker";
+import {
   detectOsrsRunModeFromMinimap,
   formatOsrsRunModeDetection,
   type OsrsRunModeDetection,
@@ -2215,11 +2220,7 @@ function inferArceuusMinimap(
   };
 }
 
-function getFixedWestCameraProjectionAxes(): {
-  northX: number;
-  northY: number;
-  eastX: number;
-  eastY: number;
+function getFixedWestCameraProjectionAxes(): MinimapWorldProjectionAxes & {
   projectionSource: ArceuusMinimapProjectionSource;
 } {
   const northLength = Math.hypot(ARCEUUS_FIXED_WEST_CAMERA_NORTH_X, ARCEUUS_FIXED_WEST_CAMERA_NORTH_Y);
@@ -2255,67 +2256,62 @@ function projectWorldTileToMinimap(
   const dyTiles = targetTile.y - playerTile.y;
   const distanceTiles = Math.max(Math.abs(dxTiles), Math.abs(dyTiles));
   const learning = arceuusMinimapMovementLearning;
-  const effectiveTilePx = minimap.tilePx * learning.tilePxScale;
   const calibrationActive = shouldRunArceuusMinimapProjectionCalibration(learning);
-  const jitterPx = calibrationActive ? 0 : Math.max(1, Math.round(effectiveTilePx * 0.6));
   const axes = getFixedWestCameraProjectionAxes();
-  const { northX, northY, eastX, eastY, projectionSource } = axes;
-  let localDx = (eastX * dxTiles + northX * dyTiles) * effectiveTilePx;
-  let localDy = (eastY * dxTiles + northY * dyTiles) * effectiveTilePx;
-  const vectorLength = Math.hypot(localDx, localDy);
-  const maxClickDistance = Math.max(1, Math.round(minimap.radiusPx * learning.radiusRatio));
-  let wasVectorClamped = false;
-  if (vectorLength > maxClickDistance) {
-    wasVectorClamped = true;
-    const vectorScale = maxClickDistance / vectorLength;
-    localDx *= vectorScale;
-    localDy *= vectorScale;
+  const effectiveTilePx = Math.max(1, minimap.tilePx * learning.tilePxScale);
+  const clickPlan = projectWorldTileToMinimapClick(calibration, bitmap, playerTile, targetTile, {
+    geometry: {
+      centerLocalX: minimap.centerLocalX,
+      centerLocalY: minimap.centerLocalY,
+      radiusPx: minimap.radiusPx,
+      tilePx: minimap.tilePx,
+      source: minimap.source,
+      detectionScore: minimap.detectionScore,
+      detectionSummary: minimap.detectionSummary,
+      candidates: minimap.candidates,
+      expectedCenterLocalX: minimap.expectedCenterLocalX,
+      expectedCenterLocalY: minimap.expectedCenterLocalY,
+      expectedRadiusPx: minimap.expectedRadiusPx,
+    },
+    projectionAxes: axes,
+    tilePxScale: learning.tilePxScale,
+    radiusRatio: learning.radiusRatio,
+    projectionOffsetLocalX: learning.projectionOffsetLocalX,
+    projectionOffsetLocalY: learning.projectionOffsetLocalY,
+    jitterPx: calibrationActive ? 0 : Math.max(1, Math.round(effectiveTilePx * 0.6)),
+  });
+  if (!clickPlan) {
+    return null;
   }
 
-  const projectedLocalX = minimap.centerLocalX + localDx + learning.projectionOffsetLocalX;
-  const projectedLocalY = minimap.centerLocalY + localDy + learning.projectionOffsetLocalY;
-  const localX = projectedLocalX + randomIntInclusive(-jitterPx, jitterPx);
-  const localY = projectedLocalY + randomIntInclusive(-jitterPx, jitterPx);
   return {
-    screenPoint: {
-      x: calibration.captureBounds.x + Math.round(localX),
-      y: calibration.captureBounds.y + Math.round(localY),
-    },
-    projectedScreenPoint: {
-      x: calibration.captureBounds.x + Math.round(projectedLocalX),
-      y: calibration.captureBounds.y + Math.round(projectedLocalY),
-    },
-    minimapCenter: {
-      x: calibration.captureBounds.x + minimap.centerLocalX,
-      y: calibration.captureBounds.y + minimap.centerLocalY,
-    },
-    expectedMinimapCenter: {
-      x: calibration.captureBounds.x + minimap.expectedCenterLocalX,
-      y: calibration.captureBounds.y + minimap.expectedCenterLocalY,
-    },
+    screenPoint: clickPlan.screenPoint,
+    projectedScreenPoint: clickPlan.projectedScreenPoint,
+    minimapCenter: clickPlan.minimapCenter,
+    expectedMinimapCenter: clickPlan.expectedMinimapCenter,
     dxTiles,
     dyTiles,
     distanceTiles,
     pathTiles: Math.max(1, pathTiles),
-    minimapRadiusPx: minimap.radiusPx,
-    expectedMinimapRadiusPx: minimap.expectedRadiusPx,
-    minimapTilePx: minimap.tilePx,
-    effectiveMinimapTilePx: effectiveTilePx,
+    minimapRadiusPx: clickPlan.minimapRadiusPx,
+    expectedMinimapRadiusPx: clickPlan.expectedMinimapRadiusPx,
+    minimapTilePx: clickPlan.minimapTilePx,
+    effectiveMinimapTilePx: clickPlan.effectiveMinimapTilePx,
     learnedTilePxScale: learning.tilePxScale,
     learnedRadiusRatio: learning.radiusRatio,
     projectionOffsetLocalX: learning.projectionOffsetLocalX,
     projectionOffsetLocalY: learning.projectionOffsetLocalY,
-    maxClickDistancePx: maxClickDistance,
-    wasVectorClamped,
+    maxClickDistancePx: clickPlan.maxClickDistancePx,
+    wasVectorClamped: clickPlan.wasVectorClamped,
     minimapSource: minimap.source,
     minimapDetectionScore: minimap.detectionScore,
     minimapDetectionSummary: minimap.detectionSummary,
     minimapCandidates: minimap.candidates,
-    projectionSource,
-    northX,
-    northY,
-    eastX,
-    eastY,
+    projectionSource: axes.projectionSource,
+    northX: clickPlan.northX,
+    northY: clickPlan.northY,
+    eastX: clickPlan.eastX,
+    eastY: clickPlan.eastY,
   };
 }
 
@@ -3047,20 +3043,18 @@ async function clickMinimapPlannedRouteWaypoint(
     return { status: "unavailable", route };
   }
 
-  await moveMouseHumanLike(clickPlan.screenPoint.x, clickPlan.screenPoint.y, activeTick.calibration.captureBounds, {
+  const execution = await executeMinimapWorldClickPlan(activeTick.calibration, clickPlan, {
     maxDurationMs: 260,
     safeEdgeMarginPx: 8,
     shouldContinue: () => AppState.automateBotRunning,
-  });
-  const clicked = clickScreenPoint(clickPlan.screenPoint.x, clickPlan.screenPoint.y, activeTick.calibration.captureBounds, {
     settleMs: randomIntInclusive(45, 120),
-    safeEdgeMarginPx: 8,
   });
+  const clicked = execution.clicked;
   const clickedAtMs = Date.now();
   const minimapCenterLocal = screenPointToLocal(activeTick.calibration, clickPlan.minimapCenter);
   const expectedMinimapCenterLocal = screenPointToLocal(activeTick.calibration, clickPlan.expectedMinimapCenter);
   const projectedLocal = screenPointToLocal(activeTick.calibration, clickPlan.projectedScreenPoint);
-  const clickedLocal = screenPointToLocal(activeTick.calibration, clicked);
+  const clickedLocal = execution.clickedLocal;
   const debugShapes: DebugOverlayShape[] = [
     {
       type: "circle",
@@ -3164,8 +3158,8 @@ async function clickMinimapPlannedRouteWaypoint(
   const compassSummary = compass
     ? `compassNorth=(${compass.northVectorX.toFixed(3)},${compass.northVectorY.toFixed(3)}) compassConfidence=${compass.confidence.toFixed(2)} compassCenter=${compass.centerX},${compass.centerY}`
     : "compassNorth=missing";
-  const clickVectorX = clicked.x - clickPlan.minimapCenter.x;
-  const clickVectorY = clicked.y - clickPlan.minimapCenter.y;
+  const clickVectorX = execution.clickVectorX;
+  const clickVectorY = execution.clickVectorY;
   const expectedCenterSummary = ` expectedCenter=${clickPlan.expectedMinimapCenter.x},${clickPlan.expectedMinimapCenter.y} centerDelta=${clickPlan.minimapCenter.x - clickPlan.expectedMinimapCenter.x},${clickPlan.minimapCenter.y - clickPlan.expectedMinimapCenter.y} expectedRadius=${clickPlan.expectedMinimapRadiusPx}px detectionScore=${clickPlan.minimapDetectionScore?.toFixed(2) ?? "n/a"}`;
   const calibrationActive = shouldRunArceuusMinimapProjectionCalibration();
   logWithDelta(

@@ -20,10 +20,19 @@ import { clamp, pickBoxInteractionScreenPoint, randomIntInclusive } from "./shar
 import { clickScreenPoint, moveMouseHumanLike, type ScreenPoint } from "./shared/robot-clicker";
 import { saveBitmapWithDebugOverlay, type DebugOverlayShape } from "./shared/debug-image-overlay";
 import {
+  executeMinimapWorldClickPlan,
+  projectWorldTileToMinimapClick,
+  type MinimapWorldClickPlan,
+} from "./shared/minimap-world-clicker";
+import {
   formatStartupPlayerTileCalibrationLog,
   readStartupPlayerTileCalibration,
   type StartupPlayerTileCalibration,
 } from "./shared/startup-calibration";
+import {
+  RUNELITE_AGILITY_OBSTACLE_ID_ENTRIES,
+  type RuneliteAgilityObstacleIdEntry,
+} from "./cache/runelite-agility-obstacles";
 import {
   fetchRuneLiteLocalApiSnapshot,
   formatRuneLiteLocalApiSnapshot,
@@ -32,13 +41,7 @@ import {
 
 const BOT_NAME = "Rooftop";
 const BOT_LOG_PREFIX = `Automate Bot (${BOT_NAME})`;
-const FALADOR_COURSE_LABEL = "Falador rooftop";
 
-const FALADOR_REGION_X = 47;
-const FALADOR_REGION_Y = 52;
-const FALADOR_ENTRY_TILE = deriveWorldTile(3036, 3339, 0);
-const FALADOR_ENTRY_OBJECT_SEARCH_TILE = deriveWorldTile(3036, 3342, 0);
-const FALADOR_ENTRY_RADIUS_TILES = 5;
 const BOT_TICK_MS = 200;
 const GAME_TICK_MS = 600;
 const CLICK_INTERVAL_MIN_MS = 500;
@@ -74,24 +77,9 @@ const CACHE_OBSTACLE_OUTLINE_EXCLUSION_MARGIN_PX = 18;
 const STATUS_LOG_INTERVAL_MS = 2200;
 const CLICK_INNER_RATIO = 0.55;
 const CLICK_DEBUG_DIR = "test-image-debug";
-const COURSE_Z = 3;
-const FALADOR_ROOFTOP_ENTRY_OBJECT_ID = 40090;
-
-const FALADOR_ROOFTOP_OBSTACLE_IDS = [
-  FALADOR_ROOFTOP_ENTRY_OBJECT_ID,
-  14899,
-  14901,
-  14903,
-  14904,
-  14905,
-  14911,
-  14919,
-  14920,
-  14921,
-  14922,
-  14924,
-  14925,
-] as const;
+const ROOFTOP_MINIMAP_MAX_CLICK_RADIUS_RATIO = 0.82;
+const ROOFTOP_MINIMAP_MIN_MOVE_DISTANCE_TILES = 6;
+const ROOFTOP_MINIMAP_ASSUMED_RUN_TILES_PER_TICK = 2;
 
 type CourseStep = { dx: -1 | 0 | 1; dy: -1 | 0 | 1 };
 
@@ -108,42 +96,6 @@ const COURSE_DIRECTIONS: readonly CourseStep[] = [
   { dx: 1, dy: 1 },
   { dx: -1, dy: -1 },
   { dx: 1, dy: -1 },
-];
-
-type FaladorFallbackObstacle = {
-  id: (typeof FALADOR_ROOFTOP_OBSTACLE_IDS)[number];
-  key: string;
-  name: string;
-  x: number;
-  y: number;
-  z: number;
-  width: number;
-  height: number;
-};
-
-const FALADOR_ROOFTOP_FALLBACK_OBSTACLES: readonly FaladorFallbackObstacle[] = [
-  {
-    id: FALADOR_ROOFTOP_ENTRY_OBJECT_ID,
-    key: "FALADOR_ROOFTOP_ENTRY_OBJECT",
-    name: "Rooftop entry",
-    x: 3036,
-    y: 3342,
-    z: 0,
-    width: 1,
-    height: 2,
-  },
-  { id: 14899, key: "ROOFTOPS_FALADOR_TIGHTROPE_1", name: "Tightrope", x: 3040, y: 3343, z: 3, width: 1, height: 1 },
-  { id: 14901, key: "ROOFTOPS_FALADOR_HANDHOLDS_START", name: "Hand holds", x: 3050, y: 3350, z: 3, width: 1, height: 2 },
-  { id: 14903, key: "ROOFTOPS_FALADOR_GAP_1", name: "Gap", x: 3048, y: 3359, z: 3, width: 1, height: 1 },
-  { id: 14904, key: "ROOFTOPS_FALADOR_GAP_2", name: "Gap", x: 3044, y: 3361, z: 3, width: 1, height: 4 },
-  { id: 14905, key: "ROOFTOPS_FALADOR_TIGHTROPE_2", name: "Tightrope", x: 3034, y: 3361, z: 3, width: 1, height: 2 },
-  { id: 14911, key: "ROOFTOPS_FALADOR_TIGHTROPE_3", name: "Tightrope", x: 3026, y: 3353, z: 3, width: 1, height: 1 },
-  { id: 14919, key: "ROOFTOPS_FALADOR_GAP_3", name: "Gap", x: 3016, y: 3352, z: 3, width: 3, height: 1 },
-  { id: 14920, key: "ROOFTOPS_FALADOR_LEDGE_1", name: "Ledge", x: 3015, y: 3345, z: 3, width: 1, height: 2 },
-  { id: 14921, key: "ROOFTOPS_FALADOR_LEDGE_2", name: "Ledge", x: 3011, y: 3343, z: 3, width: 3, height: 1 },
-  { id: 14922, key: "ROOFTOPS_FALADOR_LEDGE_3A", name: "Ledge", x: 3012, y: 3334, z: 3, width: 2, height: 1 },
-  { id: 14924, key: "ROOFTOPS_FALADOR_LEDGE_4", name: "Ledge", x: 3018, y: 3332, z: 3, width: 1, height: 3 },
-  { id: 14925, key: "ROOFTOPS_FALADOR_EDGE", name: "Edge", x: 3025, y: 3332, z: 3, width: 1, height: 4 },
 ];
 
 type FaladorObstacleTarget = {
@@ -197,6 +149,10 @@ type FaladorCourseConnectivity = FaladorCourseMap & {
 };
 
 type FaladorCourse = FaladorCourseConnectivity & {
+  courseKey: string;
+  label: string;
+  regionX: number;
+  regionY: number;
   cacheDirectoryPath: string | null;
   targets: FaladorObstacleTarget[];
   mapCacheObstacleCount: number;
@@ -242,6 +198,7 @@ type IgnoredMarkOfGraceOutline = {
 };
 
 type FaladorState = BotEngineLoopState<FaladorFunctionKey> & {
+  course: FaladorCourse | null;
   nextClickAllowedAtMs: number;
   lastClickPoint: ScreenPoint | null;
   lastConfirmedObstacleIndex: number | null;
@@ -255,15 +212,19 @@ type FaladorState = BotEngineLoopState<FaladorFunctionKey> & {
   lastStatusLogAtMs: number;
   missingTargetTicks: number;
   loggedStartupCalibration: boolean;
-  loggedFaladorRegionTarget: boolean;
+  lastLoggedPlayerRegionAgilityScanKey: string | null;
 };
 
-type FaladorTickCapture = {
-  course: FaladorCourse;
+type RooftopTickCapture = {
+  course: FaladorCourse | null;
   calibration: StartupPlayerTileCalibration | null;
   bitmap: ScreenBitmap | null;
   playerTile: WorldTile | null;
   outlines: AgilityOutlineDetection[];
+};
+
+type FaladorTickCapture = RooftopTickCapture & {
+  course: FaladorCourse;
 };
 
 type ProjectedObstacle = {
@@ -293,6 +254,13 @@ type MarkOfGraceZoneProjection = {
   componentId: number | null;
   label: string;
   points: ScreenPoint[];
+};
+
+type RooftopMinimapNavigationTarget = {
+  target: FaladorObstacleTarget;
+  waypointTile: WorldTile;
+  reason: string;
+  reachability: FaladorTargetReachability | null;
 };
 
 type ClickOutlineOptions = {
@@ -358,6 +326,7 @@ function createInitialState(): FaladorState {
   return {
     loopIndex: 0,
     currentFunction: "loop",
+    course: null,
     nextClickAllowedAtMs: 0,
     lastClickPoint: null,
     lastConfirmedObstacleIndex: null,
@@ -371,7 +340,7 @@ function createInitialState(): FaladorState {
     lastStatusLogAtMs: 0,
     missingTargetTicks: 0,
     loggedStartupCalibration: false,
-    loggedFaladorRegionTarget: false,
+    lastLoggedPlayerRegionAgilityScanKey: null,
   };
 }
 
@@ -466,7 +435,7 @@ function addIgnoredMarkOfGraceOutline(
 }
 
 function getCourseObstacleTotal(course: Pick<FaladorCourse, "targets"> | null = null): number {
-  return course?.targets.length ?? FALADOR_ROOFTOP_OBSTACLE_IDS.length;
+  return course?.targets.length ?? 0;
 }
 
 function formatCourseObstacleIndex(order: number, course: Pick<FaladorCourse, "targets"> | null = null): string {
@@ -562,10 +531,6 @@ function pickSuccessZoneCenterTile(
 }
 
 function getTargetAdjacentComponentIds(course: FaladorCourseConnectivity, target: FaladorObstacleTarget): number[] {
-  if (target.z !== COURSE_Z) {
-    return [];
-  }
-
   return getUniqueComponentIdsForTiles(course, getTargetInteractionCandidateTiles(course, target));
 }
 
@@ -904,19 +869,21 @@ function isTargetOrderAllowed(order: number, options: FaladorCacheTargetDecision
   return order >= (options.minOrder ?? 0) && order <= (options.maxOrder ?? Number.POSITIVE_INFINITY);
 }
 
+function isPlayerOnCourseStartPlane(course: FaladorCourse, playerTile: WorldTile): boolean {
+  const entryTarget = course.targets[0] ?? null;
+  return !!entryTarget && playerTile.z === entryTarget.z;
+}
+
 function getCourseProgressAtPlayer(course: FaladorCourse, playerTile: WorldTile): FaladorCourseProgress | null {
   const entryTarget = course.targets[0] ?? null;
-  if (playerTile.z === FALADOR_ENTRY_TILE.z && entryTarget) {
+  if (entryTarget && isPlayerOnCourseStartPlane(course, playerTile)) {
+    const entryDistance = distanceToTargetRectangle(playerTile, entryTarget);
     return {
       completedThroughOrder: -1,
       currentTarget: entryTarget,
       zone: null,
-      reason: "ground-entry-zone",
+      reason: entryDistance <= ENTRY_VISIBLE_FALLBACK_RADIUS_TILES ? "ground-entry-zone" : "ground-restart-plane",
     };
-  }
-
-  if (playerTile.z !== COURSE_Z) {
-    return null;
   }
 
   const zone = getSuccessZoneContainingPlayer(course, playerTile);
@@ -975,8 +942,322 @@ function formatAllowedTargetReachability(tick: FaladorTickCapture): string {
   );
 }
 
-function isPlayerInFaladorRooftopRegion(playerTile: WorldTile): boolean {
-  return playerTile.regionX === FALADOR_REGION_X && playerTile.regionY === FALADOR_REGION_Y;
+function getRooftopCourseKey(object: OsrsCacheMapObject): string | null {
+  const key = object.agilityObstacleKey;
+  if (!key?.startsWith("ROOFTOPS_")) {
+    return null;
+  }
+
+  const match = /^ROOFTOPS_[A-Z0-9]+/.exec(key);
+  return match?.[0] ?? null;
+}
+
+function getMapObjectCenterTile(object: OsrsCacheMapObject): WorldTile {
+  return centerTileForRectangle(object.worldX, object.worldY, object.z, object.sizeX, object.sizeY);
+}
+
+function getMapObjectDistanceToPlayer(object: OsrsCacheMapObject, playerTile: WorldTile): number {
+  return tileDistance(getMapObjectCenterTile(object), playerTile);
+}
+
+function compareMapObjectsByDistanceToPlayer(
+  playerTile: WorldTile,
+): (a: OsrsCacheMapObject, b: OsrsCacheMapObject) => number {
+  return (a, b) => {
+    const distanceDelta = getMapObjectDistanceToPlayer(a, playerTile) - getMapObjectDistanceToPlayer(b, playerTile);
+    if (distanceDelta !== 0) {
+      return distanceDelta;
+    }
+
+    const zDelta = Math.abs(a.z - playerTile.z) - Math.abs(b.z - playerTile.z);
+    if (zDelta !== 0) {
+      return zDelta;
+    }
+
+    return a.id - b.id || compareWorldTiles(getMapObjectCenterTile(a), getMapObjectCenterTile(b));
+  };
+}
+
+function formatRooftopCourseKey(courseKey: string): string {
+  return courseKey.replace(/^ROOFTOPS_/, "").toLowerCase();
+}
+
+function formatRooftopMapObjectSummary(object: OsrsCacheMapObject, playerTile: WorldTile): string {
+  const centerTile = getMapObjectCenterTile(object);
+  return `${object.agilityObstacleKey ?? `object-${object.id}`} id=${object.id} ${object.name}@${object.worldX},${object.worldY},${object.z} size=${object.sizeX}x${object.sizeY} center=${toWorldTileLabel(
+    centerTile,
+  )} dist=${getMapObjectDistanceToPlayer(object, playerTile)} zDelta=${Math.abs(object.z - playerTile.z)}`;
+}
+
+function normalizeRooftopObstacleOrderKey(key: string): string {
+  return key.replace(/_(\d+)[A-Z]$/, "_$1");
+}
+
+function getRooftopCourseOrderEntries(courseKey: string): RuneliteAgilityObstacleIdEntry[] {
+  const seenOrderKeys = new Set<string>();
+  const entries: RuneliteAgilityObstacleIdEntry[] = [];
+  for (const entry of RUNELITE_AGILITY_OBSTACLE_ID_ENTRIES) {
+    if (!entry.key.startsWith(`${courseKey}_`)) {
+      continue;
+    }
+
+    const orderKey = normalizeRooftopObstacleOrderKey(entry.key);
+    if (seenOrderKeys.has(orderKey)) {
+      continue;
+    }
+
+    seenOrderKeys.add(orderKey);
+    entries.push(entry);
+  }
+
+  return entries;
+}
+
+function pickNearestMapObject(objects: readonly OsrsCacheMapObject[], playerTile: WorldTile): OsrsCacheMapObject | null {
+  return [...objects].sort(compareMapObjectsByDistanceToPlayer(playerTile))[0] ?? null;
+}
+
+function pickNearestRooftopCourseKey(
+  objectsByCourse: ReadonlyMap<string, readonly OsrsCacheMapObject[]>,
+  playerTile: WorldTile,
+): string | null {
+  return (
+    [...objectsByCourse.entries()]
+      .map(([courseKey, objects]) => ({
+        courseKey,
+        nearestObject: pickNearestMapObject(objects, playerTile),
+      }))
+      .filter((candidate): candidate is { courseKey: string; nearestObject: OsrsCacheMapObject } => candidate.nearestObject !== null)
+      .sort((a, b) => {
+        const distanceDelta =
+          getMapObjectDistanceToPlayer(a.nearestObject, playerTile) - getMapObjectDistanceToPlayer(b.nearestObject, playerTile);
+        if (distanceDelta !== 0) {
+          return distanceDelta;
+        }
+
+        return a.courseKey.localeCompare(b.courseKey);
+      })[0]?.courseKey ?? null
+  );
+}
+
+function buildRooftopObjectsByCourse(objects: readonly OsrsCacheMapObject[]): Map<string, OsrsCacheMapObject[]> {
+  const objectsByCourse = new Map<string, OsrsCacheMapObject[]>();
+  for (const object of objects) {
+    const courseKey = getRooftopCourseKey(object);
+    if (!courseKey) {
+      continue;
+    }
+
+    const courseObjects = objectsByCourse.get(courseKey) ?? [];
+    courseObjects.push(object);
+    objectsByCourse.set(courseKey, courseObjects);
+  }
+
+  return objectsByCourse;
+}
+
+function pickCourseObjectForOrderEntry(
+  objectsById: ReadonlyMap<number, readonly OsrsCacheMapObject[]>,
+  entry: RuneliteAgilityObstacleIdEntry,
+  playerTile: WorldTile,
+  previousTarget: FaladorObstacleTarget | null,
+): OsrsCacheMapObject | null {
+  const objects = objectsById.get(entry.id) ?? [];
+  const anchor = previousTarget?.clickTile ?? playerTile;
+  return (
+    [...objects].sort((a, b) => {
+      const anchorDistanceDelta = tileDistance(getMapObjectCenterTile(a), anchor) - tileDistance(getMapObjectCenterTile(b), anchor);
+      if (anchorDistanceDelta !== 0) {
+        return anchorDistanceDelta;
+      }
+
+      return getMapObjectDistanceToPlayer(a, playerTile) - getMapObjectDistanceToPlayer(b, playerTile);
+    })[0] ?? null
+  );
+}
+
+function buildDynamicRooftopCourseFromRegionView(params: {
+  view: ReturnType<typeof readOsrsCacheMapRegionView>;
+  playerTile: WorldTile;
+  courseKey: string;
+}): FaladorCourse | null {
+  const courseObjects = params.view.objects.filter((object) => getRooftopCourseKey(object) === params.courseKey);
+  if (courseObjects.length === 0) {
+    return null;
+  }
+
+  const objectsById = new Map<number, OsrsCacheMapObject[]>();
+  for (const object of courseObjects) {
+    const objects = objectsById.get(object.id) ?? [];
+    objects.push(object);
+    objectsById.set(object.id, objects);
+  }
+
+  const targets: FaladorObstacleTarget[] = [];
+  for (const entry of getRooftopCourseOrderEntries(params.courseKey)) {
+    const object = pickCourseObjectForOrderEntry(objectsById, entry, params.playerTile, targets[targets.length - 1] ?? null);
+    if (!object) {
+      continue;
+    }
+
+    targets.push(targetFromMapObject(object, targets.length));
+  }
+
+  if (targets.length < 2) {
+    return null;
+  }
+
+  const tilesByKey = buildCourseTilesByKey(params.view.tiles);
+  const { componentsById, componentIdByTileKey } = buildCourseWalkableComponents(tilesByKey);
+  const courseWithoutSuccessZones: FaladorCourseConnectivity = {
+    targets,
+    tilesByKey,
+    componentsById,
+    componentIdByTileKey,
+  };
+
+  return {
+    courseKey: params.courseKey,
+    label: `${formatRooftopCourseKey(params.courseKey)} rooftop`,
+    regionX: params.view.regionX,
+    regionY: params.view.regionY,
+    cacheDirectoryPath: params.view.cacheDirectoryPath,
+    targets,
+    mapCacheObstacleCount: targets.length,
+    missingMapCacheIds: [],
+    successZonesByOrder: buildFaladorSuccessZones(courseWithoutSuccessZones),
+    tilesByKey,
+    componentsById,
+    componentIdByTileKey,
+  };
+}
+
+function loadNearestRooftopCourseFromPlayerRegion(playerTile: WorldTile): FaladorCourse | null {
+  const view = readOsrsCacheMapRegionView({ regionX: playerTile.regionX, regionY: playerTile.regionY });
+  const objectsByCourse = buildRooftopObjectsByCourse(view.objects);
+  const courseKey = pickNearestRooftopCourseKey(objectsByCourse, playerTile);
+  if (!courseKey) {
+    return null;
+  }
+
+  return buildDynamicRooftopCourseFromRegionView({ view, playerTile, courseKey });
+}
+
+function withDynamicRooftopCourse(state: FaladorState, playerTile: WorldTile): FaladorState {
+  const currentCourse = state.course;
+  if (currentCourse && currentCourse.regionX === playerTile.regionX && currentCourse.regionY === playerTile.regionY) {
+    return state;
+  }
+
+  const course = loadNearestRooftopCourseFromPlayerRegion(playerTile);
+  if (!course) {
+    if (currentCourse) {
+      warnWithDelta(
+        `${BOT_LOG_PREFIX}: no rooftop agility course found in current player region; clearing active course. player=${toWorldTileLabel(
+          playerTile,
+        )} region=${playerTile.regionX},${playerTile.regionY}.`,
+      );
+    }
+
+    return {
+      ...state,
+      course: null,
+      pendingObstacle: null,
+      pendingMarkOfGracePickup: null,
+      lastConfirmedObstacleIndex: null,
+      completedObstacleOrdersThisLap: [],
+    };
+  }
+
+  logWithDelta(
+    `${BOT_LOG_PREFIX}: selected nearest rooftop course from player region. course=${course.courseKey} label=${course.label} player=${toWorldTileLabel(
+      playerTile,
+    )} region=${course.regionX},${course.regionY} obstacles=${course.targets.length} mapCacheObstacles=${
+      course.mapCacheObstacleCount
+    }/${course.targets.length} cache=${course.cacheDirectoryPath ?? "unavailable"} order=${course.targets
+      .map((target) => toTargetLabel(target, course))
+      .join(" -> ")} zones=${[...course.successZonesByOrder.values()].map(formatSuccessZone).join(" -> ") || "none"}.`,
+  );
+
+  return {
+    ...state,
+    course,
+    pendingObstacle: null,
+    pendingMarkOfGracePickup: null,
+    ignoredMarkOfGraceOutlines: [],
+    lastConfirmedObstacleIndex: null,
+    completedObstacleOrdersThisLap: [],
+    missingTargetTicks: 0,
+  };
+}
+
+function withPlayerRegionAgilityCourseScanLog(state: FaladorState, tick: RooftopTickCapture): FaladorState {
+  const playerTile = tick.playerTile;
+  if (!playerTile) {
+    return state;
+  }
+
+  const regionKey = `${playerTile.regionX},${playerTile.regionY}`;
+  if (state.lastLoggedPlayerRegionAgilityScanKey === regionKey) {
+    return state;
+  }
+
+  try {
+    const view = readOsrsCacheMapRegionView({ regionX: playerTile.regionX, regionY: playerTile.regionY });
+    const rooftopObjects = view.objects
+      .filter((object) => getRooftopCourseKey(object) !== null)
+      .sort(compareMapObjectsByDistanceToPlayer(playerTile));
+    if (rooftopObjects.length === 0) {
+      logWithDelta(
+        `${BOT_LOG_PREFIX}: current player region rooftop scan found no rooftop agility course objects. player=${toWorldTileLabel(
+          playerTile,
+        )} region=${regionKey} cache=${view.cacheDirectoryPath} missing=${view.missing === true} error=${
+          view.error ?? "none"
+        } objects=${view.objects.length}.`,
+      );
+      return { ...state, lastLoggedPlayerRegionAgilityScanKey: regionKey };
+    }
+
+    const objectsByCourse = new Map<string, OsrsCacheMapObject[]>();
+    for (const object of rooftopObjects) {
+      const courseKey = getRooftopCourseKey(object);
+      if (!courseKey) {
+        continue;
+      }
+
+      const objects = objectsByCourse.get(courseKey) ?? [];
+      objects.push(object);
+      objectsByCourse.set(courseKey, objects);
+    }
+
+    const courseSummaries = [...objectsByCourse.entries()]
+      .map(([courseKey, objects]) => {
+        const nearest = [...objects].sort(compareMapObjectsByDistanceToPlayer(playerTile))[0];
+        return `${formatRooftopCourseKey(courseKey)} objects=${objects.length} nearest=${formatRooftopMapObjectSummary(
+          nearest,
+          playerTile,
+        )}`;
+      })
+      .join(" | ");
+    const nearestObjects = rooftopObjects.slice(0, 8).map((object) => formatRooftopMapObjectSummary(object, playerTile));
+
+    logWithDelta(
+      `${BOT_LOG_PREFIX}: current player region rooftop scan. player=${toWorldTileLabel(
+        playerTile,
+      )} region=${regionKey} cache=${view.cacheDirectoryPath} rooftopObjects=${rooftopObjects.length} courses=${courseSummaries} nearestObjects=${nearestObjects.join(
+        "; ",
+      )}.`,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    warnWithDelta(
+      `${BOT_LOG_PREFIX}: current player region rooftop scan failed. player=${toWorldTileLabel(
+        playerTile,
+      )} region=${regionKey}: ${message}.`,
+    );
+  }
+
+  return { ...state, lastLoggedPlayerRegionAgilityScanKey: regionKey };
 }
 
 function getSuccessZoneContainingPlayer(course: FaladorCourse, playerTile: WorldTile): FaladorSuccessZone | null {
@@ -1005,7 +1286,7 @@ function syncFaladorProgressFromCourseZone(state: FaladorState, tick: FaladorTic
     }
 
     logWithDelta(
-      `${BOT_LOG_PREFIX}: synced ${FALADOR_COURSE_LABEL} progress from ground entry zone; player=${toWorldTileLabel(
+      `${BOT_LOG_PREFIX}: synced ${tick.course.label} progress from ground entry zone; player=${toWorldTileLabel(
         playerTile,
       )} currentTarget=${progress.currentTarget ? toTargetLabel(progress.currentTarget, tick.course) : "none"}.`,
     );
@@ -1032,7 +1313,7 @@ function syncFaladorProgressFromCourseZone(state: FaladorState, tick: FaladorTic
   const nextTarget = progress.currentTarget;
   const nextReachability = nextTarget ? getTargetReachability(tick.course, playerTile, nextTarget) : null;
   logWithDelta(
-    `${BOT_LOG_PREFIX}: synced ${FALADOR_COURSE_LABEL} progress from map-cache course zone; player=${toWorldTileLabel(
+    `${BOT_LOG_PREFIX}: synced ${tick.course.label} progress from map-cache course zone; player=${toWorldTileLabel(
       playerTile,
     )} completedThrough=${formatCourseObstacleIndex(
       progress.completedThroughOrder,
@@ -1052,67 +1333,12 @@ function syncFaladorProgressFromCourseZone(state: FaladorState, tick: FaladorTic
   };
 }
 
-function withFaladorRegionTargetLog(state: FaladorState, tick: FaladorTickCapture): FaladorState {
-  const playerTile = tick.playerTile;
-  if (state.loggedFaladorRegionTarget || !playerTile || !isPlayerInFaladorRooftopRegion(playerTile)) {
-    return state;
-  }
-
-  const cacheDecision = pickCacheTargetDecision(tick.course, playerTile);
-  const progress = getCourseProgressAtPlayer(tick.course, playerTile);
-  const zoneDetails = progress?.zone ? ` currentZone=${formatSuccessZoneSummary(progress.zone, tick.course)}` : "";
-  logWithDelta(
-    `${BOT_LOG_PREFIX}: player is in Falador region ${FALADOR_REGION_X},${FALADOR_REGION_Y}; targeting ${FALADOR_COURSE_LABEL} course. player=${toWorldTileLabel(
-      playerTile,
-    )} mapCacheObstacles=${tick.course.mapCacheObstacleCount}/${tick.course.targets.length} currentTarget=${formatCacheTargetDecision(
-      cacheDecision,
-      tick.course,
-    )}${zoneDetails}.`,
-  );
-
-  return { ...state, loggedFaladorRegionTarget: true };
-}
-
-function isFaladorRooftopEntryObjectCandidate(object: OsrsCacheMapObject): boolean {
-  return (
-    object.id === FALADOR_ROOFTOP_ENTRY_OBJECT_ID &&
-    object.z === FALADOR_ENTRY_OBJECT_SEARCH_TILE.z &&
-    object.type === 10 &&
-    object.interactType === 2 &&
-    object.orientation === 3 &&
-    object.sizeX === 1 &&
-    object.sizeY === 2 &&
-    object.definitionSizeX === 2 &&
-    object.definitionSizeY === 1 &&
-    object.wallOrDoor === 1 &&
-    object.clipped
-  );
-}
-
-function pickNearestFaladorRooftopEntryObject(objects: readonly OsrsCacheMapObject[]): OsrsCacheMapObject | null {
-  const candidates = objects.filter(isFaladorRooftopEntryObjectCandidate);
-  return (
-    candidates.sort((a, b) => {
-      const aTile = { x: a.worldX, y: a.worldY };
-      const bTile = { x: b.worldX, y: b.worldY };
-      const aDistance = tileDistance(aTile, FALADOR_ENTRY_OBJECT_SEARCH_TILE);
-      const bDistance = tileDistance(bTile, FALADOR_ENTRY_OBJECT_SEARCH_TILE);
-      if (aDistance !== bDistance) {
-        return aDistance - bDistance;
-      }
-
-      return tileDistance(aTile, FALADOR_ENTRY_TILE) - tileDistance(bTile, FALADOR_ENTRY_TILE);
-    })[0] ?? null
-  );
-}
-
 function targetFromMapObject(object: OsrsCacheMapObject, order: number): FaladorObstacleTarget {
-  const isEntryObject = object.id === FALADOR_ROOFTOP_ENTRY_OBJECT_ID;
   return {
     order,
     id: object.id,
-    key: isEntryObject ? "FALADOR_ROOFTOP_ENTRY_OBJECT" : object.agilityObstacleKey ?? `object-${object.id}`,
-    name: isEntryObject ? "Rooftop entry" : object.name,
+    key: object.agilityObstacleKey ?? `object-${object.id}`,
+    name: object.name,
     x: object.worldX,
     y: object.worldY,
     z: object.z,
@@ -1120,89 +1346,6 @@ function targetFromMapObject(object: OsrsCacheMapObject, order: number): Falador
     height: Math.max(1, object.sizeY),
     clickTile: centerTileForRectangle(object.worldX, object.worldY, object.z, object.sizeX, object.sizeY),
     source: "map-cache",
-  };
-}
-
-function targetFromFallback(fallback: FaladorFallbackObstacle, order: number): FaladorObstacleTarget {
-  return {
-    order,
-    id: fallback.id,
-    key: fallback.key,
-    name: fallback.name,
-    x: fallback.x,
-    y: fallback.y,
-    z: fallback.z,
-    width: fallback.width,
-    height: fallback.height,
-    clickTile: centerTileForRectangle(fallback.x, fallback.y, fallback.z, fallback.width, fallback.height),
-    source: "fallback",
-  };
-}
-
-function loadFaladorCourseFromMapCache(): FaladorCourse {
-  const fallbackById = new Map(FALADOR_ROOFTOP_FALLBACK_OBSTACLES.map((target) => [target.id, target]));
-  let cacheDirectoryPath: string | null = null;
-  let regionTiles: readonly OsrsCacheMapTile[] = [];
-  const objectById = new Map<number, OsrsCacheMapObject>();
-  const missingMapCacheIds: number[] = [];
-
-  try {
-    const view = readOsrsCacheMapRegionView({ regionX: FALADOR_REGION_X, regionY: FALADOR_REGION_Y });
-    cacheDirectoryPath = view.cacheDirectoryPath;
-    regionTiles = view.tiles;
-    const entryObject = pickNearestFaladorRooftopEntryObject(view.objects);
-    if (entryObject) {
-      objectById.set(FALADOR_ROOFTOP_ENTRY_OBJECT_ID, entryObject);
-      logWithDelta(
-        `${BOT_LOG_PREFIX}: map-cache entry object resolved id=${entryObject.id} type=${entryObject.type} orient=${entryObject.orientation} world=${entryObject.worldX},${entryObject.worldY},${entryObject.z} size=${entryObject.sizeX}x${entryObject.sizeY} def=${entryObject.definitionSizeX}x${entryObject.definitionSizeY} interact=${entryObject.interactType} wall=${entryObject.wallOrDoor} clipped=${entryObject.clipped}.`,
-      );
-    }
-
-    for (const object of view.objects) {
-      if (
-        object.id !== FALADOR_ROOFTOP_ENTRY_OBJECT_ID &&
-        FALADOR_ROOFTOP_OBSTACLE_IDS.includes(object.id as (typeof FALADOR_ROOFTOP_OBSTACLE_IDS)[number])
-      ) {
-        objectById.set(object.id, object);
-      }
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    warnWithDelta(`${BOT_LOG_PREFIX}: map cache read failed for region ${FALADOR_REGION_X},${FALADOR_REGION_Y}: ${message}.`);
-  }
-
-  const targets = FALADOR_ROOFTOP_OBSTACLE_IDS.map((id, order) => {
-    const object = objectById.get(id);
-    if (object) {
-      return targetFromMapObject(object, order);
-    }
-
-    missingMapCacheIds.push(id);
-    const fallback = fallbackById.get(id);
-    if (!fallback) {
-      throw new Error(`Rooftop course object ${id} missing from map cache and fallback table.`);
-    }
-
-    return targetFromFallback(fallback, order);
-  });
-  const tilesByKey = buildCourseTilesByKey(regionTiles);
-  const { componentsById, componentIdByTileKey } = buildCourseWalkableComponents(tilesByKey);
-  const courseWithoutSuccessZones: FaladorCourseConnectivity = {
-    targets,
-    tilesByKey,
-    componentsById,
-    componentIdByTileKey,
-  };
-
-  return {
-    cacheDirectoryPath,
-    targets,
-    mapCacheObstacleCount: targets.filter((target) => target.source === "map-cache").length,
-    missingMapCacheIds,
-    successZonesByOrder: buildFaladorSuccessZones(courseWithoutSuccessZones),
-    tilesByKey,
-    componentsById,
-    componentIdByTileKey,
   };
 }
 
@@ -1304,11 +1447,11 @@ function getOutlineDistance(outline: AgilityOutlineDetection, point: ScreenPoint
 }
 
 function getOutlineMatchRadiusForTarget(target: FaladorObstacleTarget): number {
-  return target.order === 0 && target.z === FALADOR_ENTRY_TILE.z ? ENTRY_OUTLINE_MATCH_RADIUS_PX : OUTLINE_MATCH_RADIUS_PX;
+  return target.order === 0 ? ENTRY_OUTLINE_MATCH_RADIUS_PX : OUTLINE_MATCH_RADIUS_PX;
 }
 
 function isWideHorizontalCourseTarget(target: FaladorObstacleTarget): boolean {
-  return target.z === COURSE_Z && target.width >= 3 && target.height === 1;
+  return target.width >= 3 && target.height === 1;
 }
 
 function pickWideHorizontalCourseOutline(
@@ -1606,11 +1749,11 @@ function pickVisibleGroundEntryOutlineFallback(tick: FaladorTickCapture): {
   const playerTile = tick.playerTile;
   const bitmap = tick.bitmap;
   const entryTarget = tick.course.targets[0];
-  if (!calibration || !playerTile || !bitmap || !entryTarget || playerTile.z !== FALADOR_ENTRY_TILE.z) {
+  if (!calibration || !playerTile || !bitmap || !entryTarget || playerTile.z !== entryTarget.z) {
     return null;
   }
 
-  const entryDistance = chebyshevDistance(playerTile, FALADOR_ENTRY_TILE);
+  const entryDistance = distanceToTargetRectangle(playerTile, entryTarget);
   const roughWallDistance = distanceToTargetRectangle(playerTile, entryTarget);
   if (
     entryDistance > ENTRY_VISIBLE_FALLBACK_RADIUS_TILES &&
@@ -1640,13 +1783,17 @@ function pickVisibleGroundEntryOutlineFallback(tick: FaladorTickCapture): {
 function getProjectedMarkOfGraceZone(tick: FaladorTickCapture): MarkOfGraceZoneProjection | null {
   const calibration = tick.calibration;
   const playerTile = tick.playerTile;
-  if (!calibration || !playerTile || playerTile.z !== COURSE_Z) {
+  if (!calibration || !playerTile) {
+    return null;
+  }
+
+  const progress = getCourseProgressAtPlayer(tick.course, playerTile);
+  if (progress?.completedThroughOrder === -1) {
     return null;
   }
 
   const componentId = getCourseTileComponentId(tick.course, playerTile);
   const component = componentId !== null ? tick.course.componentsById.get(componentId) ?? null : null;
-  const progress = getCourseProgressAtPlayer(tick.course, playerTile);
   const zone = progress?.zone ?? null;
   const tiles = zone?.tiles ?? component?.tiles ?? [];
   if (tiles.length === 0) {
@@ -1743,7 +1890,7 @@ function pickMarkOfGraceRedOutline(
   const calibration = tick.calibration;
   const playerTile = tick.playerTile;
   const bitmap = tick.bitmap;
-  if (!calibration || !playerTile || !bitmap || playerTile.z !== COURSE_Z) {
+  if (!calibration || !playerTile || !bitmap) {
     return null;
   }
 
@@ -2098,7 +2245,8 @@ function hasPendingObstacleReachedExpectedZone(
   }
 
   if (isFinalCourseObstacle(course, target.order)) {
-    return playerTile.z === FALADOR_ENTRY_TILE.z && isPlayerTileStableForSuccess(state, nowMs, playerTile);
+    const entryTarget = course.targets[0] ?? null;
+    return !!entryTarget && playerTile.z === entryTarget.z && isPlayerTileStableForSuccess(state, nowMs, playerTile);
   }
 
   if (!progress?.zone || progress.completedThroughOrder !== pending.order) {
@@ -2187,14 +2335,42 @@ function resolvePendingObstacleTraversal(
     };
   }
 
+  if (pending.order > 0 && !isFinalCourseObstacle(tick.course, pending.order) && isPlayerOnCourseStartPlane(tick.course, playerTile)) {
+    const retryDelayMs = randomIntInclusive(CLICK_INTERVAL_MIN_MS, CLICK_INTERVAL_MAX_MS);
+    warnWithDelta(
+      `${BOT_LOG_PREFIX}: player returned to course start plane during non-final traversal; assuming fall/off-course and restarting from first obstacle. pending=${formatPendingObstacleTraversal(
+        tick.course,
+        pending,
+      )} player=${toWorldTileLabel(playerTile)} startTarget=${toTargetLabel(
+        tick.course.targets[0],
+        tick.course,
+      )} nextClickDelay=${retryDelayMs}ms.`,
+    );
+    return {
+      state: {
+        ...state,
+        pendingObstacle: null,
+        pendingMarkOfGracePickup: null,
+        lastConfirmedObstacleIndex: null,
+        completedObstacleOrdersThisLap: [],
+        nextClickAllowedAtMs: nowMs + retryDelayMs,
+        missingTargetTicks: 0,
+      },
+      handled: true,
+    };
+  }
+
   const progress = getCourseProgressAtPlayer(tick.course, playerTile);
   const changedComponent = hasMovedToDifferentWalkableComponent(tick.course, pending.clickedPlayerTile, playerTile);
   const successZone = tick.course.successZonesByOrder.get(pending.order);
   const sourceZone = pending.order > 0 ? tick.course.successZonesByOrder.get(pending.order - 1) ?? null : null;
-  const inSuccessZone = successZone ? isPlayerInSuccessZone(playerTile, successZone) : playerTile.z === FALADOR_ENTRY_TILE.z;
+  const entryTarget = tick.course.targets[0] ?? null;
+  const inSuccessZone = successZone
+    ? isPlayerInSuccessZone(playerTile, successZone)
+    : !!entryTarget && playerTile.z === entryTarget.z;
   const inSourceZone =
     pending.order === 0
-      ? playerTile.z === FALADOR_ENTRY_TILE.z
+      ? !!entryTarget && playerTile.z === entryTarget.z
       : sourceZone
         ? isPlayerInSuccessZone(playerTile, sourceZone)
         : false;
@@ -2261,7 +2437,6 @@ function resolvePendingObstacleTraversal(
   const hardDeadlineMs = pending.clickedAtMs + OBSTACLE_TRAVERSAL_HARD_TIMEOUT_MS;
   const stillInTransit =
     !isFinalCourseObstacle(tick.course, pending.order) &&
-    playerTile.z === COURSE_Z &&
     playerComponentId === null &&
     Number.isFinite(progressDistance) &&
     !progress &&
@@ -2339,7 +2514,7 @@ function saveFaladorClickDebugImage(
   faladorClickDebugIndex += 1;
   const filePath = path.join(
     CLICK_DEBUG_DIR,
-    `falador-rooftop-click-${String(faladorClickDebugIndex).padStart(4, "0")}-${outline.color}-${clickedLocal.x}x${clickedLocal.y}.png`,
+    `rooftop-click-${String(faladorClickDebugIndex).padStart(4, "0")}-${outline.color}-${clickedLocal.x}x${clickedLocal.y}.png`,
   );
   const shapes: DebugOverlayShape[] = [
     {
@@ -2448,6 +2623,204 @@ async function clickOutline(
     state: {
       ...state,
       nextClickAllowedAtMs: Date.now() + nextDelayMs,
+      lastClickPoint: clicked,
+      missingTargetTicks: 0,
+    },
+  };
+}
+
+function pickRooftopMinimapNavigationTarget(tick: FaladorTickCapture): RooftopMinimapNavigationTarget | null {
+  const playerTile = tick.playerTile;
+  if (!playerTile) {
+    return null;
+  }
+
+  const cacheDecision = pickCacheTargetDecision(tick.course, playerTile);
+  const progress = cacheDecision ? null : getCourseProgressAtPlayer(tick.course, playerTile);
+  const target = cacheDecision?.target ?? progress?.currentTarget ?? null;
+  if (!target) {
+    return null;
+  }
+
+  const waypointTile = cacheDecision?.reachability.nearestTile ?? target.clickTile;
+  if (waypointTile.z !== playerTile.z) {
+    return null;
+  }
+
+  const distanceTiles = tileDistance(playerTile, waypointTile);
+  if (distanceTiles < ROOFTOP_MINIMAP_MIN_MOVE_DISTANCE_TILES) {
+    return null;
+  }
+
+  return {
+    target,
+    waypointTile,
+    reason: cacheDecision ? `cache:${cacheDecision.reason}` : `progress:${progress?.reason ?? "unknown"}`,
+    reachability: cacheDecision?.reachability ?? null,
+  };
+}
+
+function saveRooftopMinimapClickDebugImage(
+  tick: FaladorTickCapture,
+  plan: MinimapWorldClickPlan,
+  clickedLocal: ScreenPoint,
+): string | null {
+  const bitmap = tick.bitmap;
+  const calibration = tick.calibration;
+  if (!bitmap || !calibration) {
+    return null;
+  }
+
+  faladorClickDebugIndex += 1;
+  const index = String(faladorClickDebugIndex).padStart(4, "0");
+  const filePath = path.join(CLICK_DEBUG_DIR, `${index}-rooftop-minimap-click-${clickedLocal.x}x${clickedLocal.y}.png`);
+  const minimapCenterLocal = screenPointToLocal(calibration, plan.minimapCenter);
+  const expectedMinimapCenterLocal = screenPointToLocal(calibration, plan.expectedMinimapCenter);
+  const projectedLocal = screenPointToLocal(calibration, plan.projectedScreenPoint);
+  const shapes: DebugOverlayShape[] = [
+    {
+      type: "circle",
+      x: expectedMinimapCenterLocal.x,
+      y: expectedMinimapCenterLocal.y,
+      radius: plan.expectedMinimapRadiusPx,
+      color: { r: 255, g: 0, b: 255 },
+      thickness: 1,
+    },
+    {
+      type: "cross",
+      x: expectedMinimapCenterLocal.x,
+      y: expectedMinimapCenterLocal.y,
+      radius: 6,
+      color: { r: 255, g: 0, b: 255 },
+      thickness: 1,
+    },
+    {
+      type: "circle",
+      x: minimapCenterLocal.x,
+      y: minimapCenterLocal.y,
+      radius: plan.minimapRadiusPx,
+      color: { r: 255, g: 140, b: 0 },
+      thickness: 2,
+    },
+    {
+      type: "cross",
+      x: minimapCenterLocal.x,
+      y: minimapCenterLocal.y,
+      radius: 8,
+      color: { r: 64, g: 220, b: 255 },
+      thickness: 2,
+    },
+    {
+      type: "line",
+      x1: minimapCenterLocal.x,
+      y1: minimapCenterLocal.y,
+      x2: projectedLocal.x,
+      y2: projectedLocal.y,
+      color: { r: 255, g: 220, b: 0 },
+      thickness: 2,
+    },
+    {
+      type: "cross",
+      x: projectedLocal.x,
+      y: projectedLocal.y,
+      radius: 12,
+      color: { r: 255, g: 220, b: 0 },
+      thickness: 2,
+    },
+    {
+      type: "cross",
+      x: clickedLocal.x,
+      y: clickedLocal.y,
+      radius: 7,
+      color: { r: 255, g: 0, b: 0 },
+      thickness: 3,
+    },
+  ];
+  const candidateColors = [
+    { r: 0, g: 170, b: 255 },
+    { r: 60, g: 255, b: 120 },
+    { r: 255, g: 255, b: 255 },
+  ];
+  for (const [candidateIndex, candidate] of plan.minimapCandidates.slice(1, 4).entries()) {
+    shapes.push({
+      type: "circle",
+      x: candidate.centerLocalX,
+      y: candidate.centerLocalY,
+      radius: candidate.radiusPx,
+      color: candidateColors[candidateIndex],
+      thickness: 1,
+    });
+  }
+
+  void saveBitmapWithDebugOverlay(bitmap, filePath, shapes).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    warnWithDelta(`${BOT_LOG_PREFIX}: minimap click debug screenshot failed: ${message}`);
+  });
+
+  return filePath;
+}
+
+async function clickRooftopMinimapNavigation(
+  state: FaladorState,
+  tick: FaladorTickCapture,
+  navTarget: RooftopMinimapNavigationTarget,
+): Promise<{ state: FaladorState; clicked: boolean; skipReason: string | null }> {
+  const calibration = tick.calibration;
+  const bitmap = tick.bitmap;
+  const playerTile = tick.playerTile;
+  if (!calibration || !bitmap || !playerTile) {
+    return { state, clicked: false, skipReason: "missing-calibration-bitmap-or-player" };
+  }
+
+  const plan = projectWorldTileToMinimapClick(calibration, bitmap, playerTile, navTarget.waypointTile, {
+    maxClickRadiusRatio: ROOFTOP_MINIMAP_MAX_CLICK_RADIUS_RATIO,
+  });
+  if (!plan) {
+    return { state, clicked: false, skipReason: "projection-unavailable" };
+  }
+
+  const execution = await executeMinimapWorldClickPlan(calibration, plan, {
+    maxDurationMs: randomIntInclusive(180, 320),
+    safeEdgeMarginPx: 8,
+    shouldContinue: () => AppState.automateBotRunning,
+    settleMs: randomIntInclusive(45, 120),
+  });
+  const clicked = execution.clicked;
+  const clickedLocal = execution.clickedLocal;
+  const travelTicks = Math.max(
+    1,
+    Math.ceil(plan.clickedPathTiles / ROOFTOP_MINIMAP_ASSUMED_RUN_TILES_PER_TICK) + 1,
+  );
+  const waitMs = travelTicks * GAME_TICK_MS + randomIntInclusive(80, 240);
+  const debugPath = saveRooftopMinimapClickDebugImage(tick, plan, clickedLocal);
+
+  logWithDelta(
+    `${BOT_LOG_PREFIX}: minimap navigation click. course=${tick.course.courseKey} target=${toTargetLabel(
+      navTarget.target,
+      tick.course,
+    )} waypoint=${toWorldTileLabel(navTarget.waypointTile)} reason=${navTarget.reason} ${
+      navTarget.reachability ? formatTargetReachability(navTarget.reachability) : "reachability=not-required"
+    } player=${toWorldTileLabel(playerTile)} delta=${plan.dxTiles},${plan.dyTiles} distance=${plan.distanceTiles} clickedPath=${
+      plan.clickedPathTiles
+    } waitTicks=${travelTicks} minimap=${plan.minimapSource}/${plan.projectionSource} radius=${plan.minimapRadiusPx}px maxClick=${
+      plan.maxClickDistancePx
+    }px clamped=${plan.wasVectorClamped ? "yes" : "no"} tilePx=${plan.minimapTilePx}px effectiveTilePx=${plan.effectiveMinimapTilePx.toFixed(
+      2,
+    )} center=${plan.minimapCenter.x},${plan.minimapCenter.y} detectionScore=${
+      plan.minimapDetectionScore?.toFixed(2) ?? "n/a"
+    } detector=${plan.minimapDetectionSummary} projected=${plan.projectedScreenPoint.x},${plan.projectedScreenPoint.y} screen=${
+      clicked.x
+    },${clicked.y} local=${clickedLocal.x},${clickedLocal.y} clickVector=${execution.clickVectorX},${
+      execution.clickVectorY
+    } wait=${waitMs}ms debug=${debugPath ?? "none"}`,
+  );
+
+  return {
+    clicked: true,
+    skipReason: null,
+    state: {
+      ...state,
+      nextClickAllowedAtMs: Date.now() + waitMs,
       lastClickPoint: clicked,
       missingTargetTicks: 0,
     },
@@ -2648,13 +3021,13 @@ function pickPreferredOutlineScreenPoint(
   );
 }
 
-function captureFaladorTick(window: Window, course: FaladorCourse, state: FaladorState): FaladorTickCapture {
+function captureFaladorTick(window: Window, state: FaladorState): RooftopTickCapture {
   const calibration = readStartupPlayerTileCalibration(window, {
     requireRuneLiteCoordinatePattern: true,
   });
   if (!calibration) {
     return {
-      course,
+      course: state.course,
       calibration: null,
       bitmap: null,
       playerTile: null,
@@ -2664,7 +3037,7 @@ function captureFaladorTick(window: Window, course: FaladorCourse, state: Falado
 
   const bitmap = captureScreenBitmap(calibration.captureBounds);
   return {
-    course,
+    course: state.course,
     calibration,
     bitmap,
     playerTile: calibration.playerTile,
@@ -2675,7 +3048,7 @@ function captureFaladorTick(window: Window, course: FaladorCourse, state: Falado
 async function handleFaladorLoop(params: {
   state: FaladorState;
   nowMs: number;
-  tickCapture: FaladorTickCapture;
+  tickCapture: RooftopTickCapture;
 }): Promise<FaladorState> {
   let { state } = params;
   const { tickCapture, nowMs } = params;
@@ -2697,11 +3070,24 @@ async function handleFaladorLoop(params: {
   }
 
   state = updatePlayerTileStability(state, playerTile, nowMs);
-  state = syncFaladorProgressFromCourseZone(state, tickCapture);
-  state = withFaladorRegionTargetLog(state, tickCapture);
+  state = withPlayerRegionAgilityCourseScanLog(state, tickCapture);
+  state = withDynamicRooftopCourse(state, playerTile);
+  const course = state.course;
+  if (!course) {
+    return withStatusLog(
+      { ...state, missingTargetTicks: state.missingTargetTicks + 1 },
+      nowMs,
+      `${BOT_LOG_PREFIX}: waiting for rooftop course selection from current player region. player=${toWorldTileLabel(
+        playerTile,
+      )} region=${playerTile.regionX},${playerTile.regionY} outlines=${tickCapture.outlines.length}.`,
+    );
+  }
+
+  const tickWithCourse: FaladorTickCapture = { ...tickCapture, course };
+  state = syncFaladorProgressFromCourseZone(state, tickWithCourse);
   state = pruneIgnoredMarkOfGraceOutlines(state, nowMs);
 
-  const pendingResult = resolvePendingObstacleTraversal(state, tickCapture, nowMs);
+  const pendingResult = resolvePendingObstacleTraversal(state, tickWithCourse, nowMs);
   state = pendingResult.state;
   if (pendingResult.handled) {
     return state;
@@ -2717,12 +3103,12 @@ async function handleFaladorLoop(params: {
     return state;
   }
 
-  const markOfGrace = pickMarkOfGraceRedOutline(state, tickCapture, nowMs);
+  const markOfGrace = pickMarkOfGraceRedOutline(state, tickWithCourse, nowMs);
   if (markOfGrace) {
     const beforeInventory = await readMarkOfGraceInventoryQuantity();
     const result = await clickOutline(
       state,
-      tickCapture,
+      tickWithCourse,
       markOfGrace.outline,
       `red Mark of Grace zone=${markOfGrace.zoneLabel} component=${markOfGrace.componentId ?? "none"} accessibleDistance=${markOfGrace.accessibleDistancePx}px playerDistance=${markOfGrace.playerDistancePx}px inventoryBefore=${formatNullableQuantity(
         beforeInventory.quantity,
@@ -2755,38 +3141,55 @@ async function handleFaladorLoop(params: {
     };
   }
 
-  state = withMarkOfGraceZoneScanLogIfNeeded(state, tickCapture, nowMs);
+  state = withMarkOfGraceZoneScanLogIfNeeded(state, tickWithCourse, nowMs);
 
-  const obstacleMatch = pickBestObstacleMatch(tickCapture);
+  const obstacleMatch = pickBestObstacleMatch(tickWithCourse);
   if (!obstacleMatch) {
+    const minimapNavTarget = pickRooftopMinimapNavigationTarget(tickWithCourse);
+    let minimapDetails = "minimapNav=none";
+    if (minimapNavTarget) {
+      const minimapResult = await clickRooftopMinimapNavigation(state, tickWithCourse, minimapNavTarget);
+      if (minimapResult.clicked) {
+        return minimapResult.state;
+      }
+
+      minimapDetails = `minimapNav=skipped target=${toTargetLabel(
+        minimapNavTarget.target,
+        course,
+      )} waypoint=${toWorldTileLabel(minimapNavTarget.waypointTile)} reason=${minimapNavTarget.reason} skip=${
+        minimapResult.skipReason ?? "unknown"
+      }`;
+    }
+
+    const entryTarget = course.targets[0] ?? null;
     const groundStartDetails =
-      playerTile.z === 0
-        ? ` entry=${toWorldTileLabel(FALADOR_ENTRY_TILE)} entryDistance=${chebyshevDistance(
+      entryTarget && playerTile.z === entryTarget.z
+        ? ` entry=${toWorldTileLabel(entryTarget.clickTile)} entryDistance=${distanceToTargetRectangle(
             playerTile,
-            FALADOR_ENTRY_TILE,
-          )} roughWallDistance=${distanceToTargetRectangle(playerTile, tickCapture.course.targets[0])} hintRadius=${FALADOR_ENTRY_RADIUS_TILES};`
+            entryTarget,
+          )} hintRadius=${ENTRY_VISIBLE_FALLBACK_RADIUS_TILES};`
         : "";
     return withStatusLog(
       { ...state, missingTargetTicks: state.missingTargetTicks + 1 },
       nowMs,
-      `${BOT_LOG_PREFIX}: cache selected no clickable obstacle outline confirmation. player=${toWorldTileLabel(playerTile)}${groundStartDetails} cacheTarget=${formatAllowedTargetReachability(tickCapture)} ${formatObstacleSearchProjectionDebug(tickCapture)} outlines=${tickCapture.outlines.map(formatAgilityOutline).join("; ") || "none"} missing=${state.missingTargetTicks + 1}.`,
+      `${BOT_LOG_PREFIX}: cache selected no clickable obstacle outline confirmation. course=${course.courseKey} player=${toWorldTileLabel(playerTile)}${groundStartDetails} cacheTarget=${formatAllowedTargetReachability(tickWithCourse)} ${minimapDetails} ${formatObstacleSearchProjectionDebug(tickWithCourse)} outlines=${tickWithCourse.outlines.map(formatAgilityOutline).join("; ") || "none"} missing=${state.missingTargetTicks + 1}.`,
     );
   }
 
   const result = await clickOutline(
     state,
-    tickCapture,
+    tickWithCourse,
     obstacleMatch.outline,
-    `cache-selected rooftop obstacle ${toTargetLabel(obstacleMatch.target, tickCapture.course)} decision=${obstacleMatch.decisionReason} projectedLocal=${obstacleMatch.localPoint.x},${obstacleMatch.localPoint.y} outlineColor=${obstacleMatch.outline.color} outlineDistance=${obstacleMatch.outlineDistancePx}px ${formatTargetReachability(obstacleMatch.reachability)}`,
+    `cache-selected rooftop obstacle ${toTargetLabel(obstacleMatch.target, tickWithCourse.course)} decision=${obstacleMatch.decisionReason} projectedLocal=${obstacleMatch.localPoint.x},${obstacleMatch.localPoint.y} outlineColor=${obstacleMatch.outline.color} outlineDistance=${obstacleMatch.outlineDistancePx}px ${formatTargetReachability(obstacleMatch.reachability)}`,
     {
       preferredLocalPoint: obstacleMatch.localPoint,
       preferredRadiusPx: OBSTACLE_PROJECTION_CLICK_JITTER_PX,
     },
   );
-  const pendingObstacle = createPendingObstacleTraversal(tickCapture.course, obstacleMatch.target, playerTile);
+  const pendingObstacle = createPendingObstacleTraversal(tickWithCourse.course, obstacleMatch.target, playerTile);
   logWithDelta(
     `${BOT_LOG_PREFIX}: pending traversal started; ${formatPendingObstacleTraversal(
-      tickCapture.course,
+      tickWithCourse.course,
       pendingObstacle,
     )}. Obstacles already passed this lap will stay blocked until lap completion.`,
   );
@@ -2806,18 +3209,12 @@ async function runFaladorRooftopLoop(window: Window): Promise<void> {
   isFaladorRooftopLoopRunning = true;
   faladorClickDebugIndex = 0;
   try {
-    const course = loadFaladorCourseFromMapCache();
-    logWithDelta(
-      `${BOT_LOG_PREFIX}: loaded ${course.targets.length} rooftop course object(s) from region ${FALADOR_REGION_X},${FALADOR_REGION_Y}; mapCacheObstacles=${course.mapCacheObstacleCount}/${course.targets.length} cache=${course.cacheDirectoryPath ?? "fallback-only"} mapTiles=${course.tilesByKey.size} missingMapCacheIds=${course.missingMapCacheIds.join(",") || "none"}.`,
-    );
-    logWithDelta(`${BOT_LOG_PREFIX}: course order ${course.targets.map((target) => toTargetLabel(target, course)).join(" -> ")}.`);
-    logWithDelta(`${BOT_LOG_PREFIX}: course zones ${[...course.successZonesByOrder.values()].map(formatSuccessZone).join(" -> ")}.`);
-
-    await runBotEngine<FaladorState, FaladorFunctionKey, FaladorTickCapture>({
+    logWithDelta(`${BOT_LOG_PREFIX}: dynamic rooftop course selection enabled; waiting for player region calibration.`);
+    await runBotEngine<FaladorState, FaladorFunctionKey, RooftopTickCapture>({
       tickMs: BOT_TICK_MS,
       isRunning: () => AppState.automateBotRunning,
       createInitialState,
-      captureTick: ({ state }) => captureFaladorTick(window, course, state),
+      captureTick: ({ state }) => captureFaladorTick(window, state),
       functions: {
         loop: handleFaladorLoop,
       },

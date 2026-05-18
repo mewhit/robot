@@ -77,7 +77,7 @@ export const AUTOMATE_BOTS: AutomateBotDefinition[] = [
     id: AGILITY_FALADOR_ROOFTOP_BOT_ID,
     name: "Rooftop",
     group: "Agility",
-    versionName: "falador-rooftop-v2",
+    versionName: "dynamic-rooftop-minimap-v1",
   },
   {
     id: END_TO_END_BOT_ID,
