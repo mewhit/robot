@@ -1,8 +1,5 @@
 import { AppState } from "./global-state";
-import {
-  onAgilityFaladorRooftopBotStart,
-  onAgilityFaladorRooftopBotStartFromStep,
-} from "./automate-bots/agility-bot";
+import { onAgilityFaladorRooftopBotStart } from "./automate-bots/agility-bot";
 import { onAttackZamorakWarriorSafeSpotBotStart } from "./automate-bots/attack-zamorak-warrior-safe-spot-bot";
 import { onCombatAutoBotStart } from "./automate-bots/combat/auto-bot";
 import { onEndToEndBotStart } from "./automate-bots/end-to-end-bot";
@@ -56,7 +53,6 @@ const botStartHandlers = new Map<string, () => void>([
 ]);
 
 const botStartFromStepHandlers = new Map<string, (stepId: string) => void>([
-  [AGILITY_FALADOR_ROOFTOP_BOT_ID, onAgilityFaladorRooftopBotStartFromStep],
   [RUNECRAFTING_ARCEUUS_BLOOD_RUNE_V2_BOT_ID, onRunecraftingArceuusBloodRuneV2BotStartFromStep],
 ]);
 
