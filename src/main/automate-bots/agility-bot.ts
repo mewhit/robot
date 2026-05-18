@@ -73,13 +73,20 @@ const MARK_OF_GRACE_PICKUP_FIRST_CHECK_DELAY_MS = 900;
 const MARK_OF_GRACE_PICKUP_CHECK_INTERVAL_MS = 850;
 const MARK_OF_GRACE_BLOCKED_IGNORE_MS = 45_000;
 const MARK_OF_GRACE_IGNORE_MATCH_RADIUS_PX = 80;
+const MARK_OF_GRACE_CLICK_CENTER_RADIUS_PX = 0;
+const MARK_OF_GRACE_MIN_WIDTH_PX = 20;
+const MARK_OF_GRACE_MIN_HEIGHT_PX = 10;
+const MARK_OF_GRACE_MAX_HEIGHT_PX = 36;
+const MARK_OF_GRACE_MIN_ASPECT_RATIO = 1.2;
+const MARK_OF_GRACE_OBSTACLE_OUTLINE_EXCLUSION_MARGIN_PX = 80;
 const CACHE_OBSTACLE_OUTLINE_EXCLUSION_MARGIN_PX = 18;
 const STATUS_LOG_INTERVAL_MS = 2200;
 const CLICK_INNER_RATIO = 0.55;
 const CLICK_DEBUG_DIR = "test-image-debug";
-const ROOFTOP_MINIMAP_MAX_CLICK_RADIUS_RATIO = 0.82;
+const ROOFTOP_MINIMAP_MAX_CLICK_RADIUS_RATIO = 0.8;
 const ROOFTOP_MINIMAP_MIN_MOVE_DISTANCE_TILES = 6;
 const ROOFTOP_MINIMAP_ASSUMED_RUN_TILES_PER_TICK = 2;
+const POST_MINIMAP_3D_CLICK_STABLE_MS = GAME_TICK_MS;
 
 type CourseStep = { dx: -1 | 0 | 1; dy: -1 | 0 | 1 };
 
@@ -197,6 +204,13 @@ type IgnoredMarkOfGraceOutline = {
   reason: string;
 };
 
+type PendingPostMinimap3dStability = {
+  clickedAtMs: number;
+  targetLabel: string;
+  waypointTile: WorldTile;
+  reason: string;
+};
+
 type FaladorState = BotEngineLoopState<FaladorFunctionKey> & {
   course: FaladorCourse | null;
   nextClickAllowedAtMs: number;
@@ -205,11 +219,13 @@ type FaladorState = BotEngineLoopState<FaladorFunctionKey> & {
   completedObstacleOrdersThisLap: number[];
   pendingObstacle: PendingObstacleTraversal | null;
   pendingMarkOfGracePickup: PendingMarkOfGracePickup | null;
+  pendingPostMinimap3dStability: PendingPostMinimap3dStability | null;
   ignoredMarkOfGraceOutlines: IgnoredMarkOfGraceOutline[];
   lapIndex: number;
   observedPlayerTile: WorldTile | null;
   playerTileStableSinceMs: number;
   lastStatusLogAtMs: number;
+  lastMarkOfGraceStatusLogAtMs: number;
   missingTargetTicks: number;
   loggedStartupCalibration: boolean;
   lastLoggedPlayerRegionAgilityScanKey: string | null;
@@ -266,6 +282,7 @@ type RooftopMinimapNavigationTarget = {
 type ClickOutlineOptions = {
   preferredLocalPoint?: ScreenPoint | null;
   preferredRadiusPx?: number;
+  usePreferredOutlineInteriorScan?: boolean;
 };
 
 type FaladorTargetReachability = {
@@ -333,11 +350,13 @@ function createInitialState(): FaladorState {
     completedObstacleOrdersThisLap: [],
     pendingObstacle: null,
     pendingMarkOfGracePickup: null,
+    pendingPostMinimap3dStability: null,
     ignoredMarkOfGraceOutlines: [],
     lapIndex: 1,
     observedPlayerTile: null,
     playerTileStableSinceMs: 0,
     lastStatusLogAtMs: 0,
+    lastMarkOfGraceStatusLogAtMs: 0,
     missingTargetTicks: 0,
     loggedStartupCalibration: false,
     lastLoggedPlayerRegionAgilityScanKey: null,
@@ -478,7 +497,11 @@ function tileDistance(a: Pick<WorldTile, "x" | "y">, b: Pick<WorldTile, "x" | "y
 }
 
 function centerTileForRectangle(x: number, y: number, z: number, width: number, height: number): WorldTile {
-  return deriveWorldTile(x + Math.floor((Math.max(1, width) - 1) / 2), y + Math.floor((Math.max(1, height) - 1) / 2), z);
+  return deriveWorldTile(
+    x + Math.floor((Math.max(1, width) - 1) / 2),
+    y + Math.floor((Math.max(1, height) - 1) / 2),
+    z,
+  );
 }
 
 function compareWorldTiles(a: Pick<WorldTile, "x" | "y" | "z">, b: Pick<WorldTile, "x" | "y" | "z">): number {
@@ -599,15 +622,15 @@ function buildFaladorSuccessZones(course: FaladorCourseConnectivity): ReadonlyMa
 }
 
 function formatSuccessZone(zone: FaladorSuccessZone): string {
-  const previewTiles = zone.tiles
-    .slice(0, 8)
-    .map(toWorldTileLabel)
-    .join("|");
+  const previewTiles = zone.tiles.slice(0, 8).map(toWorldTileLabel).join("|");
   const suffix = zone.tiles.length > 8 ? `|+${zone.tiles.length - 8}` : "";
   return `${zone.afterOrder + 1}:${zone.label} components=${zone.componentIds.join(",") || "none"} center=${toWorldTileLabel(zone.centerTile)} tiles=${zone.tiles.length} source=${zone.source}${previewTiles ? ` [${previewTiles}${suffix}]` : ""}`;
 }
 
-function formatSuccessZoneSummary(zone: FaladorSuccessZone, course: Pick<FaladorCourse, "targets"> | null = null): string {
+function formatSuccessZoneSummary(
+  zone: FaladorSuccessZone,
+  course: Pick<FaladorCourse, "targets"> | null = null,
+): string {
   return `${formatCourseObstacleIndex(zone.afterOrder, course)}:${zone.label} components=${zone.componentIds.join(",") || "none"} center=${toWorldTileLabel(zone.centerTile)} tiles=${zone.tiles.length} source=${zone.source}`;
 }
 
@@ -774,7 +797,11 @@ function getTargetInteractionCandidateTiles(course: FaladorCourseMap, target: Fa
     for (let y = minY; y <= maxY; y += 1) {
       const tile = deriveWorldTile(x, y, target.z);
       const cacheTile = getCourseTile(course, tile);
-      if (!cacheTile || cacheTile.blocked || distanceToTargetRectangle(tile, target) > OBSTACLE_INTERACTION_REACH_RADIUS_TILES) {
+      if (
+        !cacheTile ||
+        cacheTile.blocked ||
+        distanceToTargetRectangle(tile, target) > OBSTACLE_INTERACTION_REACH_RADIUS_TILES
+      ) {
         continue;
       }
       candidates.push(tile);
@@ -936,10 +963,7 @@ function formatAllowedTargetReachability(tick: FaladorTickCapture): string {
     return "unavailable";
   }
 
-  return formatCacheTargetDecision(
-    pickCacheTargetDecision(tick.course, playerTile),
-    tick.course,
-  );
+  return formatCacheTargetDecision(pickCacheTargetDecision(tick.course, playerTile), tick.course);
 }
 
 function getRooftopCourseKey(object: OsrsCacheMapObject): string | null {
@@ -1013,7 +1037,10 @@ function getRooftopCourseOrderEntries(courseKey: string): RuneliteAgilityObstacl
   return entries;
 }
 
-function pickNearestMapObject(objects: readonly OsrsCacheMapObject[], playerTile: WorldTile): OsrsCacheMapObject | null {
+function pickNearestMapObject(
+  objects: readonly OsrsCacheMapObject[],
+  playerTile: WorldTile,
+): OsrsCacheMapObject | null {
   return [...objects].sort(compareMapObjectsByDistanceToPlayer(playerTile))[0] ?? null;
 }
 
@@ -1027,10 +1054,14 @@ function pickNearestRooftopCourseKey(
         courseKey,
         nearestObject: pickNearestMapObject(objects, playerTile),
       }))
-      .filter((candidate): candidate is { courseKey: string; nearestObject: OsrsCacheMapObject } => candidate.nearestObject !== null)
+      .filter(
+        (candidate): candidate is { courseKey: string; nearestObject: OsrsCacheMapObject } =>
+          candidate.nearestObject !== null,
+      )
       .sort((a, b) => {
         const distanceDelta =
-          getMapObjectDistanceToPlayer(a.nearestObject, playerTile) - getMapObjectDistanceToPlayer(b.nearestObject, playerTile);
+          getMapObjectDistanceToPlayer(a.nearestObject, playerTile) -
+          getMapObjectDistanceToPlayer(b.nearestObject, playerTile);
         if (distanceDelta !== 0) {
           return distanceDelta;
         }
@@ -1066,7 +1097,8 @@ function pickCourseObjectForOrderEntry(
   const anchor = previousTarget?.clickTile ?? playerTile;
   return (
     [...objects].sort((a, b) => {
-      const anchorDistanceDelta = tileDistance(getMapObjectCenterTile(a), anchor) - tileDistance(getMapObjectCenterTile(b), anchor);
+      const anchorDistanceDelta =
+        tileDistance(getMapObjectCenterTile(a), anchor) - tileDistance(getMapObjectCenterTile(b), anchor);
       if (anchorDistanceDelta !== 0) {
         return anchorDistanceDelta;
       }
@@ -1095,7 +1127,12 @@ function buildDynamicRooftopCourseFromRegionView(params: {
 
   const targets: FaladorObstacleTarget[] = [];
   for (const entry of getRooftopCourseOrderEntries(params.courseKey)) {
-    const object = pickCourseObjectForOrderEntry(objectsById, entry, params.playerTile, targets[targets.length - 1] ?? null);
+    const object = pickCourseObjectForOrderEntry(
+      objectsById,
+      entry,
+      params.playerTile,
+      targets[targets.length - 1] ?? null,
+    );
     if (!object) {
       continue;
     }
@@ -1239,7 +1276,9 @@ function withPlayerRegionAgilityCourseScanLog(state: FaladorState, tick: Rooftop
         )}`;
       })
       .join(" | ");
-    const nearestObjects = rooftopObjects.slice(0, 8).map((object) => formatRooftopMapObjectSummary(object, playerTile));
+    const nearestObjects = rooftopObjects
+      .slice(0, 8)
+      .map((object) => formatRooftopMapObjectSummary(object, playerTile));
 
     logWithDelta(
       `${BOT_LOG_PREFIX}: current player region rooftop scan. player=${toWorldTileLabel(
@@ -1411,7 +1450,7 @@ function isOutlineInsideRuneLiteUi(outline: AgilityOutlineDetection, bitmap: Scr
   const topRightUiMinX = Math.round(bitmap.width - 360);
   const topRightUiMaxY = Math.round(bitmap.height * 0.28);
   const bottomRightUiMinX = Math.round(bitmap.width - 390);
-  const bottomRightUiMinY = Math.round(bitmap.height * 0.70);
+  const bottomRightUiMinY = Math.round(bitmap.height * 0.7);
   const bottomLeftChatMaxX = Math.round(bitmap.width * 0.54);
   const bottomLeftChatMinY = Math.round(bitmap.height * 0.84);
 
@@ -1517,20 +1556,21 @@ function pickObstacleOutlineNearProjection(
     );
   });
   const outline =
-    candidates
-      .sort((a, b) => {
-        const boxDistanceDelta = getOutlineBoxDistance(a, projected.localPoint) - getOutlineBoxDistance(b, projected.localPoint);
-        if (boxDistanceDelta !== 0) {
-          return boxDistanceDelta;
-        }
+    candidates.sort((a, b) => {
+      const boxDistanceDelta =
+        getOutlineBoxDistance(a, projected.localPoint) - getOutlineBoxDistance(b, projected.localPoint);
+      if (boxDistanceDelta !== 0) {
+        return boxDistanceDelta;
+      }
 
-        const centerDistanceDelta = getOutlineDistance(a, projected.localPoint) - getOutlineDistance(b, projected.localPoint);
-        if (centerDistanceDelta !== 0) {
-          return centerDistanceDelta;
-        }
+      const centerDistanceDelta =
+        getOutlineDistance(a, projected.localPoint) - getOutlineDistance(b, projected.localPoint);
+      if (centerDistanceDelta !== 0) {
+        return centerDistanceDelta;
+      }
 
-        return b.pixelCount - a.pixelCount;
-      })[0] ?? null;
+      return b.pixelCount - a.pixelCount;
+    })[0] ?? null;
   return outline
     ? {
         outline,
@@ -1574,7 +1614,9 @@ function getReachableFallbackProjectionTiles(
   excludedTiles: readonly WorldTile[],
 ): WorldTile[] {
   const excludedKeys = new Set(excludedTiles.map((tile) => tile.key));
-  return reachability.nearestTile && reachability.nearestTile.z === target.z && !excludedKeys.has(reachability.nearestTile.key)
+  return reachability.nearestTile &&
+    reachability.nearestTile.z === target.z &&
+    !excludedKeys.has(reachability.nearestTile.key)
     ? [reachability.nearestTile]
     : [];
 }
@@ -1592,7 +1634,9 @@ function formatObstacleSearchProjectionDebug(tick: FaladorTickCapture): string {
   }
 
   const target = cacheDecision.target;
-  const clickableOutlines = tick.bitmap ? tick.outlines.filter((outline) => isClickableOutline(outline, tick.bitmap!)) : tick.outlines;
+  const clickableOutlines = tick.bitmap
+    ? tick.outlines.filter((outline) => isClickableOutline(outline, tick.bitmap!))
+    : tick.outlines;
   const projections = getObstacleProjectionTiles(target, cacheDecision.reachability)
     .map((projectionTile) => {
       const projected = projectObstacleTarget(calibration, playerTile, target, projectionTile);
@@ -1628,7 +1672,10 @@ function formatObstacleSearchProjectionDebug(tick: FaladorTickCapture): string {
   return `projectionDebug=target=${toTargetLabel(target, tick.course)} tiles=${projections || "none"}`;
 }
 
-function sortObstacleOutlineMatches(matches: ObstacleOutlineMatch[], target: FaladorObstacleTarget): ObstacleOutlineMatch[] {
+function sortObstacleOutlineMatches(
+  matches: ObstacleOutlineMatch[],
+  target: FaladorObstacleTarget,
+): ObstacleOutlineMatch[] {
   return matches.sort((a, b) => {
     const priorityDelta = a.outlinePickPriority - b.outlinePickPriority;
     if (priorityDelta !== 0) {
@@ -1714,7 +1761,11 @@ function findObstacleOutlineMatches(tick: FaladorTickCapture): ObstacleOutlineMa
     return targetMatches;
   }
 
-  const fallbackProjectionTiles = getReachableFallbackProjectionTiles(target, cacheDecision.reachability, targetProjectionTiles);
+  const fallbackProjectionTiles = getReachableFallbackProjectionTiles(
+    target,
+    cacheDecision.reachability,
+    targetProjectionTiles,
+  );
   matches.push(
     ...collectObstacleOutlineMatches(
       tick,
@@ -1755,10 +1806,7 @@ function pickVisibleGroundEntryOutlineFallback(tick: FaladorTickCapture): {
 
   const entryDistance = distanceToTargetRectangle(playerTile, entryTarget);
   const roughWallDistance = distanceToTargetRectangle(playerTile, entryTarget);
-  if (
-    entryDistance > ENTRY_VISIBLE_FALLBACK_RADIUS_TILES &&
-    roughWallDistance > ENTRY_VISIBLE_FALLBACK_RADIUS_TILES
-  ) {
+  if (entryDistance > ENTRY_VISIBLE_FALLBACK_RADIUS_TILES && roughWallDistance > ENTRY_VISIBLE_FALLBACK_RADIUS_TILES) {
     return null;
   }
 
@@ -1793,7 +1841,7 @@ function getProjectedMarkOfGraceZone(tick: FaladorTickCapture): MarkOfGraceZoneP
   }
 
   const componentId = getCourseTileComponentId(tick.course, playerTile);
-  const component = componentId !== null ? tick.course.componentsById.get(componentId) ?? null : null;
+  const component = componentId !== null ? (tick.course.componentsById.get(componentId) ?? null) : null;
   const zone = progress?.zone ?? null;
   const tiles = zone?.tiles ?? component?.tiles ?? [];
   if (tiles.length === 0) {
@@ -1841,7 +1889,11 @@ function getObstacleFootprintTiles(target: FaladorObstacleTarget): WorldTile[] {
   return tiles;
 }
 
-function isOutlineOnCacheObstacle(tick: FaladorTickCapture, outline: AgilityOutlineDetection): boolean {
+function isOutlineOnCacheObstacle(
+  tick: FaladorTickCapture,
+  outline: AgilityOutlineDetection,
+  marginPx = CACHE_OBSTACLE_OUTLINE_EXCLUSION_MARGIN_PX,
+): boolean {
   const calibration = tick.calibration;
   const playerTile = tick.playerTile;
   if (!calibration || !playerTile) {
@@ -1860,7 +1912,7 @@ function isOutlineOnCacheObstacle(tick: FaladorTickCapture, outline: AgilityOutl
       }
 
       const localPoint = screenPointToLocal(calibration, screenPoint);
-      if (isPointInsideOutline(outline, localPoint, CACHE_OBSTACLE_OUTLINE_EXCLUSION_MARGIN_PX)) {
+      if (isPointInsideOutline(outline, localPoint, marginPx)) {
         return true;
       }
     }
@@ -1869,10 +1921,30 @@ function isOutlineOnCacheObstacle(tick: FaladorTickCapture, outline: AgilityOutl
   return false;
 }
 
+function isMarkOfGraceOutlineShape(outline: AgilityOutlineDetection): boolean {
+  const aspectRatio = outline.height > 0 ? outline.width / outline.height : 0;
+  return (
+    outline.width >= MARK_OF_GRACE_MIN_WIDTH_PX &&
+    outline.height >= MARK_OF_GRACE_MIN_HEIGHT_PX &&
+    outline.width <= MARK_OF_GRACE_MAX_SIDE_PX &&
+    outline.height <= MARK_OF_GRACE_MAX_HEIGHT_PX &&
+    outline.pixelCount >= MARK_OF_GRACE_MIN_PIXELS &&
+    outline.pixelCount <= 700 &&
+    aspectRatio >= MARK_OF_GRACE_MIN_ASPECT_RATIO
+  );
+}
+
 function getOutlineBoxDistance(outline: AgilityOutlineDetection, point: ScreenPoint): number {
   const dx = point.x < outline.minX ? outline.minX - point.x : point.x > outline.maxX ? point.x - outline.maxX : 0;
   const dy = point.y < outline.minY ? outline.minY - point.y : point.y > outline.maxY ? point.y - outline.maxY : 0;
   return Math.max(dx, dy);
+}
+
+function getOutlineBoxCenterPoint(outline: AgilityOutlineDetection): ScreenPoint {
+  return {
+    x: Math.round((outline.minX + outline.maxX) / 2),
+    y: Math.round((outline.minY + outline.maxY) / 2),
+  };
 }
 
 function getNearestOutlineDistanceToPoints(outline: AgilityOutlineDetection, points: readonly ScreenPoint[]): number {
@@ -1918,12 +1990,7 @@ function pickMarkOfGraceRedOutline(
         return false;
       }
 
-      if (
-        outline.width > MARK_OF_GRACE_MAX_SIDE_PX ||
-        outline.height > MARK_OF_GRACE_MAX_SIDE_PX ||
-        outline.pixelCount < MARK_OF_GRACE_MIN_PIXELS ||
-        outline.pixelCount > 700
-      ) {
+      if (!isMarkOfGraceOutlineShape(outline)) {
         return false;
       }
 
@@ -1931,13 +1998,14 @@ function pickMarkOfGraceRedOutline(
         return false;
       }
 
-      if (isOutlineOnCacheObstacle(tick, outline)) {
+      if (isOutlineOnCacheObstacle(tick, outline, MARK_OF_GRACE_OBSTACLE_OUTLINE_EXCLUSION_MARGIN_PX)) {
         return false;
       }
 
       return accessibleDistance <= MARK_OF_GRACE_ACCESSIBLE_TILE_RADIUS_PX;
     });
-  const best = markCandidates.sort((a, b) => {
+  const best =
+    markCandidates.sort((a, b) => {
       const accessibleDistanceDelta = a.accessibleDistance - b.accessibleDistance;
       if (accessibleDistanceDelta !== 0) {
         return accessibleDistanceDelta;
@@ -1962,7 +2030,11 @@ function pickMarkOfGraceRedOutline(
     : null;
 }
 
-function withMarkOfGraceZoneScanLogIfNeeded(state: FaladorState, tick: FaladorTickCapture, nowMs: number): FaladorState {
+function withMarkOfGraceZoneScanLogIfNeeded(
+  state: FaladorState,
+  tick: FaladorTickCapture,
+  nowMs: number,
+): FaladorState {
   const bitmap = tick.bitmap;
   const calibration = tick.calibration;
   if (!bitmap || !calibration) {
@@ -1976,7 +2048,7 @@ function withMarkOfGraceZoneScanLogIfNeeded(state: FaladorState, tick: FaladorTi
 
   const zoneProjection = getProjectedMarkOfGraceZone(tick);
   if (!zoneProjection) {
-    return withStatusLog(
+    return withMarkOfGraceStatusLog(
       state,
       nowMs,
       `${BOT_LOG_PREFIX}: red outline(s) visible, but Mark of Grace zone scan is unavailable; continuing rooftop obstacle. redOutlines=${redOutlines
@@ -1992,7 +2064,7 @@ function withMarkOfGraceZoneScanLogIfNeeded(state: FaladorState, tick: FaladorTi
       outline,
       zoneDistance: getNearestOutlineDistanceToPoints(outline, zoneProjection.points),
       playerDistance: getOutlineDistance(outline, playerAnchor),
-      onCacheObstacle: isOutlineOnCacheObstacle(tick, outline),
+      onCacheObstacle: isOutlineOnCacheObstacle(tick, outline, MARK_OF_GRACE_OBSTACLE_OUTLINE_EXCLUSION_MARGIN_PX),
       ignored: isIgnoredMarkOfGraceOutline(state, outline, nowMs),
     }))
     .sort((a, b) => {
@@ -2005,18 +2077,14 @@ function withMarkOfGraceZoneScanLogIfNeeded(state: FaladorState, tick: FaladorTi
     })
     .slice(0, 5)
     .map(({ outline, zoneDistance, playerDistance, onCacheObstacle, ignored }) => {
-      const sizeOk =
-        outline.width <= MARK_OF_GRACE_MAX_SIDE_PX &&
-        outline.height <= MARK_OF_GRACE_MAX_SIDE_PX &&
-        outline.pixelCount >= MARK_OF_GRACE_MIN_PIXELS &&
-        outline.pixelCount <= 700;
+      const shapeOk = isMarkOfGraceOutlineShape(outline);
       return `${formatAgilityOutline(
         outline,
-      )} zoneDist=${zoneDistance}px playerDist=${playerDistance}px sizeOk=${sizeOk} cacheObstacle=${onCacheObstacle} ignored=${ignored}`;
+      )} zoneDist=${zoneDistance}px playerDist=${playerDistance}px shapeOk=${shapeOk} cacheObstacle=${onCacheObstacle} ignored=${ignored}`;
     })
     .join("; ");
 
-  return withStatusLog(
+  return withMarkOfGraceStatusLog(
     state,
     nowMs,
     `${BOT_LOG_PREFIX}: red outline(s) visible but no Mark of Grace inside current zone; continuing rooftop obstacle. player=${toWorldTileLabel(
@@ -2060,11 +2128,7 @@ async function resolvePendingMarkOfGracePickup(
 
   const inventory = await readMarkOfGraceInventoryQuantity();
   const lastQuantity = inventory.quantity ?? pending.lastQuantity;
-  if (
-    pending.beforeQuantity !== null &&
-    inventory.quantity !== null &&
-    inventory.quantity > pending.beforeQuantity
-  ) {
+  if (pending.beforeQuantity !== null && inventory.quantity !== null && inventory.quantity > pending.beforeQuantity) {
     const nextDelayMs = randomIntInclusive(CLICK_INTERVAL_MIN_MS, CLICK_INTERVAL_MAX_MS);
     logWithDelta(
       `${BOT_LOG_PREFIX}: confirmed Mark of Grace pickup by inventory. qty=${pending.beforeQuantity}->${inventory.quantity} clickedFrom=${toWorldTileLabel(
@@ -2160,6 +2224,41 @@ function getPlayerTileStableMs(state: FaladorState, nowMs: number, playerTile: W
 
 function isPlayerTileStableForSuccess(state: FaladorState, nowMs: number, playerTile: WorldTile): boolean {
   return getPlayerTileStableMs(state, nowMs, playerTile) >= SUCCESS_TILE_STABLE_MS;
+}
+
+function resolvePostMinimap3dClickStability(
+  state: FaladorState,
+  nowMs: number,
+  playerTile: WorldTile,
+): { state: FaladorState; handled: boolean } {
+  const pending = state.pendingPostMinimap3dStability;
+  if (!pending) {
+    return { state, handled: false };
+  }
+
+  const stableMs = getPlayerTileStableMs(state, nowMs, playerTile);
+  if (stableMs < POST_MINIMAP_3D_CLICK_STABLE_MS) {
+    return {
+      state: withStatusLog(
+        state,
+        nowMs,
+        `${BOT_LOG_PREFIX}: waiting for player to settle after minimap navigation before 3D click. player=${toWorldTileLabel(
+          playerTile,
+        )} stable=${stableMs}/${POST_MINIMAP_3D_CLICK_STABLE_MS}ms target=${pending.targetLabel} waypoint=${toWorldTileLabel(
+          pending.waypointTile,
+        )} reason=${pending.reason} sinceMinimap=${Math.max(0, nowMs - pending.clickedAtMs)}ms.`,
+      ),
+      handled: true,
+    };
+  }
+
+  return {
+    state: {
+      ...state,
+      pendingPostMinimap3dStability: null,
+    },
+    handled: false,
+  };
 }
 
 function estimateObstacleTraversalTiming(
@@ -2335,7 +2434,11 @@ function resolvePendingObstacleTraversal(
     };
   }
 
-  if (pending.order > 0 && !isFinalCourseObstacle(tick.course, pending.order) && isPlayerOnCourseStartPlane(tick.course, playerTile)) {
+  if (
+    pending.order > 0 &&
+    !isFinalCourseObstacle(tick.course, pending.order) &&
+    isPlayerOnCourseStartPlane(tick.course, playerTile)
+  ) {
     const retryDelayMs = randomIntInclusive(CLICK_INTERVAL_MIN_MS, CLICK_INTERVAL_MAX_MS);
     warnWithDelta(
       `${BOT_LOG_PREFIX}: player returned to course start plane during non-final traversal; assuming fall/off-course and restarting from first obstacle. pending=${formatPendingObstacleTraversal(
@@ -2363,7 +2466,7 @@ function resolvePendingObstacleTraversal(
   const progress = getCourseProgressAtPlayer(tick.course, playerTile);
   const changedComponent = hasMovedToDifferentWalkableComponent(tick.course, pending.clickedPlayerTile, playerTile);
   const successZone = tick.course.successZonesByOrder.get(pending.order);
-  const sourceZone = pending.order > 0 ? tick.course.successZonesByOrder.get(pending.order - 1) ?? null : null;
+  const sourceZone = pending.order > 0 ? (tick.course.successZonesByOrder.get(pending.order - 1) ?? null) : null;
   const entryTarget = tick.course.targets[0] ?? null;
   const inSuccessZone = successZone
     ? isPlayerInSuccessZone(playerTile, successZone)
@@ -2384,7 +2487,9 @@ function resolvePendingObstacleTraversal(
   )} playerComponent=${formatCourseComponentAt(tick.course, playerTile)}`;
   const zoneDetails = progress
     ? `courseProgress=completedThrough=${
-        progress.completedThroughOrder >= 0 ? formatCourseObstacleIndex(progress.completedThroughOrder, tick.course) : "entry"
+        progress.completedThroughOrder >= 0
+          ? formatCourseObstacleIndex(progress.completedThroughOrder, tick.course)
+          : "entry"
       } currentTarget=${progress.currentTarget ? toTargetLabel(progress.currentTarget, tick.course) : "lap-complete"}`
     : "courseProgress=between-zones";
 
@@ -2591,9 +2696,17 @@ async function clickOutline(
 ): Promise<{ state: FaladorState; clicked: ScreenPoint }> {
   const calibration = tick.calibration!;
   const clickPoint =
-    pickPreferredOutlineScreenPoint(tick.bitmap, outline, calibration.captureBounds, state, options.preferredLocalPoint ?? null, {
-      radiusPx: options.preferredRadiusPx ?? OBSTACLE_PROJECTION_CLICK_JITTER_PX,
-    }) ??
+    pickPreferredOutlineScreenPoint(
+      tick.bitmap,
+      outline,
+      calibration.captureBounds,
+      state,
+      options.preferredLocalPoint ?? null,
+      {
+        radiusPx: options.preferredRadiusPx ?? OBSTACLE_PROJECTION_CLICK_JITTER_PX,
+        useInteriorScan: options.usePreferredOutlineInteriorScan,
+      },
+    ) ??
     pickBoxInteractionScreenPoint(outline, calibration.captureBounds, {
       innerRatio: CLICK_INNER_RATIO,
       preferredLocalY: outline.centerY,
@@ -2606,8 +2719,9 @@ async function clickOutline(
     shouldContinue: () => AppState.automateBotRunning,
   });
 
+  const clickSettleMs = randomIntInclusive(45, 125);
   const clicked = clickScreenPoint(clickPoint.x, clickPoint.y, calibration.captureBounds, {
-    settleMs: randomIntInclusive(45, 125),
+    settleMs: clickSettleMs,
     safeEdgeMarginPx: 12,
   });
   const clickedLocal = screenPointToLocal(calibration, clicked);
@@ -2615,7 +2729,7 @@ async function clickOutline(
   const clickDebugPath = saveFaladorClickDebugImage(tick, outline, clickedLocal, options.preferredLocalPoint ?? null);
 
   logWithDelta(
-    `${BOT_LOG_PREFIX}: clicked ${reason} at screen=${clicked.x},${clicked.y} local=${clickedLocal.x},${clickedLocal.y}; outline=${formatAgilityOutline(outline)} clickDebug=${clickDebugPath ?? "unavailable"} nextClickDelay=${nextDelayMs}ms.`,
+    `${BOT_LOG_PREFIX}: clicked ${reason} at screen=${clicked.x},${clicked.y} local=${clickedLocal.x},${clickedLocal.y}; outline=${formatAgilityOutline(outline)} clickSettle=${clickSettleMs}ms clickDebug=${clickDebugPath ?? "unavailable"} nextClickDelay=${nextDelayMs}ms.`,
   );
 
   return {
@@ -2787,11 +2901,9 @@ async function clickRooftopMinimapNavigation(
   });
   const clicked = execution.clicked;
   const clickedLocal = execution.clickedLocal;
-  const travelTicks = Math.max(
-    1,
-    Math.ceil(plan.clickedPathTiles / ROOFTOP_MINIMAP_ASSUMED_RUN_TILES_PER_TICK) + 1,
-  );
+  const travelTicks = Math.max(1, Math.ceil(plan.clickedPathTiles / ROOFTOP_MINIMAP_ASSUMED_RUN_TILES_PER_TICK) + 1);
   const waitMs = travelTicks * GAME_TICK_MS + randomIntInclusive(80, 240);
+  const clickedAtMs = Date.now();
   const debugPath = saveRooftopMinimapClickDebugImage(tick, plan, clickedLocal);
 
   logWithDelta(
@@ -2820,8 +2932,14 @@ async function clickRooftopMinimapNavigation(
     skipReason: null,
     state: {
       ...state,
-      nextClickAllowedAtMs: Date.now() + waitMs,
+      nextClickAllowedAtMs: clickedAtMs + waitMs,
       lastClickPoint: clicked,
+      pendingPostMinimap3dStability: {
+        clickedAtMs,
+        targetLabel: toTargetLabel(navTarget.target, tick.course),
+        waypointTile: navTarget.waypointTile,
+        reason: navTarget.reason,
+      },
       missingTargetTicks: 0,
     },
   };
@@ -2831,6 +2949,15 @@ function withStatusLog(state: FaladorState, nowMs: number, message: string): Fal
   if (nowMs - state.lastStatusLogAtMs >= STATUS_LOG_INTERVAL_MS) {
     logWithDelta(message);
     return { ...state, lastStatusLogAtMs: nowMs };
+  }
+
+  return state;
+}
+
+function withMarkOfGraceStatusLog(state: FaladorState, nowMs: number, message: string): FaladorState {
+  if (nowMs - state.lastMarkOfGraceStatusLogAtMs >= STATUS_LOG_INTERVAL_MS) {
+    logWithDelta(message);
+    return { ...state, lastMarkOfGraceStatusLogAtMs: nowMs };
   }
 
   return state;
@@ -2981,7 +3108,7 @@ function pickPreferredOutlineScreenPoint(
   captureBounds: StartupPlayerTileCalibration["captureBounds"],
   state: Pick<FaladorState, "lastClickPoint">,
   preferredLocalPoint: ScreenPoint | null,
-  options: { radiusPx: number },
+  options: { radiusPx: number; useInteriorScan?: boolean },
 ): ScreenPoint | null {
   if (!preferredLocalPoint || !Number.isFinite(preferredLocalPoint.x) || !Number.isFinite(preferredLocalPoint.y)) {
     return null;
@@ -2991,9 +3118,10 @@ function pickPreferredOutlineScreenPoint(
     return null;
   }
 
-  const interiorLocalPoint = bitmap
-    ? pickOutlineInteriorLocalPointNearProjection(bitmap, outline, preferredLocalPoint)
-    : null;
+  const interiorLocalPoint =
+    bitmap && options.useInteriorScan !== false
+      ? pickOutlineInteriorLocalPointNearProjection(bitmap, outline, preferredLocalPoint)
+      : null;
   if (interiorLocalPoint) {
     return {
       x: captureBounds.x + interiorLocalPoint.x,
@@ -3103,19 +3231,27 @@ async function handleFaladorLoop(params: {
     return state;
   }
 
+  const postMinimapStability = resolvePostMinimap3dClickStability(state, nowMs, playerTile);
+  state = postMinimapStability.state;
+  if (postMinimapStability.handled) {
+    return state;
+  }
+
   const markOfGrace = pickMarkOfGraceRedOutline(state, tickWithCourse, nowMs);
   if (markOfGrace) {
     const beforeInventory = await readMarkOfGraceInventoryQuantity();
+    const markClickPoint = getOutlineBoxCenterPoint(markOfGrace.outline);
     const result = await clickOutline(
       state,
       tickWithCourse,
       markOfGrace.outline,
-      `red Mark of Grace zone=${markOfGrace.zoneLabel} component=${markOfGrace.componentId ?? "none"} accessibleDistance=${markOfGrace.accessibleDistancePx}px playerDistance=${markOfGrace.playerDistancePx}px inventoryBefore=${formatNullableQuantity(
+      `red Mark of Grace zone=${markOfGrace.zoneLabel} component=${markOfGrace.componentId ?? "none"} boxCenter=${markClickPoint.x},${markClickPoint.y} pixelCenter=${markOfGrace.outline.centerX},${markOfGrace.outline.centerY} accessibleDistance=${markOfGrace.accessibleDistancePx}px playerDistance=${markOfGrace.playerDistancePx}px inventoryBefore=${formatNullableQuantity(
         beforeInventory.quantity,
       )}`,
       {
-        preferredLocalPoint: { x: markOfGrace.outline.centerX, y: markOfGrace.outline.centerY },
-        preferredRadiusPx: 0,
+        preferredLocalPoint: markClickPoint,
+        preferredRadiusPx: MARK_OF_GRACE_CLICK_CENTER_RADIUS_PX,
+        usePreferredOutlineInteriorScan: false,
       },
     );
     const clickedAtMs = Date.now();
