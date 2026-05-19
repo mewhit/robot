@@ -17,6 +17,7 @@ import {
   type AgilityOutlineDetection,
 } from "./shared/agility-outline-detector";
 import { clamp, pickBoxInteractionScreenPoint, randomIntInclusive } from "./shared/osrs-helper";
+import { holdRobotKey } from "./shared/robot-keyboard";
 import { clickScreenPoint, moveMouseHumanLike, type ScreenPoint } from "./shared/robot-clicker";
 import { saveBitmapWithDebugOverlay, type DebugOverlayShape } from "./shared/debug-image-overlay";
 import {
@@ -86,9 +87,15 @@ const STATUS_LOG_INTERVAL_MS = 2200;
 const CLICK_INNER_RATIO = 0.55;
 const CLICK_DEBUG_DIR = "test-image-debug";
 const ROOFTOP_MINIMAP_MAX_CLICK_RADIUS_RATIO = 0.8;
+const ROOFTOP_MINIMAP_COMPASS_MIN_CONFIDENCE = 0.65;
 const ROOFTOP_MINIMAP_MIN_MOVE_DISTANCE_TILES = 6;
 const ROOFTOP_MINIMAP_ASSUMED_RUN_TILES_PER_TICK = 2;
 const ROOFTOP_COURSE_REGION_SEARCH_RADIUS = 1;
+const ROOFTOP_CAMERA_NORTH_KEY = "u";
+const ROOFTOP_CAMERA_NORTH_HOLD_MIN_MS = 120;
+const ROOFTOP_CAMERA_NORTH_HOLD_MAX_MS = 190;
+const ROOFTOP_CAMERA_NORTH_SETTLE_MS = GAME_TICK_MS;
+const ROOFTOP_CAMERA_NORTH_RETRY_INTERVAL_MS = 10_000;
 const POST_MINIMAP_3D_CLICK_STABLE_MS = GAME_TICK_MS * 2;
 const ROOFTOP_MINIMAP_GEOMETRY_MIN_SCORE = 0.84;
 const ROOFTOP_MINIMAP_GEOMETRY_MAX_CENTER_DRIFT_RATIO = 0.09;
@@ -238,6 +245,8 @@ type FaladorState = BotEngineLoopState<FaladorFunctionKey> & {
   pendingMarkOfGracePickup: PendingMarkOfGracePickup | null;
   pendingPostMinimap3dStability: PendingPostMinimap3dStability | null;
   stableMinimapGeometry: StableMinimapGeometryState | null;
+  lastCameraNorthForceAtMs: number;
+  cameraNorthSettlingUntilMs: number;
   ignoredMarkOfGraceOutlines: IgnoredMarkOfGraceOutline[];
   lapIndex: number;
   observedPlayerTile: WorldTile | null;
@@ -370,6 +379,8 @@ function createInitialState(): FaladorState {
     pendingMarkOfGracePickup: null,
     pendingPostMinimap3dStability: null,
     stableMinimapGeometry: null,
+    lastCameraNorthForceAtMs: 0,
+    cameraNorthSettlingUntilMs: 0,
     ignoredMarkOfGraceOutlines: [],
     lapIndex: 1,
     observedPlayerTile: null,
@@ -3288,6 +3299,88 @@ function saveRooftopMinimapClickDebugImage(
   return filePath;
 }
 
+type RooftopMinimapCameraPrepResult = {
+  state: FaladorState;
+  ready: boolean;
+  skipReason: string | null;
+};
+
+function getRooftopMinimapCompassConfidence(calibration: StartupPlayerTileCalibration): number | null {
+  const confidence = calibration.compassNorth?.confidence;
+  return typeof confidence === "number" && Number.isFinite(confidence) ? confidence : null;
+}
+
+function isRooftopMinimapCompassTrusted(calibration: StartupPlayerTileCalibration): boolean {
+  return (getRooftopMinimapCompassConfidence(calibration) ?? 0) >= ROOFTOP_MINIMAP_COMPASS_MIN_CONFIDENCE;
+}
+
+function formatRooftopMinimapCompass(calibration: StartupPlayerTileCalibration): string {
+  const compass = calibration.compassNorth;
+  if (!compass) {
+    return `missing min=${ROOFTOP_MINIMAP_COMPASS_MIN_CONFIDENCE.toFixed(2)}`;
+  }
+
+  return `confidence=${compass.confidence.toFixed(2)} min=${ROOFTOP_MINIMAP_COMPASS_MIN_CONFIDENCE.toFixed(
+    2,
+  )} vector=${compass.northVectorX.toFixed(2)},${compass.northVectorY.toFixed(2)} pixels=${compass.pixelCount}`;
+}
+
+async function prepareRooftopMinimapCameraForNavigation(
+  state: FaladorState,
+  calibration: StartupPlayerTileCalibration,
+  nowMs: number,
+): Promise<RooftopMinimapCameraPrepResult> {
+  if (isRooftopMinimapCompassTrusted(calibration)) {
+    return { state, ready: true, skipReason: null };
+  }
+
+  if (nowMs < state.cameraNorthSettlingUntilMs) {
+    return { state, ready: false, skipReason: "camera-north-settling" };
+  }
+
+  if (nowMs - state.lastCameraNorthForceAtMs < ROOFTOP_CAMERA_NORTH_RETRY_INTERVAL_MS) {
+    return { state, ready: true, skipReason: null };
+  }
+
+  const holdMs = randomIntInclusive(ROOFTOP_CAMERA_NORTH_HOLD_MIN_MS, ROOFTOP_CAMERA_NORTH_HOLD_MAX_MS);
+  const result = await holdRobotKey(ROOFTOP_CAMERA_NORTH_KEY, holdMs, {
+    shouldContinue: () => AppState.automateBotRunning,
+  });
+  const forcedAtMs = Date.now();
+  if (!result.ok) {
+    warnWithDelta(
+      `${BOT_LOG_PREFIX}: compass is not trusted for minimap navigation, but camera north force failed. compass=${formatRooftopMinimapCompass(
+        calibration,
+      )} key=${ROOFTOP_CAMERA_NORTH_KEY} hold=${holdMs}ms error=${result.error ?? "stopped"}; continuing with north-up fallback projection.`,
+    );
+    return {
+      state: {
+        ...state,
+        lastCameraNorthForceAtMs: forcedAtMs,
+      },
+      ready: true,
+      skipReason: null,
+    };
+  }
+
+  const settleMs = ROOFTOP_CAMERA_NORTH_SETTLE_MS + randomIntInclusive(40, 140);
+  logWithDelta(
+    `${BOT_LOG_PREFIX}: compass is not trusted for minimap navigation; held '${ROOFTOP_CAMERA_NORTH_KEY}' for ${holdMs}ms to force camera north. compass=${formatRooftopMinimapCompass(
+      calibration,
+    )}; waiting ${settleMs}ms before minimap click.`,
+  );
+
+  return {
+    state: {
+      ...state,
+      lastCameraNorthForceAtMs: forcedAtMs,
+      cameraNorthSettlingUntilMs: forcedAtMs + settleMs,
+    },
+    ready: false,
+    skipReason: "camera-north-settling",
+  };
+}
+
 async function clickRooftopMinimapNavigation(
   state: FaladorState,
   tick: FaladorTickCapture,
@@ -3300,6 +3393,12 @@ async function clickRooftopMinimapNavigation(
     return { state, clicked: false, skipReason: "missing-calibration-bitmap-or-player" };
   }
 
+  const cameraPrep = await prepareRooftopMinimapCameraForNavigation(state, calibration, Date.now());
+  state = cameraPrep.state;
+  if (!cameraPrep.ready) {
+    return { state, clicked: false, skipReason: cameraPrep.skipReason };
+  }
+
   const geometry = resolveStableRooftopMinimapGeometry(state, calibration, bitmap, Date.now());
   if (!geometry) {
     return { state, clicked: false, skipReason: "minimap-geometry-unavailable" };
@@ -3308,6 +3407,7 @@ async function clickRooftopMinimapNavigation(
   const plan = projectWorldTileToMinimapClick(calibration, bitmap, playerTile, navTarget.waypointTile, {
     geometry: geometry.geometry,
     maxClickRadiusRatio: ROOFTOP_MINIMAP_MAX_CLICK_RADIUS_RATIO,
+    compassMinConfidence: ROOFTOP_MINIMAP_COMPASS_MIN_CONFIDENCE,
   });
   if (!plan) {
     return {
@@ -3345,7 +3445,7 @@ async function clickRooftopMinimapNavigation(
       plan.maxClickDistancePx
     }px clamped=${plan.wasVectorClamped ? "yes" : "no"} tilePx=${plan.minimapTilePx}px effectiveTilePx=${plan.effectiveMinimapTilePx.toFixed(
       2,
-    )} center=${plan.minimapCenter.x},${plan.minimapCenter.y} detectionScore=${
+    )} compass=${formatRooftopMinimapCompass(calibration)} center=${plan.minimapCenter.x},${plan.minimapCenter.y} detectionScore=${
       plan.minimapDetectionScore?.toFixed(2) ?? "n/a"
     } ${geometry.logDetails} detector=${plan.minimapDetectionSummary} projected=${plan.projectedScreenPoint.x},${plan.projectedScreenPoint.y} screen=${
       clicked.x
@@ -3715,8 +3815,12 @@ async function handleFaladorLoop(params: {
     let minimapDetails = "minimapNav=none";
     if (minimapNavTarget) {
       const minimapResult = await clickRooftopMinimapNavigation(state, tickWithCourse, minimapNavTarget);
+      state = minimapResult.state;
       if (minimapResult.clicked) {
-        return minimapResult.state;
+        return state;
+      }
+      if (minimapResult.skipReason === "camera-north-settling") {
+        return state;
       }
 
       minimapDetails = `minimapNav=skipped target=${toTargetLabel(
