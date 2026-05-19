@@ -1077,6 +1077,7 @@ type NearbyRooftopObject = {
 
 type NearbyRooftopCourseCandidate = {
   view: RooftopRegionView;
+  views: RooftopRegionView[];
   courseKey: string;
   nearestObject: OsrsCacheMapObject;
   rooftopObjectCount: number;
@@ -1169,27 +1170,41 @@ function scanNearbyRooftopCourseRegions(playerTile: WorldTile): NearbyRooftopCou
     readOsrsCacheMapRegionView({ regionX: region.regionX, regionY: region.regionY }),
   );
   const rooftopObjects: NearbyRooftopObject[] = [];
-  const candidates: NearbyRooftopCourseCandidate[] = [];
+  const courseObjectsByKey = new Map<string, NearbyRooftopObject[]>();
 
   for (const view of views) {
     const objectsByCourse = buildRooftopObjectsByCourse(view.objects);
     for (const [courseKey, objects] of objectsByCourse.entries()) {
       for (const object of objects) {
-        rooftopObjects.push({ view, object });
+        const rooftopObject = { view, object };
+        rooftopObjects.push(rooftopObject);
+        const courseObjects = courseObjectsByKey.get(courseKey) ?? [];
+        courseObjects.push(rooftopObject);
+        courseObjectsByKey.set(courseKey, courseObjects);
       }
-
-      const nearestObject = pickNearestMapObject(objects, playerTile);
-      if (!nearestObject) {
-        continue;
-      }
-
-      candidates.push({
-        view,
-        courseKey,
-        nearestObject,
-        rooftopObjectCount: objects.length,
-      });
     }
+  }
+
+  const candidates: NearbyRooftopCourseCandidate[] = [];
+  for (const [courseKey, objects] of courseObjectsByKey.entries()) {
+    const nearestObject = [...objects].sort((a, b) =>
+      compareMapObjectsByDistanceToPlayer(playerTile)(a.object, b.object),
+    )[0];
+    if (!nearestObject) {
+      continue;
+    }
+
+    const viewsByRegion = new Map<string, RooftopRegionView>();
+    for (const object of objects) {
+      viewsByRegion.set(`${object.view.regionX},${object.view.regionY}`, object.view);
+    }
+    candidates.push({
+      view: nearestObject.view,
+      views: [...viewsByRegion.values()].sort((a, b) => a.regionX - b.regionX || a.regionY - b.regionY),
+      courseKey,
+      nearestObject: nearestObject.object,
+      rooftopObjectCount: objects.length,
+    });
   }
 
   return {
@@ -1199,6 +1214,30 @@ function scanNearbyRooftopCourseRegions(playerTile: WorldTile): NearbyRooftopCou
     rooftopObjects,
     candidates: candidates.sort(compareNearbyRooftopCourseCandidates(playerTile)),
   };
+}
+
+function getRooftopRegionLabels(views: readonly RooftopRegionView[]): string {
+  return views.map((view) => `${view.regionX},${view.regionY}`).join(";");
+}
+
+function getRooftopCourseObjectsFromViews(
+  views: readonly RooftopRegionView[],
+  courseKey: string,
+): OsrsCacheMapObject[] {
+  const objects: OsrsCacheMapObject[] = [];
+  for (const view of views) {
+    for (const object of view.objects) {
+      if (getRooftopCourseKey(object) === courseKey) {
+        objects.push(object);
+      }
+    }
+  }
+
+  return objects;
+}
+
+function getRooftopCourseTilesFromViews(views: readonly RooftopRegionView[]): OsrsCacheMapTile[] {
+  return views.flatMap((view) => view.tiles);
 }
 
 function formatNearbyRooftopMapObjectSummary(candidate: NearbyRooftopObject, playerTile: WorldTile): string {
@@ -1212,9 +1251,9 @@ function formatNearbyRooftopCourseCandidateSummary(
   candidate: NearbyRooftopCourseCandidate,
   playerTile: WorldTile,
 ): string {
-  return `${formatRooftopCourseKey(candidate.courseKey)}@${candidate.view.regionX},${
-    candidate.view.regionY
-  } objects=${candidate.rooftopObjectCount} nearest=${formatRooftopMapObjectSummary(
+  return `${formatRooftopCourseKey(candidate.courseKey)}@${getRooftopRegionLabels(
+    candidate.views,
+  )} objects=${candidate.rooftopObjectCount} nearest=${formatRooftopMapObjectSummary(
     candidate.nearestObject,
     playerTile,
   )}`;
@@ -1241,12 +1280,13 @@ function pickCourseObjectForOrderEntry(
   );
 }
 
-function buildDynamicRooftopCourseFromRegionView(params: {
-  view: ReturnType<typeof readOsrsCacheMapRegionView>;
+function buildDynamicRooftopCourseFromRegionViews(params: {
+  views: readonly RooftopRegionView[];
+  sourceView: RooftopRegionView;
   playerTile: WorldTile;
   courseKey: string;
 }): FaladorCourse | null {
-  const courseObjects = params.view.objects.filter((object) => getRooftopCourseKey(object) === params.courseKey);
+  const courseObjects = getRooftopCourseObjectsFromViews(params.views, params.courseKey);
   if (courseObjects.length === 0) {
     return null;
   }
@@ -1277,7 +1317,7 @@ function buildDynamicRooftopCourseFromRegionView(params: {
     return null;
   }
 
-  const tilesByKey = buildCourseTilesByKey(params.view.tiles);
+  const tilesByKey = buildCourseTilesByKey(getRooftopCourseTilesFromViews(params.views));
   const { componentsById, componentIdByTileKey } = buildCourseWalkableComponents(tilesByKey);
   const courseWithoutSuccessZones: FaladorCourseConnectivity = {
     targets,
@@ -1289,9 +1329,9 @@ function buildDynamicRooftopCourseFromRegionView(params: {
   return {
     courseKey: params.courseKey,
     label: `${formatRooftopCourseKey(params.courseKey)} rooftop`,
-    regionX: params.view.regionX,
-    regionY: params.view.regionY,
-    cacheDirectoryPath: params.view.cacheDirectoryPath,
+    regionX: params.sourceView.regionX,
+    regionY: params.sourceView.regionY,
+    cacheDirectoryPath: params.sourceView.cacheDirectoryPath,
     targets,
     mapCacheObstacleCount: targets.length,
     missingMapCacheIds: [],
@@ -1305,8 +1345,9 @@ function buildDynamicRooftopCourseFromRegionView(params: {
 function loadNearestRooftopCourseFromNearbyRegions(playerTile: WorldTile): LoadedNearbyRooftopCourse | null {
   const scan = scanNearbyRooftopCourseRegions(playerTile);
   for (const candidate of scan.candidates) {
-    const course = buildDynamicRooftopCourseFromRegionView({
-      view: candidate.view,
+    const course = buildDynamicRooftopCourseFromRegionViews({
+      views: scan.views,
+      sourceView: candidate.view,
       playerTile,
       courseKey: candidate.courseKey,
     });
@@ -1364,7 +1405,9 @@ function withDynamicRooftopCourse(state: FaladorState, playerTile: WorldTile): F
       playerTile,
     )} playerRegion=${playerTile.regionX},${playerTile.regionY} courseRegion=${course.regionX},${
       course.regionY
-    } searchedRegions=${scan.regionLabels.join(";")} nearest=${formatRooftopMapObjectSummary(
+    } courseObjectRegions=${getRooftopRegionLabels(candidate.views)} searchedRegions=${scan.regionLabels.join(
+      ";",
+    )} nearest=${formatRooftopMapObjectSummary(
       candidate.nearestObject,
       playerTile,
     )} obstacles=${course.targets.length} mapCacheObstacles=${
