@@ -11,6 +11,9 @@ import {
 import {
   buildOsrsRegionCollision,
   CollisionFlag,
+  getBridgeAdjustedLocationZ,
+  getEffectiveTerrainPlane,
+  getEffectiveTerrainTile,
   getRegionCollisionFlags,
   isKnownWalkableBridgeSurfaceObject,
 } from "./region-collision";
@@ -33,6 +36,7 @@ export type OsrsCacheMapTile = {
   worldX: number;
   worldY: number;
   z: number;
+  terrainZ: number | null;
   flags: number;
   terrainSettings: number;
   height: number;
@@ -54,6 +58,7 @@ export type OsrsCacheMapObject = {
   worldX: number;
   worldY: number;
   z: number;
+  rawZ: number;
   sizeX: number;
   sizeY: number;
   definitionSizeX: number;
@@ -90,6 +95,7 @@ export type OsrsCacheMapIcon = {
   worldX: number;
   worldY: number;
   z: number;
+  rawZ: number;
 };
 
 export type OsrsCacheMapRegionView = {
@@ -183,7 +189,12 @@ function shouldIncludeMapObject(location: OsrsLocation, definition: OsrsObjectDe
   );
 }
 
-function toMapObject(location: OsrsLocation, definition: OsrsObjectDefinition): OsrsCacheMapObject {
+function toMapObject(
+  location: OsrsLocation,
+  definition: OsrsObjectDefinition,
+  mapRegion: ReturnType<typeof loadOsrsMapRegion>,
+): OsrsCacheMapObject {
+  const z = getBridgeAdjustedLocationZ(mapRegion, location.localX, location.localY, location.z);
   const footprint =
     location.type === 10 || location.type === 11 || location.type >= 12
       ? getRotatedFootprint(definition, location.orientation)
@@ -193,7 +204,7 @@ function toMapObject(location: OsrsLocation, definition: OsrsObjectDefinition): 
     objectId: location.id,
     worldX: location.worldX,
     worldY: location.worldY,
-    z: location.z,
+    z,
   });
 
   return {
@@ -205,7 +216,8 @@ function toMapObject(location: OsrsLocation, definition: OsrsObjectDefinition): 
     localY: location.localY,
     worldX: location.worldX,
     worldY: location.worldY,
-    z: location.z,
+    z,
+    rawZ: location.z,
     sizeX: footprint.sizeX,
     sizeY: footprint.sizeY,
     definitionSizeX: definition.sizeX,
@@ -228,7 +240,12 @@ function toMapObject(location: OsrsLocation, definition: OsrsObjectDefinition): 
   };
 }
 
-function toMapIcon(location: OsrsLocation, definition: OsrsObjectDefinition, areas: OsrsAreaDefinitionMap): OsrsCacheMapIcon | null {
+function toMapIcon(
+  location: OsrsLocation,
+  definition: OsrsObjectDefinition,
+  areas: OsrsAreaDefinitionMap,
+  mapRegion: ReturnType<typeof loadOsrsMapRegion>,
+): OsrsCacheMapIcon | null {
   if (definition.mapAreaId < 0) {
     return null;
   }
@@ -237,6 +254,8 @@ function toMapIcon(location: OsrsLocation, definition: OsrsObjectDefinition, are
   if (!area) {
     return null;
   }
+
+  const z = getBridgeAdjustedLocationZ(mapRegion, location.localX, location.localY, location.z);
 
   return {
     areaId: area.id,
@@ -256,7 +275,8 @@ function toMapIcon(location: OsrsLocation, definition: OsrsObjectDefinition, are
     localY: location.localY,
     worldX: location.worldX,
     worldY: location.worldY,
-    z: location.z,
+    z,
+    rawZ: location.z,
   };
 }
 
@@ -300,7 +320,8 @@ export function readOsrsCacheMapRegionView(params: {
     for (let z = 0; z < 4; z += 1) {
       for (let y = 0; y < 64; y += 1) {
         for (let x = 0; x < 64; x += 1) {
-          const terrainTile = mapRegion.tiles[z][x][y];
+          const terrainZ = getEffectiveTerrainPlane(mapRegion, x, y, z);
+          const terrainTile = getEffectiveTerrainTile(mapRegion, x, y, z) ?? mapRegion.tiles[z][x][y];
           const flags = getRegionCollisionFlags(collision, x, y, z);
           tiles.push({
             localX: x,
@@ -308,6 +329,7 @@ export function readOsrsCacheMapRegionView(params: {
             worldX: baseX + x,
             worldY: baseY + y,
             z,
+            terrainZ,
             flags,
             terrainSettings: terrainTile.settings,
             height: terrainTile.height,
@@ -330,13 +352,13 @@ export function readOsrsCacheMapRegionView(params: {
         continue;
       }
 
-      const icon = toMapIcon(location, definition, areaDefinitions);
+      const icon = toMapIcon(location, definition, areaDefinitions, mapRegion);
       if (icon) {
         icons.push(icon);
       }
 
       if (shouldIncludeMapObject(location, definition)) {
-        objects.push(toMapObject(location, definition));
+        objects.push(toMapObject(location, definition, mapRegion));
       }
     }
 

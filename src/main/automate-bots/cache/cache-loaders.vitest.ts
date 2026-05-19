@@ -3,7 +3,9 @@ import os from "os";
 import path from "path";
 import zlib from "zlib";
 import { afterEach, describe, expect, it } from "vitest";
+import { OSRS_AREA_DEFINITION_ARCHIVE_ID } from "./area-loader";
 import { decompressCacheContainer } from "./cache-container";
+import { readOsrsCacheMapRegionView } from "./cache-map-view";
 import {
   findOsrsCacheDirectory,
   openOsrsCacheStore,
@@ -458,6 +460,47 @@ describe("OSRS cache loaders", () => {
     });
 
     expect(isRegionTileBlocked(collision, 8, 9, 0)).toBe(true);
+  });
+
+  it("uses bridge render flags to expose logical object and terrain planes", async () => {
+    const regionX = 50;
+    const regionY = 50;
+    const regionArchiveId = getOsrsRegionArchiveId(regionX, regionY);
+    const mapData = createEmptyMapData({
+      "10,10,1": [51, 0],
+    });
+    const locationData = createLocationData({ id: 42, localX: 10, localY: 10, z: 3, type: 10, orientation: 0 });
+    const objectData = createObjectData({ sizeX: 1, sizeY: 1 });
+    const root = await createSyntheticCacheStore({
+      [`255:${OSRS_CACHE_INDEX_MAPS}`]: createReferenceTable([
+        {
+          id: regionArchiveId,
+          fileIds: [OSRS_MAP_TERRAIN_FILE_ID, OSRS_MAP_LOCATIONS_FILE_ID],
+        },
+      ]),
+      [`255:${OSRS_CACHE_INDEX_CONFIGS}`]: createReferenceTable([
+        {
+          id: OSRS_OBJECT_DEFINITION_ARCHIVE_ID,
+          fileIds: [42],
+        },
+        {
+          id: OSRS_AREA_DEFINITION_ARCHIVE_ID,
+          fileIds: [0],
+        },
+      ]),
+      [`${OSRS_CACHE_INDEX_MAPS}:${regionArchiveId}`]: createArchiveData([mapData, locationData]),
+      [`${OSRS_CACHE_INDEX_CONFIGS}:${OSRS_OBJECT_DEFINITION_ARCHIVE_ID}`]: createArchiveData([objectData]),
+      [`${OSRS_CACHE_INDEX_CONFIGS}:${OSRS_AREA_DEFINITION_ARCHIVE_ID}`]: createArchiveData([Buffer.from([0])]),
+    });
+
+    const view = readOsrsCacheMapRegionView({ regionX, regionY, cacheDirectoryPath: root });
+    const object = view.objects.find((candidate) => candidate.id === 42);
+    const logicalRoofTile = view.tiles.find((tile) => tile.localX === 10 && tile.localY === 10 && tile.z === 2);
+    const shiftedAwayTopTile = view.tiles.find((tile) => tile.localX === 10 && tile.localY === 10 && tile.z === 3);
+
+    expect(object).toMatchObject({ rawZ: 3, z: 2 });
+    expect(logicalRoofTile).toMatchObject({ z: 2, terrainZ: 3, blocked: true });
+    expect(shiftedAwayTopTile).toMatchObject({ z: 3, terrainZ: null, blocked: true });
   });
 
   it("loads map, locations, and object definitions from a real cache-store layout", async () => {

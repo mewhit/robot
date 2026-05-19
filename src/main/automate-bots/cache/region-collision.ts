@@ -157,35 +157,72 @@ export function isKnownWalkableBridgeSurfaceObject(
   return location.type === 10 && definition.name === "null" && LUMBRIDGE_BRIDGE_SURFACE_OBJECT_IDS.has(location.id);
 }
 
-function getEffectiveTerrainTile(mapRegion: OsrsMapRegion, localX: number, localY: number, z: number) {
-  const hasBridge = z < OSRS_PLANES - 1 && (mapRegion.tiles[1][localX][localY].settings & 2) !== 0;
-  const effectiveZ = z < OSRS_PLANES - 1 ? z + (hasBridge ? 1 : 0) : z;
-  return mapRegion.tiles[effectiveZ][localX][localY];
+export function hasBridgeRenderFlag(mapRegion: OsrsMapRegion, localX: number, localY: number): boolean {
+  return inBounds(localX, localY, 1) && (mapRegion.tiles[1][localX][localY].settings & 2) !== 0;
+}
+
+export function getBridgeAdjustedLocationZ(
+  mapRegion: OsrsMapRegion,
+  localX: number,
+  localY: number,
+  z: number,
+): number {
+  return z > 0 && hasBridgeRenderFlag(mapRegion, localX, localY) ? z - 1 : z;
+}
+
+export function getEffectiveTerrainPlane(
+  mapRegion: OsrsMapRegion,
+  localX: number,
+  localY: number,
+  z: number,
+): number | null {
+  if (!hasBridgeRenderFlag(mapRegion, localX, localY)) {
+    return z;
+  }
+
+  return z < OSRS_PLANES - 1 ? z + 1 : null;
+}
+
+export function getEffectiveTerrainTile(mapRegion: OsrsMapRegion, localX: number, localY: number, z: number) {
+  const terrainPlane = getEffectiveTerrainPlane(mapRegion, localX, localY, z);
+  return terrainPlane === null ? null : mapRegion.tiles[terrainPlane][localX][localY];
 }
 
 function isTerrainBlocked(mapRegion: OsrsMapRegion, localX: number, localY: number, z: number, blockNoFloorTiles: boolean): boolean {
   const terrainTile = getEffectiveTerrainTile(mapRegion, localX, localY, z);
+  if (!terrainTile) {
+    return true;
+  }
+
   const blocksMovementBySetting = (terrainTile.settings & 1) !== 0;
   const hasNoFloor = terrainTile.underlayId === 0 && terrainTile.overlayId === 0;
   return blocksMovementBySetting || (blockNoFloorTiles && hasNoFloor);
 }
 
-function applyLocation(collision: OsrsRegionCollision, location: OsrsLocation, definition: OsrsObjectDefinition): void {
+function applyLocation(
+  collision: OsrsRegionCollision,
+  mapRegion: OsrsMapRegion,
+  location: OsrsLocation,
+  definition: OsrsObjectDefinition,
+): void {
   if (definition.interactType === 0) {
     return;
   }
+
+  const effectiveZ = getBridgeAdjustedLocationZ(mapRegion, location.localX, location.localY, location.z);
+  const effectiveLocation = effectiveZ === location.z ? location : { ...location, z: effectiveZ };
 
   if (location.type >= 0 && location.type <= 3) {
     if (definition.wallOrDoor === 1 && definition.name === "Door") {
       return;
     }
 
-    addWallBlock(collision, location);
+    addWallBlock(collision, effectiveLocation);
     return;
   }
 
   if (location.type === 9) {
-    addRectangleBlock(collision, location.localX, location.localY, location.z, 1, 1, definition.blocksProjectile);
+    addRectangleBlock(collision, location.localX, location.localY, effectiveZ, 1, 1, definition.blocksProjectile);
     return;
   }
 
@@ -199,7 +236,7 @@ function applyLocation(collision: OsrsRegionCollision, location: OsrsLocation, d
 
   if (location.type === 10 || location.type === 11 || location.type >= 12) {
     const { sizeX, sizeY } = getRotatedFootprint(definition, location.orientation);
-    addRectangleBlock(collision, location.localX, location.localY, location.z, sizeX, sizeY, definition.blocksProjectile);
+    addRectangleBlock(collision, location.localX, location.localY, effectiveZ, sizeX, sizeY, definition.blocksProjectile);
     return;
   }
 }
@@ -235,7 +272,7 @@ export function buildOsrsRegionCollision(
       continue;
     }
 
-    applyLocation(collision, location, definition);
+    applyLocation(collision, mapRegion, location, definition);
   }
 
   return collision;
