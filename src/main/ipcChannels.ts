@@ -19,6 +19,8 @@ export const CHANNELS = {
   END_TO_END_CONFIG_STATE: "end-to-end-config-state",
   GET_END_TO_END_SECTION_ONE_CHECKLIST: "get-end-to-end-section-one-checklist",
   GET_END_TO_END_LATEST_PATH: "get-end-to-end-latest-path",
+  GET_ALL_IN_ONE_MINING_CONFIG: "get-all-in-one-mining-config",
+  SET_ALL_IN_ONE_MINING_CONFIG: "set-all-in-one-mining-config",
   GET_GUARDIAN_OF_THE_RIFT_CONFIG: "get-guardian-of-the-rift-config",
   SET_GUARDIAN_OF_THE_RIFT_CONFIG: "set-guardian-of-the-rift-config",
   GET_GUARDIAN_OF_THE_RIFT_COLOSSAL_POUCH_FILL_COUNT:
@@ -58,6 +60,8 @@ export const CHANNELS = {
   AUTOMATE_BOT_STATE: "automate-bot-state",
   AUTOMATE_BOT_LOG: "automate-bot-log",
   AUTOMATE_BOT_LOGS_STATE: "automate-bot-logs-state",
+  GET_LOG_REPORT_FILES: "get-log-report-files",
+  SEND_LOG_REPORT: "send-log-report",
   OUTPUT_FOLDER_STATE: "output-folder-state",
   CURSOR_POS: "cursor-pos",
   AUTOMATE_BOT_ERROR: "automate-bot-error",

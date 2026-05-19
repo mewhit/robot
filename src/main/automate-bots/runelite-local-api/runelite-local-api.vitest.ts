@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  fetchRuneLiteLocalApiInventory,
   fetchRuneLiteLocalApiSnapshot,
   formatRuneLiteLocalApiProbe,
   formatRuneLiteLocalApiSnapshot,
+  getRuneLiteLocalApiInventoryFreeSlots,
   hasRuneLiteLocalApiItemPayload,
 } from "./runelite-local-api";
 import { deriveWorldTile } from "../mapping/world-coordinate";
@@ -150,6 +152,61 @@ describe("RuneLite local API formatter", () => {
       { id: 13445, quantity: 1, slot: 3 },
       { id: 1755, quantity: 1, slot: 4 },
     ]);
+  });
+
+  it("computes inventory free slots from occupied slots", () => {
+    expect(
+      getRuneLiteLocalApiInventoryFreeSlots([
+        { id: 1351, quantity: 1, slot: 0 },
+        { id: 995, quantity: 50, slot: 5 },
+        { id: 1265, quantity: 1 },
+      ]),
+    ).toBe(25);
+  });
+
+  it("fetches inventory from the lightweight endpoint without probing all state", async () => {
+    const seenPaths: string[] = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      const pathname = new URL(String(input)).pathname;
+      seenPaths.push(pathname);
+      if (pathname === "/inv") {
+        return jsonResponse([
+          { id: 1351, quantity: 1, slot: 0 },
+          { id: 1265, quantity: 1, slot: 7 },
+        ]);
+      }
+
+      return notFoundResponse();
+    });
+
+    const inventory = await fetchRuneLiteLocalApiInventory();
+
+    expect(inventory.path).toBe("/inv");
+    expect(inventory.occupiedSlots).toBe(2);
+    expect(inventory.freeSlots).toBe(26);
+    expect(seenPaths).toEqual(["/inv"]);
+  });
+
+  it("parses wrapped inventory payloads from the lightweight endpoint", async () => {
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      const pathname = new URL(String(input)).pathname;
+      if (pathname === "/inv") {
+        return jsonResponse({
+          inventory: [
+            { id: 1351, quantity: 1, slot: 0 },
+            { id: 1265, quantity: 1, slot: 7 },
+            { id: 453, quantity: 12, slot: 9 },
+          ],
+        });
+      }
+
+      return notFoundResponse();
+    });
+
+    const inventory = await fetchRuneLiteLocalApiInventory();
+
+    expect(inventory.occupiedSlots).toBe(3);
+    expect(inventory.freeSlots).toBe(25);
   });
 
   it("parses player world tile data from location endpoints", async () => {

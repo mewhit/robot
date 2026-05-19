@@ -5,6 +5,7 @@ export const AGILITY_BOT_ID = AGILITY_FALADOR_ROOFTOP_BOT_ID;
 export const ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID = "attack-zamorak-warrior-safe-spot";
 export const COMBAT_AUTO_BOT_ID = "combat-auto";
 export const END_TO_END_BOT_ID = "end-to-end";
+export const MINING_ALL_IN_ONE_BOT_ID = "mining-all-in-one";
 export const MINING_GUILD_COAL_ORE_BOT_ID = "mining-guild-coal-ore";
 export const MINING_GUILD_MITHRIL_ORE_BOT_ID = "mining-guild-mithril-ore";
 export const MINING_MOTHERLODE_MINE_BOT_ID = "mining-motherlode-mine";
@@ -56,6 +57,7 @@ export type AutomateBotId =
   | typeof ATTACK_ZAMORAK_WARRIOR_SAFE_SPOT_BOT_ID
   | typeof COMBAT_AUTO_BOT_ID
   | typeof END_TO_END_BOT_ID
+  | typeof MINING_ALL_IN_ONE_BOT_ID
   | typeof MINING_GUILD_COAL_ORE_BOT_ID
   | typeof MINING_GUILD_MITHRIL_ORE_BOT_ID
   | typeof MINING_MOTHERLODE_MINE_BOT_ID
@@ -87,6 +89,12 @@ export const AUTOMATE_BOTS: AutomateBotDefinition[] = [
     id: COMBAT_AUTO_BOT_ID,
     name: "Auto",
     group: "Combat",
+  },
+  {
+    id: MINING_ALL_IN_ONE_BOT_ID,
+    name: "All-In-One (engine)",
+    group: "Mining",
+    versionName: "cached-map-v1",
   },
   {
     id: MINING_GUILD_COAL_ORE_BOT_ID,

@@ -35,7 +35,16 @@ export type RuneLiteLocalApiSnapshot = {
   probe: RuneLiteLocalApiProbe;
 };
 
+export type RuneLiteLocalApiInventorySnapshot = {
+  baseUrl: string;
+  path: string;
+  inventory: RuneLiteLocalApiItem[];
+  freeSlots: number;
+  occupiedSlots: number;
+};
+
 const DEFAULT_BASE_URLS = ["http://127.0.0.1:8080", "http://localhost:8080"];
+const INVENTORY_PATHS = ["/inv", "/inventory", "/api/inventory"];
 const PROBE_PATHS = [
   "/",
   "/stats",
@@ -57,6 +66,8 @@ const PROBE_PATHS = [
   "/api/equipment",
   "/api/events",
 ];
+
+let cachedInventoryUrl: string | null = null;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -258,6 +269,41 @@ function parseItemArray(value: unknown): RuneLiteLocalApiItem[] {
     .filter((entry): entry is RuneLiteLocalApiItem => entry !== null);
 }
 
+function parseInventoryPayload(value: unknown): RuneLiteLocalApiItem[] | null {
+  if (Array.isArray(value)) {
+    return parseItemArray(value);
+  }
+
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  for (const key of ["inventory", "items", "inv"]) {
+    if (Array.isArray(value[key])) {
+      return parseItemArray(value[key]);
+    }
+  }
+
+  return null;
+}
+
+export function getRuneLiteLocalApiInventoryFreeSlots(items: readonly RuneLiteLocalApiItem[]): number {
+  const occupiedSlotIndexes = new Set<number>();
+  let itemCountWithoutSlot = 0;
+
+  for (const item of items) {
+    if (Number.isInteger(item.slot) && item.slot !== undefined && item.slot >= 0 && item.slot < 28) {
+      occupiedSlotIndexes.add(item.slot);
+      continue;
+    }
+
+    itemCountWithoutSlot += 1;
+  }
+
+  const occupiedSlots = Math.min(28, occupiedSlotIndexes.size + itemCountWithoutSlot);
+  return Math.max(0, 28 - occupiedSlots);
+}
+
 function readFiniteNumber(record: Record<string, unknown>, keys: readonly string[]): number | null {
   for (const key of keys) {
     const value = Number(record[key]);
@@ -267,6 +313,66 @@ function readFiniteNumber(record: Record<string, unknown>, keys: readonly string
   }
 
   return null;
+}
+
+function parseInventoryUrl(url: string): { baseUrl: string; path: string } {
+  const parsed = new URL(url);
+  return {
+    baseUrl: `${parsed.protocol}//${parsed.host}`,
+    path: parsed.pathname,
+  };
+}
+
+async function fetchInventoryFromUrl(url: string, timeoutMs: number): Promise<RuneLiteLocalApiInventorySnapshot | null> {
+  const response = await probeUrl(url, timeoutMs);
+  if (!response?.json) {
+    return null;
+  }
+
+  const inventory = parseInventoryPayload(response.json);
+  if (!inventory) {
+    return null;
+  }
+
+  const freeSlots = getRuneLiteLocalApiInventoryFreeSlots(inventory);
+  const { baseUrl, path } = parseInventoryUrl(url);
+  return {
+    baseUrl,
+    path,
+    inventory,
+    freeSlots,
+    occupiedSlots: 28 - freeSlots,
+  };
+}
+
+export async function fetchRuneLiteLocalApiInventory(timeoutMs = 160): Promise<RuneLiteLocalApiInventorySnapshot> {
+  if (cachedInventoryUrl) {
+    try {
+      const snapshot = await fetchInventoryFromUrl(cachedInventoryUrl, timeoutMs);
+      if (snapshot) {
+        return snapshot;
+      }
+    } catch {
+      cachedInventoryUrl = null;
+    }
+  }
+
+  for (const baseUrl of DEFAULT_BASE_URLS) {
+    for (const inventoryPath of INVENTORY_PATHS) {
+      const url = `${baseUrl}${inventoryPath}`;
+      try {
+        const snapshot = await fetchInventoryFromUrl(url, timeoutMs);
+        if (snapshot) {
+          cachedInventoryUrl = url;
+          return snapshot;
+        }
+      } catch {
+        // Try the next local endpoint.
+      }
+    }
+  }
+
+  throw new Error("No RuneLite local HTTP inventory endpoint responded on localhost:8080.");
 }
 
 function parseWorldTileLike(value: unknown, depth = 0): WorldTile | null {
@@ -338,7 +444,11 @@ export async function fetchRuneLiteLocalApiSnapshot(timeoutMs = 350): Promise<Ru
   return {
     baseUrl: probe.baseUrl,
     skills: parseArray(getJsonByPath(probe, "/stats"), parseSkill),
-    inventory: parseItemArray(getJsonByPath(probe, "/inv") ?? getJsonByPath(probe, "/inventory") ?? getJsonByPath(probe, "/api/inventory")),
+    inventory:
+      parseInventoryPayload(getJsonByPath(probe, "/inv")) ??
+      parseInventoryPayload(getJsonByPath(probe, "/inventory")) ??
+      parseInventoryPayload(getJsonByPath(probe, "/api/inventory")) ??
+      [],
     equipment: parseItemArray(getJsonByPath(probe, "/equip") ?? getJsonByPath(probe, "/equipment") ?? getJsonByPath(probe, "/api/equipment")),
     playerTile: parsePlayerTile(probe),
     probe,

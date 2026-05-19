@@ -34,6 +34,11 @@ import {
   normalizeEndToEndConfig,
   type EndToEndConfig,
 } from "./automate-bots/end-to-end-config";
+import {
+  normalizeAllInOneMiningConfig,
+  type AllInOneMiningConfig,
+} from "./automate-bots/all-in-one-mining-config";
+import { openSendLogWindow } from "./logReporter";
 
 const WINDOW_CONFIG_FILE_NAME = "window-config.json";
 const DEFAULT_WINDOW_WIDTH = 1280;
@@ -52,6 +57,7 @@ type WindowConfig = {
   selectedAutomateBotId?: string;
   arceuusBloodRuneConfig?: ArceuusBloodRuneConfig;
   guardianOfTheRiftConfig?: GuardianOfTheRiftConfig;
+  allInOneMiningConfig?: AllInOneMiningConfig;
   endToEndConfig?: EndToEndConfig;
   colossalPouchFullFillCountSinceRepair?: number;
 };
@@ -123,6 +129,14 @@ function normalizeSavedEndToEndConfig(value: unknown): EndToEndConfig | undefine
   return normalizeEndToEndConfig(value);
 }
 
+function normalizeSavedAllInOneMiningConfig(value: unknown): AllInOneMiningConfig | undefined {
+  if (typeof value === "undefined") {
+    return undefined;
+  }
+
+  return normalizeAllInOneMiningConfig(value);
+}
+
 function toValidWindowConfig(raw: unknown): WindowConfig | null {
   if (!raw || typeof raw !== "object") {
     return null;
@@ -153,6 +167,7 @@ function toValidWindowConfig(raw: unknown): WindowConfig | null {
     selectedAutomateBotId: normalizeSelectedAutomateBotId(candidate.selectedAutomateBotId),
     arceuusBloodRuneConfig: normalizeSavedArceuusBloodRuneConfig(candidate.arceuusBloodRuneConfig),
     guardianOfTheRiftConfig: normalizeSavedGuardianOfTheRiftConfig(candidate.guardianOfTheRiftConfig),
+    allInOneMiningConfig: normalizeSavedAllInOneMiningConfig(candidate.allInOneMiningConfig),
     endToEndConfig: normalizeSavedEndToEndConfig(candidate.endToEndConfig),
     colossalPouchFullFillCountSinceRepair: normalizeColossalPouchFullFillCount(candidate.colossalPouchFullFillCountSinceRepair),
   };
@@ -239,6 +254,7 @@ function writeWindowConfig(window: BrowserWindow) {
     selectedAutomateBotId: currentConfig?.selectedAutomateBotId,
     arceuusBloodRuneConfig: currentConfig?.arceuusBloodRuneConfig,
     guardianOfTheRiftConfig: currentConfig?.guardianOfTheRiftConfig,
+    allInOneMiningConfig: currentConfig?.allInOneMiningConfig,
     endToEndConfig: currentConfig?.endToEndConfig,
     colossalPouchFullFillCountSinceRepair: currentConfig?.colossalPouchFullFillCountSinceRepair,
   };
@@ -291,6 +307,10 @@ export function getSavedArceuusBloodRuneConfig(): ArceuusBloodRuneConfig {
 
 export function getSavedEndToEndConfig(): EndToEndConfig {
   return normalizeEndToEndConfig(readWindowConfig()?.endToEndConfig);
+}
+
+export function getSavedAllInOneMiningConfig(): AllInOneMiningConfig {
+  return normalizeAllInOneMiningConfig(readWindowConfig()?.allInOneMiningConfig);
 }
 
 export function sendEndToEndConfigState(config: EndToEndConfig = getSavedEndToEndConfig()): void {
@@ -385,6 +405,17 @@ export function setSavedEndToEndConfig(nextConfig: EndToEndConfig) {
   const configPath = getWindowConfigPath();
   fs.writeFileSync(configPath, JSON.stringify(payload, null, 2), "utf8");
   sendEndToEndConfigState(normalizedConfig);
+}
+
+export function setSavedAllInOneMiningConfig(nextConfig: AllInOneMiningConfig) {
+  const existing = readWindowConfig() ?? getWindowConfigFallback();
+  const payload: WindowConfig = {
+    ...existing,
+    allInOneMiningConfig: normalizeAllInOneMiningConfig(nextConfig),
+  };
+
+  const configPath = getWindowConfigPath();
+  fs.writeFileSync(configPath, JSON.stringify(payload, null, 2), "utf8");
 }
 
 export function setSavedColossalPouchFullFillCountSinceRepair(nextCount: number): void {
@@ -940,6 +971,16 @@ export function buildAppMenu() {
       ],
     });
   }
+
+  menu.push({
+    label: "Help",
+    submenu: [
+      {
+        label: "Send Log",
+        click: () => openSendLogWindow(),
+      },
+    ],
+  });
 
   const builtMenu = Menu.buildFromTemplate(menu);
   Menu.setApplicationMenu(builtMenu);

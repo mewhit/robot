@@ -4,7 +4,7 @@ import { AppState } from "./global-state";
 import { CHANNELS } from "./ipcChannels";
 
 const MAX_AUTOMATE_BOT_LOG_LINES = 5_000;
-const AUTOMATE_BOT_LOGS_DIR = path.resolve("./automate-bot-logs");
+export const AUTOMATE_BOT_LOGS_DIR = path.resolve("./automate-bot-logs");
 
 const automateBotLogLines: string[] = [];
 

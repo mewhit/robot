@@ -91,9 +91,14 @@ type WorldCollisionLoadCache = {
   missingRegions: Map<string, string>;
 };
 
+type WorldRoutePlannerRuntimeCache = WorldCollisionLoadCache & {
+  objectDefinitions: OsrsObjectDefinitionMap | null;
+};
+
 const DEFAULT_WAYPOINT_STEP_LIMIT = 14;
 const DEFAULT_MAX_CROSS_REGION_COUNT = 16;
 const DEFAULT_WORLD_ROUTE_COLLISION_OPTIONS: BuildRegionCollisionOptions = {};
+const runtimeCaches = new Map<string, WorldRoutePlannerRuntimeCache>();
 
 const CARDINALS = [
   { dx: 0, dy: 1, fromFlag: CollisionFlag.North, toFlag: CollisionFlag.South },
@@ -112,6 +117,39 @@ const DIRECTIONS = [
 
 function getRegionKey(regionX: number, regionY: number): string {
   return `${regionX},${regionY}`;
+}
+
+function getRuntimeCacheKey(options: Pick<PlanWorldRouteOptions, "cacheDirectoryPath" | "collisionOptions">): string {
+  return `${options.cacheDirectoryPath ?? "default"}|${JSON.stringify(options.collisionOptions ?? DEFAULT_WORLD_ROUTE_COLLISION_OPTIONS)}`;
+}
+
+function getWorldRoutePlannerRuntimeCache(options: Pick<PlanWorldRouteOptions, "cacheDirectoryPath" | "collisionOptions">): WorldRoutePlannerRuntimeCache {
+  const key = getRuntimeCacheKey(options);
+  const existing = runtimeCaches.get(key);
+  if (existing) {
+    return existing;
+  }
+
+  const created: WorldRoutePlannerRuntimeCache = {
+    collisions: new Map(),
+    missingRegions: new Map(),
+    objectDefinitions: null,
+  };
+  runtimeCaches.set(key, created);
+  return created;
+}
+
+function isRegionBoundsCached(bounds: WorldRouteRegionBounds, cache: WorldCollisionLoadCache): boolean {
+  for (let regionX = bounds.minRegionX; regionX <= bounds.maxRegionX; regionX += 1) {
+    for (let regionY = bounds.minRegionY; regionY <= bounds.maxRegionY; regionY += 1) {
+      const key = getRegionKey(regionX, regionY);
+      if (!cache.collisions.has(key) && !cache.missingRegions.has(key)) {
+        return false;
+      }
+    }
+  }
+
+  return true;
 }
 
 function getTileKey(tile: WorldRouteTile): string {
@@ -226,8 +264,8 @@ function buildRegionBoundCandidates(
 
 function loadWorldCollisionGrid(
   bounds: Pick<WorldCollisionGrid, "minRegionX" | "maxRegionX" | "minRegionY" | "maxRegionY">,
-  store: OsrsCacheStore,
-  objectDefinitions: OsrsObjectDefinitionMap,
+  store: OsrsCacheStore | null,
+  objectDefinitions: OsrsObjectDefinitionMap | null,
   loadCache: WorldCollisionLoadCache,
   blockedTiles: readonly WorldRouteTile[] = [],
   collisionOptions: BuildRegionCollisionOptions = DEFAULT_WORLD_ROUTE_COLLISION_OPTIONS,
@@ -246,6 +284,13 @@ function loadWorldCollisionGrid(
       const cachedMissingReason = loadCache.missingRegions.get(regionKey);
       if (cachedMissingReason) {
         missingRegionSummaries.push(cachedMissingReason);
+        continue;
+      }
+
+      if (!store || !objectDefinitions) {
+        const missingSummary = `${regionX},${regionY}: cache store not open for uncached collision region`;
+        loadCache.missingRegions.set(regionKey, missingSummary);
+        missingRegionSummaries.push(missingSummary);
         continue;
       }
 
@@ -631,15 +676,18 @@ export function planWorldRouteToTiles(playerTile: WorldTile, options: PlanWorldR
   let result: WorldRouteSearchResult | null = null;
   let searchedRegionWindowCount = 0;
   const missingRegionSummaries = new Set<string>();
-  const loadCache: WorldCollisionLoadCache = {
-    collisions: new Map(),
-    missingRegions: new Map(),
-  };
+  const runtimeCache = getWorldRoutePlannerRuntimeCache(options);
   let store: OsrsCacheStore | null = null;
-  let objectDefinitions: OsrsObjectDefinitionMap;
+  let objectDefinitions: OsrsObjectDefinitionMap | null = runtimeCache.objectDefinitions;
   try {
-    store = openOsrsCacheStore(options.cacheDirectoryPath);
-    objectDefinitions = loadOsrsObjectDefinitionsFromCache(store);
+    const needsUncachedRegionLoad = regionBoundCandidates.some((bounds) => !isRegionBoundsCached(bounds, runtimeCache));
+    if (needsUncachedRegionLoad) {
+      store = openOsrsCacheStore(options.cacheDirectoryPath);
+      if (!objectDefinitions) {
+        objectDefinitions = loadOsrsObjectDefinitionsFromCache(store);
+        runtimeCache.objectDefinitions = objectDefinitions;
+      }
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return {
@@ -664,7 +712,7 @@ export function planWorldRouteToTiles(playerTile: WorldTile, options: PlanWorldR
         regionBounds,
         store,
         objectDefinitions,
-        loadCache,
+        runtimeCache,
         options.blockedTiles ?? [],
         options.collisionOptions ?? DEFAULT_WORLD_ROUTE_COLLISION_OPTIONS,
       );

@@ -14,6 +14,11 @@ import {
   GUARDIAN_OF_THE_RIFT_POUCHES,
   getGuardianOfTheRiftColossalPouchStats,
 } from "../main/automate-bots/guardian-of-the-rift-config";
+import type {
+  AllInOneMiningConfig,
+  AllInOneMiningOreDefinition,
+  AllInOneMiningOreType,
+} from "../main/automate-bots/all-in-one-mining-config";
 
 type TaskNode = {
   id: string;
@@ -37,6 +42,9 @@ type AutomateBotProps = {
   showGuardianOfTheRiftConfig: boolean;
   guardianOfTheRiftElements: readonly GuardianOfTheRiftActiveElement[];
   guardianOfTheRiftConfig: GuardianOfTheRiftConfig;
+  showAllInOneMiningConfig: boolean;
+  allInOneMiningOreTypes: readonly AllInOneMiningOreDefinition[];
+  allInOneMiningConfig: AllInOneMiningConfig;
   onToggleTaskNodeExpand: (id: string) => void;
   onSelectTaskNode: (id: string) => void;
   onToggleSelectedTaskRun: (taskNodeId?: string) => void;
@@ -47,6 +55,7 @@ type AutomateBotProps = {
   onGuardianOfTheRiftUseAgilityCourseChange: (enabled: boolean) => void;
   onGuardianOfTheRiftRunecraftLevelChange: (level: number) => void;
   onGuardianOfTheRiftPouchChange: (pouch: GuardianOfTheRiftPouch, enabled: boolean) => void;
+  onAllInOneMiningOreEnabledChange: (oreType: AllInOneMiningOreType, enabled: boolean) => void;
   colossalPouchFullFillCount: number;
   onGuardianOfTheRiftColossalFillCountChange: (count: number) => void;
 };
@@ -320,6 +329,9 @@ export default function AutomateBot(props: AutomateBotProps) {
     showGuardianOfTheRiftConfig,
     guardianOfTheRiftElements,
     guardianOfTheRiftConfig,
+    showAllInOneMiningConfig,
+    allInOneMiningOreTypes,
+    allInOneMiningConfig,
     onToggleTaskNodeExpand,
     onSelectTaskNode,
     onToggleSelectedTaskRun,
@@ -327,12 +339,13 @@ export default function AutomateBot(props: AutomateBotProps) {
     onEndToEndChecklistRefresh,
     onEndToEndChecklistStepChange,
     onGuardianOfTheRiftElementEnabledChange,
-  onGuardianOfTheRiftUseAgilityCourseChange,
-  onGuardianOfTheRiftRunecraftLevelChange,
-  onGuardianOfTheRiftPouchChange,
-  colossalPouchFullFillCount,
-  onGuardianOfTheRiftColossalFillCountChange,
-} = props;
+    onGuardianOfTheRiftUseAgilityCourseChange,
+    onGuardianOfTheRiftRunecraftLevelChange,
+    onGuardianOfTheRiftPouchChange,
+    onAllInOneMiningOreEnabledChange,
+    colossalPouchFullFillCount,
+    onGuardianOfTheRiftColossalFillCountChange,
+  } = props;
 
   const logContainerRef = useRef<HTMLDivElement | null>(null);
   const visibleLogLines = useMemo(() => logLines.slice(-500), [logLines]);
@@ -488,6 +501,30 @@ export default function AutomateBot(props: AutomateBotProps) {
                       type="checkbox"
                       checked={enabled}
                       onChange={(e) => onGuardianOfTheRiftElementEnabledChange(element, e.target.checked)}
+                    />
+                    <span className="automatebot-toggle-value">{enabled ? "Yes" : "No"}</span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        )}
+        {showAllInOneMiningConfig && (
+          <div className="automatebot-config-panel">
+            <h3 className="automatebot-config-title">All-In-One Mining</h3>
+            <p className="automatebot-config-subtitle">Ore rocks</p>
+            <div className="automatebot-element-grid">
+              {allInOneMiningOreTypes.map((ore) => {
+                const oreType = ore.id as AllInOneMiningOreType;
+                const enabled = allInOneMiningConfig.enabledOreTypes[oreType] === true;
+
+                return (
+                  <label key={ore.id} className="automatebot-toggle-row automatebot-toggle-row-small">
+                    <span className="automatebot-toggle-label">{ore.label}</span>
+                    <input
+                      type="checkbox"
+                      checked={enabled}
+                      onChange={(e) => onAllInOneMiningOreEnabledChange(oreType, e.target.checked)}
                     />
                     <span className="automatebot-toggle-value">{enabled ? "Yes" : "No"}</span>
                   </label>

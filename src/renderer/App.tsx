@@ -9,6 +9,7 @@ import {
   AUTOMATE_BOTS,
   DEFAULT_AUTOMATE_BOT_ID,
   END_TO_END_BOT_ID,
+  MINING_ALL_IN_ONE_BOT_ID,
   RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID,
   normalizeAutomateBotId,
 } from "../main/automate-bots/definitions";
@@ -28,6 +29,14 @@ import {
   normalizeGuardianOfTheRiftConfig,
   normalizeGuardianOfTheRiftRunecraftLevel,
 } from "../main/automate-bots/guardian-of-the-rift-config";
+import {
+  ALL_IN_ONE_MINING_ORE_TYPES,
+  createDefaultAllInOneMiningConfig,
+  normalizeAllInOneMiningConfig,
+  setAllInOneMiningOreTypeEnabled,
+  type AllInOneMiningConfig,
+  type AllInOneMiningOreType,
+} from "../main/automate-bots/all-in-one-mining-config";
 import { CHANNELS } from "../main/ipcChannels";
 
 const AUTOMATE_BOT_MAX_VISIBLE_LOG_LINES = 500;
@@ -235,6 +244,9 @@ export default function App() {
   const [endToEndChecklistError, setEndToEndChecklistError] = useState<string | null>(null);
   const [guardianOfTheRiftConfig, setGuardianOfTheRiftConfig] = useState<GuardianOfTheRiftConfig>(() =>
     createDefaultGuardianOfTheRiftConfig(),
+  );
+  const [allInOneMiningConfig, setAllInOneMiningConfig] = useState<AllInOneMiningConfig>(() =>
+    createDefaultAllInOneMiningConfig(),
   );
   const [guardianOfTheRiftColossalFillCount, setGuardianOfTheRiftColossalFillCount] = useState(0);
   const [debugFolderFiles, setDebugFolderFiles] = useState<string[]>([]);
@@ -500,6 +512,19 @@ export default function App() {
         }
 
         setGuardianOfTheRiftConfig(result.config);
+      })
+      .catch(() => {
+        // Ignore non-critical config read failures.
+      });
+
+    void ipcRenderer
+      .invoke(CHANNELS.GET_ALL_IN_ONE_MINING_CONFIG)
+      .then((result: { ok?: boolean; config?: AllInOneMiningConfig }) => {
+        if (!result?.ok || !result.config) {
+          return;
+        }
+
+        setAllInOneMiningConfig(normalizeAllInOneMiningConfig(result.config));
       })
       .catch(() => {
         // Ignore non-critical config read failures.
@@ -832,6 +857,18 @@ export default function App() {
       const next = normalizeGuardianOfTheRiftConfig(merged);
 
       void ipcRenderer.invoke(CHANNELS.SET_GUARDIAN_OF_THE_RIFT_CONFIG, next).catch(() => {
+        // Ignore non-critical config write failures.
+      });
+
+      return next;
+    });
+  }, []);
+
+  const handleAllInOneMiningOreEnabledChange = useCallback((oreType: AllInOneMiningOreType, enabled: boolean) => {
+    setAllInOneMiningConfig((prev) => {
+      const next = setAllInOneMiningOreTypeEnabled(prev, oreType, enabled);
+
+      void ipcRenderer.invoke(CHANNELS.SET_ALL_IN_ONE_MINING_CONFIG, next).catch(() => {
         // Ignore non-critical config write failures.
       });
 
@@ -1633,6 +1670,9 @@ export default function App() {
             showGuardianOfTheRiftConfig={selectedTaskNodeId === RUNECRAFTING_GUARDIAN_OF_THE_RIFT_BOT_ID}
             guardianOfTheRiftElements={GUARDIAN_OF_THE_RIFT_ACTIVE_ELEMENTS}
             guardianOfTheRiftConfig={guardianOfTheRiftConfig}
+            showAllInOneMiningConfig={selectedTaskNodeId === MINING_ALL_IN_ONE_BOT_ID}
+            allInOneMiningOreTypes={ALL_IN_ONE_MINING_ORE_TYPES}
+            allInOneMiningConfig={allInOneMiningConfig}
             onToggleTaskNodeExpand={handleToggleTaskNodeExpand}
             onSelectTaskNode={setSelectedTaskNodeId}
             onToggleSelectedTaskRun={(taskNodeId) => void handleToggleSelectedTaskRun(taskNodeId)}
@@ -1643,6 +1683,7 @@ export default function App() {
             onGuardianOfTheRiftUseAgilityCourseChange={handleGuardianOfTheRiftUseAgilityCourseChange}
             onGuardianOfTheRiftRunecraftLevelChange={handleGuardianOfTheRiftRunecraftLevelChange}
             onGuardianOfTheRiftPouchChange={handleGuardianOfTheRiftPouchChange}
+            onAllInOneMiningOreEnabledChange={handleAllInOneMiningOreEnabledChange}
             colossalPouchFullFillCount={guardianOfTheRiftColossalFillCount}
             onGuardianOfTheRiftColossalFillCountChange={handleGuardianOfTheRiftColossalFillCountChange}
           />

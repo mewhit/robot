@@ -23,12 +23,14 @@ import {
   getSavedArceuusBloodRuneConfig,
   getSavedGuardianOfTheRiftConfig,
   getSavedEndToEndConfig,
+  getSavedAllInOneMiningConfig,
   getSavedColossalPouchFullFillCountSinceRepair,
   setSavedScreenshotNameSuffix,
   setSavedScreenshotSavePath,
   setSavedArceuusBloodRuneConfig,
   setSavedGuardianOfTheRiftConfig,
   setSavedEndToEndConfig,
+  setSavedAllInOneMiningConfig,
   setSavedColossalPouchFullFillCountSinceRepair,
 } from "./csvOperator";
 import {
@@ -40,6 +42,10 @@ import {
   type GuardianOfTheRiftConfig,
 } from "./automate-bots/guardian-of-the-rift-config";
 import { normalizeEndToEndConfig, type EndToEndConfig } from "./automate-bots/end-to-end-config";
+import {
+  normalizeAllInOneMiningConfig,
+  type AllInOneMiningConfig,
+} from "./automate-bots/all-in-one-mining-config";
 import { readGuardianOfTheRiftRunStatsSnapshot } from "./guardianOfTheRiftRunStats";
 import { readActiveFileRows } from "./csvOperations";
 import { resolveInsideOutputFolder } from "./fileManager";
@@ -66,6 +72,7 @@ import {
 } from "./automateBotManager";
 import { runAgilityScreenshotCapture } from "./automate-bots/shared/screenshot-capture";
 import { sendAutomateBotLogs } from "./automateBotLogs";
+import { listLogReportFiles, sendLogReport } from "./logReporter";
 import { CHANNELS } from "./ipcChannels";
 import { readOsrsCacheMapRegionView } from "./automate-bots/cache/cache-map-view";
 import { fetchEndToEndSectionOneChecklist } from "./automate-bots/end-to-end/guide-checklist";
@@ -152,6 +159,26 @@ export function setupIpcHandlers() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`Could not start automate bot from step: ${message}`);
+      return { ok: false, error: message };
+    }
+  });
+
+  ipcMain.handle(CHANNELS.GET_LOG_REPORT_FILES, async () => {
+    try {
+      return { ok: true, files: listLogReportFiles() };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Could not list log report files: ${message}`);
+      return { ok: false, error: message };
+    }
+  });
+
+  ipcMain.handle(CHANNELS.SEND_LOG_REPORT, async (_event, logFilePath: string) => {
+    try {
+      return await sendLogReport(logFilePath);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Could not send log report: ${message}`);
       return { ok: false, error: message };
     }
   });
@@ -343,6 +370,30 @@ export function setupIpcHandlers() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`Could not get Guardian of the Rift config: ${message}`);
+      return { ok: false, error: message };
+    }
+  });
+
+  ipcMain.handle(CHANNELS.GET_ALL_IN_ONE_MINING_CONFIG, () => {
+    try {
+      return {
+        ok: true,
+        config: getSavedAllInOneMiningConfig(),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Could not get All-In-One Mining config: ${message}`);
+      return { ok: false, error: message };
+    }
+  });
+
+  ipcMain.handle(CHANNELS.SET_ALL_IN_ONE_MINING_CONFIG, (_event, config: AllInOneMiningConfig) => {
+    try {
+      setSavedAllInOneMiningConfig(normalizeAllInOneMiningConfig(config));
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Could not save All-In-One Mining config: ${message}`);
       return { ok: false, error: message };
     }
   });
