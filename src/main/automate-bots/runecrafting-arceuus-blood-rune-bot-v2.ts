@@ -57,6 +57,8 @@ import { holdRobotKey, tapRobotKey } from "./shared/robot-keyboard";
 import { readStartupPlayerTileCalibration, type StartupPlayerTileCalibration } from "./shared/startup-calibration";
 import {
   MINIMAP_CLICK_CALIBRATION_DEFAULT_STABLE_TICKS,
+  getMinimapClickCalibrationProfile,
+  getMinimapClickCalibrationProfileKey,
   createMinimapClickCalibrationState,
   invalidateMinimapClickCalibration,
   observeMinimapClickCalibration,
@@ -77,6 +79,7 @@ import {
   projectWorldTileToMinimapClick,
   type MinimapWorldProjectionAxes,
 } from "./shared/minimap-world-clicker";
+import { projectSavedSceneMouseCalibrationWorldTile } from "./shared/scene-mouse-calibration";
 import {
   detectOsrsRunModeFromMinimap,
   formatOsrsRunModeDetection,
@@ -507,8 +510,11 @@ function screenPointToLocal(calibration: StartupPlayerTileCalibration, point: Sc
   };
 }
 
-function getSharedMinimapClickCalibrationOptions(): Partial<MinimapClickCalibrationOptions> {
+function getSharedMinimapClickCalibrationOptions(
+  calibration: StartupPlayerTileCalibration | null = null,
+): Partial<MinimapClickCalibrationOptions> {
   return {
+    profile: calibration ? getMinimapClickCalibrationProfile(calibration) : null,
     defaultRadiusRatio: ARCEUUS_MINIMAP_MAX_CLICK_RADIUS_RATIO,
     tilePxScaleMin: ARCEUUS_MINIMAP_LEARN_TILE_SCALE_MIN,
     tilePxScaleMax: ARCEUUS_MINIMAP_LEARN_TILE_SCALE_MAX,
@@ -521,9 +527,10 @@ function getSharedMinimapClickCalibrationOptions(): Partial<MinimapClickCalibrat
 
 function createArceuusMinimapMovementLearningState(
   savedCalibration: MinimapClickSavedCalibration | null = null,
+  calibration: StartupPlayerTileCalibration | null = null,
 ): ArceuusMinimapMovementLearningState {
   return {
-    ...createMinimapClickCalibrationState(savedCalibration, getSharedMinimapClickCalibrationOptions()),
+    ...createMinimapClickCalibrationState(savedCalibration, getSharedMinimapClickCalibrationOptions(calibration)),
     nextSampleId: 1,
     pending: null,
     acceptedSamples: 0,
@@ -531,23 +538,17 @@ function createArceuusMinimapMovementLearningState(
   };
 }
 
-function resetArceuusMinimapMovementLearning(reason: string): void {
-  const savedCalibration = readSavedMinimapClickCalibration(getSharedMinimapClickCalibrationOptions());
+function resetArceuusMinimapMovementLearning(reason: string, calibration: StartupPlayerTileCalibration | null = null): void {
+  const calibrationOptions = getSharedMinimapClickCalibrationOptions(calibration);
+  const savedCalibration = calibration ? readSavedMinimapClickCalibration(calibrationOptions) : null;
   const savedCalibrationIsCompatible =
     !savedCalibration ||
     savedCalibration.radiusRatio <= ARCEUUS_MINIMAP_LEARN_RADIUS_RATIO_MAX + 0.001;
-  const effectiveSavedCalibration = savedCalibrationIsCompatible && savedCalibration
-    ? {
-        ...savedCalibration,
-        radiusRatio: Math.max(savedCalibration.radiusRatio, ARCEUUS_MINIMAP_MAX_CLICK_RADIUS_RATIO),
-      }
-    : null;
-  arceuusMinimapMovementLearning = createArceuusMinimapMovementLearningState(effectiveSavedCalibration);
+  const effectiveSavedCalibration = savedCalibrationIsCompatible ? savedCalibration : null;
+  arceuusMinimapMovementLearning = createArceuusMinimapMovementLearningState(effectiveSavedCalibration, calibration);
   const calibrationSource = savedCalibration
     ? savedCalibrationIsCompatible
-      ? effectiveSavedCalibration && effectiveSavedCalibration.radiusRatio !== savedCalibration.radiusRatio
-        ? `loaded-radius-bumped ${savedCalibration.radiusRatio.toFixed(3)}->${effectiveSavedCalibration.radiusRatio.toFixed(3)}`
-        : "loaded"
+      ? "loaded"
       : `stale-reset savedRadiusRatio=${savedCalibration.radiusRatio.toFixed(3)} maxRadiusRatio=${ARCEUUS_MINIMAP_LEARN_RADIUS_RATIO_MAX.toFixed(3)}`
     : "fresh";
   logWithDelta(
@@ -557,8 +558,22 @@ function resetArceuusMinimapMovementLearning(reason: string): void {
       3,
     )} radiusRatio=${arceuusMinimapMovementLearning.radiusRatio.toFixed(3)} offset=${arceuusMinimapMovementLearning.projectionOffsetLocalX.toFixed(
       1,
-    )},${arceuusMinimapMovementLearning.projectionOffsetLocalY.toFixed(1)} path=${arceuusMinimapMovementLearning.savedCalibrationPath ?? "none"}.`,
+    )},${arceuusMinimapMovementLearning.projectionOffsetLocalY.toFixed(1)} profile=${
+      arceuusMinimapMovementLearning.calibrationProfileKey ?? "none"
+    } path=${arceuusMinimapMovementLearning.savedCalibrationPath ?? "none"}.`,
   );
+}
+
+function ensureArceuusMinimapMovementLearningProfile(
+  calibration: StartupPlayerTileCalibration,
+  reason: string,
+): void {
+  const profileKey = getMinimapClickCalibrationProfileKey(getMinimapClickCalibrationProfile(calibration));
+  if (arceuusMinimapMovementLearning.calibrationProfileKey === profileKey) {
+    return;
+  }
+
+  resetArceuusMinimapMovementLearning(reason, calibration);
 }
 
 function getNearestRoutePathIndex(
@@ -793,7 +808,7 @@ function observeArceuusMinimapMovement(
           effectiveTilePx: pending.effectiveMinimapTilePx,
           sourceCalibration: options.sourceCalibration ?? null,
         },
-        getSharedMinimapClickCalibrationOptions(),
+        getSharedMinimapClickCalibrationOptions(options.sourceCalibration ?? null),
       );
       calibrationSummary = `${calibrationObservation.summary}${calibrationObservation.saved ? "-saved" : ""}`;
     } else {
@@ -827,7 +842,7 @@ function observeArceuusMinimapMovement(
         state,
         options.sourceCalibration ?? null,
         rejectedErrorTiles,
-        getSharedMinimapClickCalibrationOptions(),
+        getSharedMinimapClickCalibrationOptions(options.sourceCalibration ?? null),
       );
       calibrationSummary = `startup-check-rejected-reset${saved ? "-saved" : ""}`;
     }
@@ -1695,13 +1710,21 @@ function projectWorldTileInsideCapture(
   playerTile: WorldRouteTile,
   targetTile: WorldRouteTile,
   safeEdgeMarginPx: number,
-): { screenPoint: ScreenPoint; localPoint: ScreenPoint } | null {
-  const screenPoint = projectWorldTileToScreen(calibration, playerTile, targetTile);
+): {
+  screenPoint: ScreenPoint;
+  localPoint: ScreenPoint;
+  projectionSource: "saved-3d-calibration" | "rough-model";
+  calibrationSampleCount: number | null;
+  calibrationMeanErrorPx: number | null;
+} | null {
+  const savedProjection = projectSavedSceneMouseCalibrationWorldTile(calibration, playerTile, targetTile);
+  const roughScreenPoint = savedProjection ? null : projectWorldTileToScreen(calibration, playerTile, targetTile);
+  const screenPoint = savedProjection?.screenPoint ?? roughScreenPoint;
   if (!screenPoint) {
     return null;
   }
 
-  const localPoint = screenPointToLocal(calibration, screenPoint);
+  const localPoint = savedProjection?.localPoint ?? screenPointToLocal(calibration, screenPoint);
   if (
     localPoint.x < safeEdgeMarginPx ||
     localPoint.y < safeEdgeMarginPx ||
@@ -1711,7 +1734,13 @@ function projectWorldTileInsideCapture(
     return null;
   }
 
-  return { screenPoint, localPoint };
+  return {
+    screenPoint,
+    localPoint,
+    projectionSource: savedProjection?.source ?? "rough-model",
+    calibrationSampleCount: savedProjection?.sampleCount ?? null,
+    calibrationMeanErrorPx: savedProjection?.meanErrorPx ?? null,
+  };
 }
 
 function getScaleFromCalibration(calibration: StartupPlayerTileCalibration): number {
@@ -2252,6 +2281,7 @@ function projectWorldTileToMinimap(
     return null;
   }
 
+  ensureArceuusMinimapMovementLearningProfile(calibration, "profile-loaded-from-minimap-projection");
   const dxTiles = targetTile.x - playerTile.x;
   const dyTiles = targetTile.y - playerTile.y;
   const distanceTiles = Math.max(Math.abs(dxTiles), Math.abs(dyTiles));
@@ -2446,7 +2476,7 @@ async function clickProjectedWorldTile(
   addCompassDebugOverlay(debugShapes, tick.calibration);
   const debugPath = await saveClickDebugImage(toClickDebugLabel(stepLabel, "projected-world-tile-click"), tick.bitmap, debugShapes);
   logWithDelta(
-    `${stepLabel} click: mode=projected-world-tile reason=${reason} player=${formatWorldTile(playerTile)} target=${formatWorldTile(targetTile)} screen=${clicked.x},${clicked.y} local=${clickedLocal.x},${clickedLocal.y} plannedLocal=${plannedLocal.x},${plannedLocal.y} compass=${tick.calibration.compassNorth?.confidence.toFixed(2) ?? "fallback"} tilePx=${tick.calibration.tilePx}px miningStatus=${tick.miningStatus.status} debug=${debugPath ?? "none"}.`,
+    `${stepLabel} click: mode=projected-world-tile reason=${reason} player=${formatWorldTile(playerTile)} target=${formatWorldTile(targetTile)} screen=${clicked.x},${clicked.y} local=${clickedLocal.x},${clickedLocal.y} plannedLocal=${plannedLocal.x},${plannedLocal.y} projection=${projected.projectionSource} fitSamples=${projected.calibrationSampleCount ?? 0} fitMeanPx=${projected.calibrationMeanErrorPx?.toFixed(1) ?? "n/a"} compass=${tick.calibration.compassNorth?.confidence.toFixed(2) ?? "fallback"} tilePx=${tick.calibration.tilePx}px miningStatus=${tick.miningStatus.status} debug=${debugPath ?? "none"}.`,
   );
   return clicked;
 }
@@ -2506,7 +2536,7 @@ async function clickProjectedWorldTileForStep(
     );
   }
   logWithDelta(
-    `${stepLabel} click: mode=projected-world-tile reason=${reason} player=${formatWorldTile(playerTile)} target=${formatWorldTile(targetTile)} screen=${clicked.x},${clicked.y} local=${clickedLocal.x},${clickedLocal.y} plannedLocal=${plannedLocal.x},${plannedLocal.y} compass=${calibration.compassNorth?.confidence.toFixed(2) ?? "fallback"} tilePx=${calibration.tilePx}px debug=${debugPath ?? "none"}.`,
+    `${stepLabel} click: mode=projected-world-tile reason=${reason} player=${formatWorldTile(playerTile)} target=${formatWorldTile(targetTile)} screen=${clicked.x},${clicked.y} local=${clickedLocal.x},${clickedLocal.y} plannedLocal=${plannedLocal.x},${plannedLocal.y} projection=${projected.projectionSource} fitSamples=${projected.calibrationSampleCount ?? 0} fitMeanPx=${projected.calibrationMeanErrorPx?.toFixed(1) ?? "n/a"} compass=${calibration.compassNorth?.confidence.toFixed(2) ?? "fallback"} tilePx=${calibration.tilePx}px debug=${debugPath ?? "none"}.`,
   );
   return clicked;
 }
@@ -2611,7 +2641,13 @@ async function clickRouteWaypoint(
         logWithDelta(
           `${stepLabel} route has no shortcut before target and object center projects inside the 3D capture; clicking theoretical visible mining object. player=${formatWorldTile(
             playerTile,
-          )} objectCenter=${formatWorldTile(destinationTile)} routeTarget=${formatWorldTile(route.targetTile)} path=${route.pathLength} projectedLocal=${projected.localPoint.x},${projected.localPoint.y}.`,
+          )} objectCenter=${formatWorldTile(destinationTile)} routeTarget=${formatWorldTile(route.targetTile)} path=${
+            route.pathLength
+          } projectedLocal=${projected.localPoint.x},${projected.localPoint.y} projection=${
+            projected.projectionSource
+          } fitSamples=${projected.calibrationSampleCount ?? 0} fitMeanPx=${
+            projected.calibrationMeanErrorPx?.toFixed(1) ?? "n/a"
+          }.`,
         );
         const clicked = await clickProjectedWorldTile(
           tick,
@@ -2664,12 +2700,22 @@ function getProjectedShortcutLocalPoint(
   tick: ArceuusShortcutClickTick,
   playerTile: WorldRouteTile,
   target: WorldRouteAgilityShortcutTarget,
-): { x: number; y: number } | null {
-  const projected = projectWorldTileToScreen(tick.calibration, playerTile, target.clickTile);
+): {
+  x: number;
+  y: number;
+  projectionSource: "saved-3d-calibration" | "rough-model";
+  calibrationSampleCount: number | null;
+  calibrationMeanErrorPx: number | null;
+} | null {
+  const savedProjection = projectSavedSceneMouseCalibrationWorldTile(tick.calibration, playerTile, target.clickTile);
+  const projected = savedProjection?.screenPoint ?? projectWorldTileToScreen(tick.calibration, playerTile, target.clickTile);
   return projected
     ? {
         x: projected.x - tick.calibration.captureBounds.x,
         y: projected.y - tick.calibration.captureBounds.y,
+        projectionSource: savedProjection?.source ?? "rough-model",
+        calibrationSampleCount: savedProjection?.sampleCount ?? null,
+        calibrationMeanErrorPx: savedProjection?.meanErrorPx ?? null,
       }
     : null;
 }
@@ -2827,7 +2873,21 @@ async function clickArceuusShortcutGreenOutline(
     addCompassDebugOverlay(debugShapes, tick.calibration);
     const debugPath = await saveClickDebugImage(`${sanitizeDebugImageLabel(stepLabel)}-shortcut-green-outline-missing`, tick.bitmap, debugShapes);
     warnWithDelta(
-      `${stepLabel} shortcut waiting for clickable green outline near projected map tile: target=${formatWorldRouteAgilityShortcutTarget(target)} projectedLocal=${projectedLocal.x},${projectedLocal.y} maxDistance=${ARCEUUS_ALTAR_SHORTCUT_GREEN_OUTLINE_MAX_DISTANCE_PX}px nearGreen=${greenOutlinesNearProjectedTile.map(formatGreenOutline).join("; ") || "none"} clickableNear=${clickableNearGreenOutlines.map(formatGreenOutline).join("; ") || "none"} globalGreen=${tick.greenOutlines.map(formatGreenOutline).join("; ") || "none"} clickableGlobal=${clickableGlobalGreenOutlines.map(formatGreenOutline).join("; ") || "none"} filters=minPixels=${ARCEUUS_ALTAR_SHORTCUT_GREEN_OUTLINE_MIN_PIXELS},minSize=${ARCEUUS_ALTAR_SHORTCUT_GREEN_OUTLINE_MIN_WIDTH_PX}x${ARCEUUS_ALTAR_SHORTCUT_GREEN_OUTLINE_MIN_HEIGHT_PX},excludeUi=top-right/bottom-right/rail debug=${debugPath ?? "none"}.`,
+      `${stepLabel} shortcut waiting for clickable green outline near projected map tile: target=${formatWorldRouteAgilityShortcutTarget(
+        target,
+      )} projectedLocal=${projectedLocal.x},${projectedLocal.y} projection=${
+        projectedLocal.projectionSource
+      } fitSamples=${projectedLocal.calibrationSampleCount ?? 0} fitMeanPx=${
+        projectedLocal.calibrationMeanErrorPx?.toFixed(1) ?? "n/a"
+      } maxDistance=${ARCEUUS_ALTAR_SHORTCUT_GREEN_OUTLINE_MAX_DISTANCE_PX}px nearGreen=${
+        greenOutlinesNearProjectedTile.map(formatGreenOutline).join("; ") || "none"
+      } clickableNear=${clickableNearGreenOutlines.map(formatGreenOutline).join("; ") || "none"} globalGreen=${
+        tick.greenOutlines.map(formatGreenOutline).join("; ") || "none"
+      } clickableGlobal=${clickableGlobalGreenOutlines.map(formatGreenOutline).join("; ") || "none"} filters=minPixels=${
+        ARCEUUS_ALTAR_SHORTCUT_GREEN_OUTLINE_MIN_PIXELS
+      },minSize=${ARCEUUS_ALTAR_SHORTCUT_GREEN_OUTLINE_MIN_WIDTH_PX}x${
+        ARCEUUS_ALTAR_SHORTCUT_GREEN_OUTLINE_MIN_HEIGHT_PX
+      },excludeUi=top-right/bottom-right/rail debug=${debugPath ?? "none"}.`,
     );
     return false;
   }
@@ -2896,7 +2956,17 @@ async function clickArceuusShortcutGreenOutline(
   const debugPath = await saveClickDebugImage(`${sanitizeDebugImageLabel(stepLabel)}-shortcut-green-outline-click`, tick.bitmap, debugShapes);
 
   logWithDelta(
-    `${stepLabel} shortcut click: mode=green-outline-near-projected-tile target=${formatWorldRouteAgilityShortcutTarget(target)} projectedLocal=${projectedLocal.x},${projectedLocal.y} outline=${formatGreenOutline(greenOutline)} nearCandidates=${greenOutlinesNearProjectedTile.length} clickableNear=${clickableNearGreenOutlines.length} globalCandidates=${tick.greenOutlines.length} clickableGlobal=${clickableGlobalGreenOutlines.length} screen=${clicked.x},${clicked.y} local=${clickedLocal.x},${clickedLocal.y} debug=${debugPath ?? "none"}.`,
+    `${stepLabel} shortcut click: mode=green-outline-near-projected-tile target=${formatWorldRouteAgilityShortcutTarget(
+      target,
+    )} projectedLocal=${projectedLocal.x},${projectedLocal.y} projection=${
+      projectedLocal.projectionSource
+    } fitSamples=${projectedLocal.calibrationSampleCount ?? 0} fitMeanPx=${
+      projectedLocal.calibrationMeanErrorPx?.toFixed(1) ?? "n/a"
+    } outline=${formatGreenOutline(greenOutline)} nearCandidates=${
+      greenOutlinesNearProjectedTile.length
+    } clickableNear=${clickableNearGreenOutlines.length} globalCandidates=${tick.greenOutlines.length} clickableGlobal=${
+      clickableGlobalGreenOutlines.length
+    } screen=${clicked.x},${clicked.y} local=${clickedLocal.x},${clickedLocal.y} debug=${debugPath ?? "none"}.`,
   );
 
   await sleepWithAbort(ticksToMs(ARCEUUS_ALTAR_SHORTCUT_WAIT_TICKS, GAME_TICK_MS) + randomIntInclusive(80, 220), () => AppState.automateBotRunning);

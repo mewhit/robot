@@ -3,6 +3,7 @@ export type EndToEndConfig = {
   completedGuideStepIds: string[];
   completedGuideStepIdsByPlayerName: Record<string, string[]>;
   sceneMouseCalibration: EndToEndSceneMouseCalibration | null;
+  sceneMouseCalibrationsByProfileKey: Record<string, EndToEndSceneMouseCalibration>;
 };
 
 export type EndToEndSceneMouseCalibrationSample = {
@@ -27,6 +28,21 @@ export type EndToEndSceneMouseCalibrationFit = {
   sampleCount: number;
   meanErrorPx: number;
   maxErrorPx: number;
+  projective?: EndToEndSceneMouseCalibrationProjectiveFit | null;
+};
+
+export type EndToEndSceneMouseCalibrationProjectiveFit = {
+  xDx: number;
+  xDy: number;
+  xOffset: number;
+  yDx: number;
+  yDy: number;
+  yOffset: number;
+  wDx: number;
+  wDy: number;
+  sampleCount: number;
+  meanErrorPx: number;
+  maxErrorPx: number;
 };
 
 export type EndToEndSceneMouseCalibration = {
@@ -35,6 +51,9 @@ export type EndToEndSceneMouseCalibration = {
   windowsScalePercent: number;
   captureWidth: number;
   captureHeight: number;
+  runeliteWindowWidth: number | null;
+  runeliteWindowHeight: number | null;
+  profileKey: string | null;
   samples: EndToEndSceneMouseCalibrationSample[];
   fit: EndToEndSceneMouseCalibrationFit | null;
 };
@@ -71,6 +90,29 @@ function normalizeCompletedGuideStepIdsByPlayerName(value: unknown): Record<stri
   return result;
 }
 
+function normalizeSceneMouseCalibrationsByProfileKey(value: unknown): Record<string, EndToEndSceneMouseCalibration> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  const result: Record<string, EndToEndSceneMouseCalibration> = {};
+  for (const [rawProfileKey, rawCalibration] of Object.entries(value)) {
+    const profileKey = String(rawProfileKey).trim().slice(0, 120);
+    if (!profileKey) {
+      continue;
+    }
+
+    const calibration = normalizeEndToEndSceneMouseCalibration(rawCalibration);
+    if (!calibration) {
+      continue;
+    }
+
+    result[calibration.profileKey || profileKey] = calibration;
+  }
+
+  return result;
+}
+
 export function normalizeEndToEndConfig(value: unknown): EndToEndConfig {
   const candidate = value && typeof value === "object" ? (value as Partial<EndToEndConfig>) : {};
   const playerName = normalizeEndToEndPlayerName(candidate.playerName);
@@ -81,6 +123,13 @@ export function normalizeEndToEndConfig(value: unknown): EndToEndConfig {
   if (playerName && legacyCompletedGuideStepIds.length > 0 && !completedGuideStepIdsByPlayerName[playerName]) {
     completedGuideStepIdsByPlayerName[playerName] = legacyCompletedGuideStepIds;
   }
+  const sceneMouseCalibration = normalizeEndToEndSceneMouseCalibration(candidate.sceneMouseCalibration);
+  const sceneMouseCalibrationsByProfileKey = normalizeSceneMouseCalibrationsByProfileKey(
+    candidate.sceneMouseCalibrationsByProfileKey,
+  );
+  if (sceneMouseCalibration?.profileKey && !sceneMouseCalibrationsByProfileKey[sceneMouseCalibration.profileKey]) {
+    sceneMouseCalibrationsByProfileKey[sceneMouseCalibration.profileKey] = sceneMouseCalibration;
+  }
 
   return {
     playerName,
@@ -88,7 +137,8 @@ export function normalizeEndToEndConfig(value: unknown): EndToEndConfig {
       ? completedGuideStepIdsByPlayerName[playerName] ?? []
       : legacyCompletedGuideStepIds,
     completedGuideStepIdsByPlayerName,
-    sceneMouseCalibration: normalizeEndToEndSceneMouseCalibration(candidate.sceneMouseCalibration),
+    sceneMouseCalibration,
+    sceneMouseCalibrationsByProfileKey,
   };
 }
 
@@ -98,6 +148,7 @@ export function createDefaultEndToEndConfig(): EndToEndConfig {
     completedGuideStepIds: [],
     completedGuideStepIdsByPlayerName: {},
     sceneMouseCalibration: null,
+    sceneMouseCalibrationsByProfileKey: {},
   };
 }
 
@@ -225,6 +276,46 @@ function normalizeSceneMouseCalibrationFit(value: unknown): EndToEndSceneMouseCa
     sampleCount: Math.max(0, Math.round(candidate.sampleCount)),
     meanErrorPx: Math.max(0, candidate.meanErrorPx),
     maxErrorPx: Math.max(0, candidate.maxErrorPx),
+    projective: normalizeSceneMouseCalibrationProjectiveFit(candidate.projective),
+  };
+}
+
+function normalizeSceneMouseCalibrationProjectiveFit(
+  value: unknown,
+): EndToEndSceneMouseCalibrationProjectiveFit | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const candidate = value as Partial<EndToEndSceneMouseCalibrationProjectiveFit>;
+  if (
+    !isFiniteNumber(candidate.xDx) ||
+    !isFiniteNumber(candidate.xDy) ||
+    !isFiniteNumber(candidate.xOffset) ||
+    !isFiniteNumber(candidate.yDx) ||
+    !isFiniteNumber(candidate.yDy) ||
+    !isFiniteNumber(candidate.yOffset) ||
+    !isFiniteNumber(candidate.wDx) ||
+    !isFiniteNumber(candidate.wDy) ||
+    !isFiniteNumber(candidate.sampleCount) ||
+    !isFiniteNumber(candidate.meanErrorPx) ||
+    !isFiniteNumber(candidate.maxErrorPx)
+  ) {
+    return null;
+  }
+
+  return {
+    xDx: candidate.xDx,
+    xDy: candidate.xDy,
+    xOffset: candidate.xOffset,
+    yDx: candidate.yDx,
+    yDy: candidate.yDy,
+    yOffset: candidate.yOffset,
+    wDx: candidate.wDx,
+    wDy: candidate.wDy,
+    sampleCount: Math.max(0, Math.round(candidate.sampleCount)),
+    meanErrorPx: Math.max(0, candidate.meanErrorPx),
+    maxErrorPx: Math.max(0, candidate.maxErrorPx),
   };
 }
 
@@ -253,6 +344,9 @@ export function normalizeEndToEndSceneMouseCalibration(value: unknown): EndToEnd
     windowsScalePercent: Math.round(candidate.windowsScalePercent),
     captureWidth: Math.round(candidate.captureWidth),
     captureHeight: Math.round(candidate.captureHeight),
+    runeliteWindowWidth: isFiniteNumber(candidate.runeliteWindowWidth) ? Math.round(candidate.runeliteWindowWidth) : null,
+    runeliteWindowHeight: isFiniteNumber(candidate.runeliteWindowHeight) ? Math.round(candidate.runeliteWindowHeight) : null,
+    profileKey: typeof candidate.profileKey === "string" ? candidate.profileKey.trim().slice(0, 120) : null,
     samples: samples.slice(-80),
     fit: normalizeSceneMouseCalibrationFit(candidate.fit),
   };

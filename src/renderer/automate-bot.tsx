@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import type {
   GuardianOfTheRiftActiveElement,
   GuardianOfTheRiftConfig,
@@ -48,6 +48,7 @@ type AutomateBotProps = {
   onToggleTaskNodeExpand: (id: string) => void;
   onSelectTaskNode: (id: string) => void;
   onToggleSelectedTaskRun: (taskNodeId?: string) => void;
+  onRunCalibration: () => void | Promise<void>;
   onStepContextMenu: (e: React.MouseEvent, stepId: string, stepName: string) => void;
   onEndToEndChecklistRefresh: () => void;
   onEndToEndChecklistStepChange: (stepId: string, completed: boolean) => void;
@@ -335,6 +336,7 @@ export default function AutomateBot(props: AutomateBotProps) {
     onToggleTaskNodeExpand,
     onSelectTaskNode,
     onToggleSelectedTaskRun,
+    onRunCalibration,
     onStepContextMenu,
     onEndToEndChecklistRefresh,
     onEndToEndChecklistStepChange,
@@ -348,6 +350,7 @@ export default function AutomateBot(props: AutomateBotProps) {
   } = props;
 
   const logContainerRef = useRef<HTMLDivElement | null>(null);
+  const [isCalibrationRunning, setIsCalibrationRunning] = useState(false);
   const visibleLogLines = useMemo(() => logLines.slice(-500), [logLines]);
   const endToEndCompletedGuideStepIdSet = useMemo(
     () => new Set(endToEndCompletedGuideStepIds),
@@ -382,11 +385,33 @@ export default function AutomateBot(props: AutomateBotProps) {
     container.scrollTop = container.scrollHeight;
   }, [visibleLogLines]);
 
+  const handleRunCalibrationClick = async () => {
+    if (isCalibrationRunning || isSelectedTaskRunning) {
+      return;
+    }
+
+    setIsCalibrationRunning(true);
+    try {
+      await onRunCalibration();
+    } finally {
+      setIsCalibrationRunning(false);
+    }
+  };
+
   return (
     <div className="automatebot-view">
       <aside className="sidebar automatebot-sidebar">
         <div className="sidebar-head">
           <h2 className="sidebar-title">TASKS</h2>
+          <button
+            type="button"
+            className="automatebot-calibration-btn"
+            onClick={() => void handleRunCalibrationClick()}
+            disabled={isSelectedTaskRunning || isCalibrationRunning}
+            title={isSelectedTaskRunning ? "Stop the running bot before calibration" : "Run camera calibration"}
+          >
+            {isCalibrationRunning ? "Calibrating" : "Calibration"}
+          </button>
         </div>
         <ul className="tree">
           {taskTree.length === 0 ? (

@@ -10,6 +10,8 @@ import { captureScreenBitmap, type ScreenBitmap } from "../windowsScreenCapture"
 import {
   ALL_IN_ONE_MINING_ORE_TYPES,
   getAllInOneMiningSelectedOreTypes,
+  isAllInOneMiningOreType,
+  setAllInOneMiningLearnedMiningStats,
   type AllInOneMiningConfig,
   type AllInOneMiningOreDefinition,
 } from "./all-in-one-mining-config";
@@ -29,12 +31,15 @@ import { detectMiningBoxStatusInScreenshot, type MiningBoxStatusDetection } from
 import { detectMithrilActiveMarkerBoxesInScreenshot, type MithrilActiveMarkerBox } from "./shared/mithril-active-marker-detector";
 import { axisDistance, clamp, randomIntInclusive } from "./shared/osrs-helper";
 import { clickScreenPoint, getSafeScreenPoint, moveMouseHumanLike, type ScreenPoint } from "./shared/robot-clicker";
+import { saveBitmapWithDebugOverlay, type DebugOverlayShape } from "./shared/debug-image-overlay";
 import { saveBitmapAsync } from "./shared/save-bitmap";
 import {
   SCENE_MOUSE_CALIBRATION_MAX_SAMPLES,
   fitSceneMouseCalibrationSamples,
+  getCompatibleSavedSceneMouseCalibration,
   isSceneMouseCalibrationFitAcceptable,
-  isSceneMouseCalibrationWindowCompatible,
+  projectSceneMouseCalibrationLocalPoint,
+  saveSharedSceneMouseCalibration,
 } from "./shared/scene-mouse-calibration";
 import { readStartupPlayerTileCalibration, type StartupPlayerTileCalibration } from "./shared/startup-calibration";
 import {
@@ -54,7 +59,10 @@ import {
   type WorldRouteTile,
 } from "./shared/world-route-planner";
 import type { RobotBitmap } from "./shared/ocr-engine";
-import { getSavedAllInOneMiningConfig, getSavedEndToEndConfig, setSavedEndToEndConfig } from "../csvOperator";
+import {
+  getSavedAllInOneMiningConfig,
+  setSavedAllInOneMiningConfig,
+} from "../csvOperator";
 
 const BOT_NAME = "Mining All-In-One";
 const GAME_TICK_MS = 600;
@@ -97,6 +105,19 @@ const MINING_MOUSE_MOVE_MIN_MS = 105;
 const MINING_MOUSE_MOVE_MAX_MS = 520;
 const MINING_MOUSE_MOVE_JITTER_PX = 1.4;
 const MINING_MOUSE_MOVE_OVERSHOOT_CHANCE = 0.22;
+const MINING_WORK_AREA_MIN_TARGETS = 3;
+const MINING_WORK_AREA_MAX_TARGETS = 8;
+const MINING_WORK_AREA_BOUNDS_PADDING_TILES = 1;
+const MINING_WORK_AREA_PLAYER_RESET_MARGIN_TILES = 18;
+const MINING_DEFAULT_RESPAWN_MS = 30_000;
+const MINING_DEFAULT_MINE_MS = 12_000;
+const MINING_MIN_OBSERVED_MINE_MS = 1_200;
+const MINING_MAX_OBSERVED_MINE_MS = 600_000;
+const MINING_TARGET_WAIT_LOG_THRESHOLD_MS = 1_200;
+const MINING_GUILD_RESPAWN_MULTIPLIER = 0.5;
+const MINING_GUILD_UNDERGROUND_BOUNDS = [
+  { minX: 3006, maxX: 3068, minY: 9705, maxY: 9776, z: 0 },
+] as const;
 const ACTIVE_TARGET_YELLOW_MARKER_MIN_RADIUS_PX = 44;
 const ACTIVE_TARGET_YELLOW_MARKER_MAX_RADIUS_PX = 96;
 const ACTIVE_TARGET_YELLOW_MARKER_TILE_RADIUS_MULTIPLIER = 1.45;
@@ -104,6 +125,7 @@ const BANK_UI_CLICK_SAFE_EDGE_MARGIN_PX = 3;
 const INVENTORY_FULL_FREE_SLOT_COUNT = 0;
 const FALLBACK_INVENTORY_EMPTY_FREE_SLOT_COUNT = 28;
 const BANK_DEPOSIT_ORB_REFERENCE_ICON = "test-images/icon/bank-deposit/bank-deposit-icon.png";
+const MINING_TARGET_SWITCH_DEBUG_DIR = "test-image-debug";
 const BANK_DEPOSIT_ORB_REFERENCE_WIDTH_PX = 42;
 const EMPTY_BAG_IN_BANK_OFFSET_FROM_ORB_REFERENCE = { x: -67.5, y: 1.5 };
 const BANK_ORB_FIND_RETRY_MAX = 3;
@@ -117,6 +139,36 @@ const BANK_TARGET_PRIORITIES = [
   { objectName: "Bank Deposit Chest", priority: 2 },
   { objectName: "Bank chest", priority: 3 },
 ] as const;
+const ORE_RESPAWN_MS_BY_ID: Record<string, number> = {
+  clay: 2_400,
+  copper: 2_400,
+  tin: 2_400,
+  iron: 5_400,
+  coal: 30_000,
+  silver: 60_000,
+  gold: 60_000,
+  mithril: 120_000,
+  adamantite: 240_000,
+  runite: 720_000,
+  blurite: 60_000,
+  gem: 60_000,
+  limestone: 4_800,
+  sandstone: 4_800,
+  granite: 4_800,
+  amethyst: 240_000,
+  basalt: 4_800,
+  "rune-essence": 2_400,
+  "dense-runestone": 7_200,
+  daeyalt: 60_000,
+  "volcanic-sulphur": 4_800,
+  lovakite: 30_000,
+  barronite: 30_000,
+  calcified: 30_000,
+  salt: 4_800,
+  saltpetre: 4_800,
+  "crashed-star": 30_000,
+  "ore-vein": 30_000,
+};
 
 type EngineFunctionKey = "loop";
 type BotPhase =
@@ -139,8 +191,11 @@ type PendingMiningClick = {
 type ActiveMiningTarget = {
   targetKey: string;
   targetLabel: string;
+  oreId: string;
+  oreLabel: string;
   clickTile: WorldRouteTile;
   lastClickScreen: ScreenPoint;
+  clickedAtMs: number;
 };
 
 type MiningSceneProjection = {
@@ -151,7 +206,7 @@ type MiningSceneProjection = {
   dxTiles: number;
   dyTiles: number;
   distanceTiles: number;
-  source: "rough-model" | "saved-end-to-end-calibration";
+  source: "rough-model" | "saved-3d-calibration";
   calibrationSampleCount: number | null;
   calibrationMeanErrorPx: number | null;
 };
@@ -202,12 +257,57 @@ type MiningSceneClickPlan = {
 type MiningSceneClickOptions = {
   sampleSource?: string;
   allowRoughProjectionFallbackClick?: boolean;
+  requireHoverValidation?: boolean;
 };
 
 type FailedTargetCooldown = {
   key: string;
   untilMs: number;
   reason: string;
+};
+
+type MiningWorkArea = {
+  id: string;
+  createdAtMs: number;
+  oreId: string;
+  oreLabel: string;
+  anchorTile: WorldRouteTile;
+  bounds: {
+    minX: number;
+    maxX: number;
+    minY: number;
+    maxY: number;
+    z: number;
+  };
+  targetKeys: string[];
+  desiredTargetCount: number;
+  estimatedRespawnMs: number;
+  estimatedMineMs: number;
+};
+
+type DepletedMiningTarget = {
+  key: string;
+  targetLabel: string;
+  oreId: string;
+  depletedAtMs: number;
+  untilMs: number;
+  observedMineMs: number | null;
+  reason: string;
+};
+
+type MiningOreSessionStats = {
+  oreId: string;
+  sampleCount: number;
+  averageMineMs: number;
+  lastMineMs: number;
+  updatedAtMs: number;
+};
+
+type MiningRespawnInfo = {
+  baseMs: number;
+  effectiveMs: number;
+  multiplier: number;
+  source: "default" | "mining-guild";
 };
 
 type BotState = BotEngineLoopState<EngineFunctionKey> & {
@@ -217,6 +317,9 @@ type BotState = BotEngineLoopState<EngineFunctionKey> & {
   pendingMiningClick: PendingMiningClick | null;
   activeMiningTarget: ActiveMiningTarget | null;
   waitingForActiveTargetYellowSinceMs: number | null;
+  workArea: MiningWorkArea | null;
+  depletedTargets: DepletedMiningTarget[];
+  miningStatsByOreId: Record<string, MiningOreSessionStats>;
   failedTargets: FailedTargetCooldown[];
   failedBankTargets: FailedTargetCooldown[];
   bankDepositScreen: ScreenPoint | null;
@@ -275,6 +378,28 @@ type MiningTargetPathSelectionResult =
   | { status: "unmapped"; route: WorldRoutePlan }
   | { status: "empty" };
 
+type MiningSchedulerSelectionResult =
+  | {
+      status: "selected";
+      selection: MiningTargetPathSelection & {
+        scoreMs: number;
+        travelMs: number;
+        waitMs: number;
+        availableAtMs: number;
+        pathfinderMs: number;
+      };
+    }
+  | {
+      status: "waiting";
+      target: MiningCacheTarget;
+      route: WorldRoutePlan;
+      waitMs: number;
+      availableAtMs: number;
+      targetCount: number;
+    }
+  | { status: "unavailable"; reason: string; targetCount: number; pathfinderMs: number }
+  | { status: "empty"; targetCount: number };
+
 type RegionCoordinate = {
   regionX: number;
   regionY: number;
@@ -317,7 +442,7 @@ function notifyUserAndStop(errorMessage: string): void {
   stopAutomateBot("bot");
 }
 
-function createInitialState(): BotState {
+function createInitialState(config: AllInOneMiningConfig = getSavedAllInOneMiningConfig()): BotState {
   return {
     loopIndex: 0,
     currentFunction: "loop",
@@ -327,6 +452,9 @@ function createInitialState(): BotState {
     pendingMiningClick: null,
     activeMiningTarget: null,
     waitingForActiveTargetYellowSinceMs: null,
+    workArea: null,
+    depletedTargets: [],
+    miningStatsByOreId: getInitialMiningStatsByOreId(config),
     failedTargets: [],
     failedBankTargets: [],
     bankDepositScreen: null,
@@ -407,6 +535,25 @@ function getInventoryItemQuantity(items: readonly RuneLiteLocalApiItem[], itemId
 
 function formatInventoryItemIds(itemIds: ReadonlySet<number>): string {
   return [...itemIds].sort((a, b) => a - b).join(",");
+}
+
+function getInitialMiningStatsByOreId(config: AllInOneMiningConfig): Record<string, MiningOreSessionStats> {
+  const statsByOreId: Record<string, MiningOreSessionStats> = {};
+  for (const [oreId, stats] of Object.entries(config.learnedMiningStatsByOreId ?? {})) {
+    if (!Number.isFinite(stats.averageMineMs) || stats.averageMineMs <= 0) {
+      continue;
+    }
+
+    statsByOreId[oreId] = {
+      oreId,
+      sampleCount: Math.max(0, Math.round(stats.sampleCount)),
+      averageMineMs: Math.max(0, Math.round(stats.averageMineMs)),
+      lastMineMs: Math.max(0, Math.round(stats.lastMineMs)),
+      updatedAtMs: 0,
+    };
+  }
+
+  return statsByOreId;
 }
 
 function getOreDefinition(oreId: string): AllInOneMiningOreDefinition | null {
@@ -663,6 +810,447 @@ function sortMiningTargetsByDirectDistance(playerTile: WorldRouteTile, targets: 
   });
 }
 
+function formatDurationMs(durationMs: number): string {
+  if (!Number.isFinite(durationMs)) {
+    return "n/a";
+  }
+
+  if (durationMs >= 10_000) {
+    return `${(durationMs / 1000).toFixed(1)}s`;
+  }
+
+  return `${Math.round(durationMs)}ms`;
+}
+
+function isTileInsideMiningGuildRespawnArea(tile: Pick<WorldRouteTile, "x" | "y" | "z">): boolean {
+  return MINING_GUILD_UNDERGROUND_BOUNDS.some(
+    (bounds) =>
+      tile.z === bounds.z &&
+      tile.x >= bounds.minX &&
+      tile.x <= bounds.maxX &&
+      tile.y >= bounds.minY &&
+      tile.y <= bounds.maxY,
+  );
+}
+
+function getOreRespawnInfo(oreId: string, tile?: Pick<WorldRouteTile, "x" | "y" | "z"> | null): MiningRespawnInfo {
+  const baseMs = ORE_RESPAWN_MS_BY_ID[oreId] ?? MINING_DEFAULT_RESPAWN_MS;
+  if (tile && isTileInsideMiningGuildRespawnArea(tile)) {
+    return {
+      baseMs,
+      effectiveMs: Math.max(GAME_TICK_MS, Math.round(baseMs * MINING_GUILD_RESPAWN_MULTIPLIER)),
+      multiplier: MINING_GUILD_RESPAWN_MULTIPLIER,
+      source: "mining-guild",
+    };
+  }
+
+  return {
+    baseMs,
+    effectiveMs: baseMs,
+    multiplier: 1,
+    source: "default",
+  };
+}
+
+function getOreRespawnMs(oreId: string, tile?: Pick<WorldRouteTile, "x" | "y" | "z"> | null): number {
+  return getOreRespawnInfo(oreId, tile).effectiveMs;
+}
+
+function formatRespawnInfo(respawn: MiningRespawnInfo): string {
+  if (respawn.source === "mining-guild") {
+    return `${formatDurationMs(respawn.effectiveMs)} source=mining-guild base=${formatDurationMs(respawn.baseMs)} multiplier=${respawn.multiplier}`;
+  }
+
+  return `${formatDurationMs(respawn.effectiveMs)} source=default`;
+}
+
+function getOreEstimatedMineMs(
+  oreId: string,
+  miningStatsByOreId: Readonly<Record<string, MiningOreSessionStats>>,
+): number {
+  const observed = miningStatsByOreId[oreId]?.averageMineMs;
+  if (Number.isFinite(observed) && observed > 0) {
+    return clamp(Math.round(observed), MINING_MIN_OBSERVED_MINE_MS, MINING_MAX_OBSERVED_MINE_MS);
+  }
+
+  return MINING_DEFAULT_MINE_MS;
+}
+
+function getDesiredMiningWorkAreaTargetCount(respawnMs: number, estimatedMineMs: number): number {
+  const rawCount = Math.ceil(respawnMs / Math.max(MINING_MIN_OBSERVED_MINE_MS, estimatedMineMs)) + 2;
+  return clamp(rawCount, MINING_WORK_AREA_MIN_TARGETS, MINING_WORK_AREA_MAX_TARGETS);
+}
+
+function getMiningTargetSortDistance(anchorTile: WorldRouteTile, playerTile: WorldRouteTile, target: MiningCacheTarget): number {
+  return (
+    getWorldTileChebyshevDistance(anchorTile, target.clickTile) * 10 +
+    getWorldTileDistanceToRectangle(playerTile, target.rectangle)
+  );
+}
+
+function isTargetInsideWorkArea(target: MiningCacheTarget, workArea: MiningWorkArea): boolean {
+  return (
+    target.oreId === workArea.oreId &&
+    target.rectangle.z === workArea.bounds.z &&
+    target.rectangle.x <= workArea.bounds.maxX &&
+    target.rectangle.x + Math.max(1, target.rectangle.width) - 1 >= workArea.bounds.minX &&
+    target.rectangle.y <= workArea.bounds.maxY &&
+    target.rectangle.y + Math.max(1, target.rectangle.height) - 1 >= workArea.bounds.minY
+  );
+}
+
+function getTargetsInsideWorkArea(targets: readonly MiningCacheTarget[], workArea: MiningWorkArea): MiningCacheTarget[] {
+  const byKey = new Map(targets.filter((target) => isTargetInsideWorkArea(target, workArea)).map((target) => [target.key, target]));
+  return [...byKey.values()].sort((a, b) => a.key.localeCompare(b.key));
+}
+
+function isPlayerNearWorkArea(playerTile: WorldRouteTile, workArea: MiningWorkArea): boolean {
+  if (playerTile.z !== workArea.bounds.z) {
+    return false;
+  }
+
+  return (
+    playerTile.x >= workArea.bounds.minX - MINING_WORK_AREA_PLAYER_RESET_MARGIN_TILES &&
+    playerTile.x <= workArea.bounds.maxX + MINING_WORK_AREA_PLAYER_RESET_MARGIN_TILES &&
+    playerTile.y >= workArea.bounds.minY - MINING_WORK_AREA_PLAYER_RESET_MARGIN_TILES &&
+    playerTile.y <= workArea.bounds.maxY + MINING_WORK_AREA_PLAYER_RESET_MARGIN_TILES
+  );
+}
+
+function createMiningWorkArea(
+  nowMs: number,
+  playerTile: WorldRouteTile,
+  targets: readonly MiningCacheTarget[],
+  miningStatsByOreId: Readonly<Record<string, MiningOreSessionStats>>,
+): MiningWorkArea | null {
+  const anchor = sortMiningTargetsByDirectDistance(playerTile, targets)[0] ?? null;
+  if (!anchor) {
+    return null;
+  }
+
+  const sameOreTargets = targets.filter((target) => target.oreId === anchor.oreId && target.clickTile.z === anchor.clickTile.z);
+  const respawnInfo = getOreRespawnInfo(anchor.oreId, anchor.clickTile);
+  const estimatedRespawnMs = respawnInfo.effectiveMs;
+  const estimatedMineMs = getOreEstimatedMineMs(anchor.oreId, miningStatsByOreId);
+  const desiredTargetCount = getDesiredMiningWorkAreaTargetCount(estimatedRespawnMs, estimatedMineMs);
+  const selectedTargets = [...sameOreTargets]
+    .sort((a, b) => {
+      const aDistance = getMiningTargetSortDistance(anchor.clickTile, playerTile, a);
+      const bDistance = getMiningTargetSortDistance(anchor.clickTile, playerTile, b);
+      return aDistance - bDistance || a.key.localeCompare(b.key);
+    })
+    .slice(0, desiredTargetCount);
+
+  const boundsTargets = selectedTargets.length > 0 ? selectedTargets : [anchor];
+  const minX =
+    Math.min(...boundsTargets.map((target) => target.rectangle.x)) - MINING_WORK_AREA_BOUNDS_PADDING_TILES;
+  const maxX =
+    Math.max(...boundsTargets.map((target) => target.rectangle.x + Math.max(1, target.rectangle.width) - 1)) +
+    MINING_WORK_AREA_BOUNDS_PADDING_TILES;
+  const minY =
+    Math.min(...boundsTargets.map((target) => target.rectangle.y)) - MINING_WORK_AREA_BOUNDS_PADDING_TILES;
+  const maxY =
+    Math.max(...boundsTargets.map((target) => target.rectangle.y + Math.max(1, target.rectangle.height) - 1)) +
+    MINING_WORK_AREA_BOUNDS_PADDING_TILES;
+  const inBoundsTargets = sameOreTargets.filter((target) =>
+    isTargetInsideWorkArea(target, {
+      id: "",
+      createdAtMs: nowMs,
+      oreId: anchor.oreId,
+      oreLabel: anchor.oreLabel,
+      anchorTile: anchor.clickTile,
+      bounds: { minX, maxX, minY, maxY, z: anchor.clickTile.z },
+      targetKeys: [],
+      desiredTargetCount,
+      estimatedRespawnMs,
+      estimatedMineMs,
+    }),
+  );
+
+  return {
+    id: `${anchor.oreId}:${minX},${minY},${maxX},${maxY},${anchor.clickTile.z}`,
+    createdAtMs: nowMs,
+    oreId: anchor.oreId,
+    oreLabel: anchor.oreLabel,
+    anchorTile: anchor.clickTile,
+    bounds: { minX, maxX, minY, maxY, z: anchor.clickTile.z },
+    targetKeys: inBoundsTargets.map((target) => target.key).sort(),
+    desiredTargetCount,
+    estimatedRespawnMs,
+    estimatedMineMs,
+  };
+}
+
+function resolveMiningWorkArea(
+  state: BotState,
+  nowMs: number,
+  playerTile: WorldRouteTile,
+  targets: readonly MiningCacheTarget[],
+): { state: BotState; targets: MiningCacheTarget[] } {
+  const existingArea = state.workArea;
+  if (existingArea && isPlayerNearWorkArea(playerTile, existingArea)) {
+    const existingTargets = getTargetsInsideWorkArea(targets, existingArea);
+    if (existingTargets.length > 0) {
+      return { state, targets: existingTargets };
+    }
+  }
+
+  const nextArea = createMiningWorkArea(nowMs, playerTile, targets, state.miningStatsByOreId);
+  if (!nextArea) {
+    return { state: { ...state, workArea: null }, targets: [] };
+  }
+
+  const nextTargets = getTargetsInsideWorkArea(targets, nextArea);
+  log(
+    `Mining work area selected: ore=${nextArea.oreLabel} bounds=${nextArea.bounds.minX},${nextArea.bounds.minY}..${
+      nextArea.bounds.maxX
+    },${nextArea.bounds.maxY},${nextArea.bounds.z} targets=${nextTargets.length} desired=${
+      nextArea.desiredTargetCount
+    } respawn=${formatRespawnInfo(getOreRespawnInfo(nextArea.oreId, nextArea.anchorTile))} estimatedMine=${formatDurationMs(
+      nextArea.estimatedMineMs,
+    )} anchor=${formatWorldTile(nextArea.anchorTile)}.`,
+  );
+
+  return {
+    state: { ...state, workArea: nextArea },
+    targets: nextTargets,
+  };
+}
+
+function pruneDepletedMiningTargets(
+  depletedTargets: readonly DepletedMiningTarget[],
+  nowMs: number,
+): DepletedMiningTarget[] {
+  return depletedTargets.filter((entry) => entry.untilMs > nowMs);
+}
+
+function getDepletedMiningTarget(
+  target: MiningCacheTarget,
+  depletedTargets: readonly DepletedMiningTarget[],
+): DepletedMiningTarget | null {
+  return depletedTargets.find((entry) => entry.key === target.key) ?? null;
+}
+
+function rememberMiningOreSessionStats(
+  statsByOreId: Readonly<Record<string, MiningOreSessionStats>>,
+  oreId: string,
+  observedMineMs: number,
+  nowMs: number,
+): Record<string, MiningOreSessionStats> {
+  if (
+    !Number.isFinite(observedMineMs) ||
+    observedMineMs < MINING_MIN_OBSERVED_MINE_MS ||
+    observedMineMs > MINING_MAX_OBSERVED_MINE_MS
+  ) {
+    return { ...statsByOreId };
+  }
+
+  const existing = statsByOreId[oreId];
+  const sampleCount = (existing?.sampleCount ?? 0) + 1;
+  const averageMineMs = Math.round((((existing?.averageMineMs ?? 0) * (sampleCount - 1)) + observedMineMs) / sampleCount);
+  return {
+    ...statsByOreId,
+    [oreId]: {
+      oreId,
+      sampleCount,
+      averageMineMs,
+      lastMineMs: Math.round(observedMineMs),
+      updatedAtMs: nowMs,
+    },
+  };
+}
+
+function persistObservedMiningStats(oreId: string, observedMineMs: number): void {
+  if (
+    !isAllInOneMiningOreType(oreId) ||
+    !Number.isFinite(observedMineMs) ||
+    observedMineMs < MINING_MIN_OBSERVED_MINE_MS ||
+    observedMineMs > MINING_MAX_OBSERVED_MINE_MS
+  ) {
+    return;
+  }
+
+  try {
+    setSavedAllInOneMiningConfig(
+      setAllInOneMiningLearnedMiningStats(getSavedAllInOneMiningConfig(), oreId, Math.round(observedMineMs)),
+    );
+  } catch (error) {
+    warn(`Could not persist learned mining stats for ore=${oreId}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function rememberDepletedMiningTarget(
+  state: BotState,
+  nowMs: number,
+  target: ActiveMiningTarget | MiningCacheTarget,
+  reason: string,
+  observedMineMs: number | null = null,
+): { depletedTargets: DepletedMiningTarget[]; untilMs: number; respawnMs: number } {
+  const respawnMs = getOreRespawnMs(target.oreId, target.clickTile);
+  const untilMs = nowMs + respawnMs;
+  const targetLabel = "targetLabel" in target ? target.targetLabel : formatTarget(target);
+  const targetKey = "targetKey" in target ? target.targetKey : target.key;
+  const depletedTargets = [
+    ...pruneDepletedMiningTargets(state.depletedTargets, nowMs).filter((entry) => entry.key !== targetKey),
+    {
+      key: targetKey,
+      targetLabel,
+      oreId: target.oreId,
+      depletedAtMs: nowMs,
+      untilMs,
+      observedMineMs,
+      reason,
+    },
+  ];
+
+  return { depletedTargets, untilMs, respawnMs };
+}
+
+function estimateRouteTravelMs(route: WorldRoutePlan): number {
+  const pathTiles =
+    route.status === "ready"
+      ? Math.max(1, route.pathLength)
+      : route.status === "already-there"
+        ? 0
+        : ROUTE_WAYPOINT_STEP_LIMIT;
+  return Math.max(0, Math.ceil(pathTiles / 2) * GAME_TICK_MS);
+}
+
+function selectMiningTargetByWorkAreaScheduler(
+  nowMs: number,
+  playerTile: WorldTile,
+  targets: readonly MiningCacheTarget[],
+  depletedTargets: readonly DepletedMiningTarget[],
+): MiningSchedulerSelectionResult {
+  let best:
+    | {
+        target: MiningCacheTarget;
+        route: WorldRoutePlan;
+        scoreMs: number;
+        travelMs: number;
+        waitMs: number;
+        availableAtMs: number;
+      }
+    | null = null;
+  let unavailableCount = 0;
+  const startedAtMs = Date.now();
+
+  for (const target of targets) {
+    const route = planWorldRouteToTiles(playerTile, {
+      destinationLabel: `${target.oreLabel} rock`,
+      destinationTile: target.clickTile,
+      targetTiles: target.interactionTiles,
+      waypointStepLimit: ROUTE_WAYPOINT_STEP_LIMIT,
+      maxCrossRegionCount: ROUTE_MAX_CROSS_REGION_COUNT,
+    });
+    if (route.status === "unavailable") {
+      unavailableCount += 1;
+      continue;
+    }
+
+    const depleted = getDepletedMiningTarget(target, depletedTargets);
+    const availableAtMs = depleted?.untilMs ?? nowMs;
+    const travelMs = estimateRouteTravelMs(route);
+    const waitMs = Math.max(0, availableAtMs - nowMs);
+    const scoreMs = travelMs + waitMs;
+    if (
+      !best ||
+      scoreMs < best.scoreMs ||
+      (scoreMs === best.scoreMs && route.pathLength < best.route.pathLength) ||
+      (scoreMs === best.scoreMs && route.pathLength === best.route.pathLength && target.key.localeCompare(best.target.key) < 0)
+    ) {
+      best = { target, route, scoreMs, travelMs, waitMs, availableAtMs };
+    }
+  }
+
+  const pathfinderMs = Date.now() - startedAtMs;
+  if (!best) {
+    if (targets.length === 0) {
+      return { status: "empty", targetCount: 0 };
+    }
+
+    return {
+      status: "unavailable",
+      targetCount: targets.length,
+      reason: unavailableCount > 0 ? "all-work-area-targets-unreachable" : "no-work-area-targets",
+      pathfinderMs,
+    };
+  }
+
+  if (best.waitMs > 0) {
+    return {
+      status: "waiting",
+      target: best.target,
+      route: best.route,
+      waitMs: best.waitMs,
+      availableAtMs: best.availableAtMs,
+      targetCount: targets.length,
+    };
+  }
+
+  return {
+    status: "selected",
+    selection: {
+      target: best.target,
+      route: best.route,
+      targetCount: targets.length,
+      scoreMs: best.scoreMs,
+      travelMs: best.travelMs,
+      waitMs: best.waitMs,
+      availableAtMs: best.availableAtMs,
+      pathfinderMs,
+    },
+  };
+}
+
+async function rememberVisibleYellowWorkAreaTargets(
+  state: BotState,
+  nowMs: number,
+  tick: TickCapture,
+  targets: readonly MiningCacheTarget[],
+): Promise<BotState> {
+  let nextState = {
+    ...state,
+    depletedTargets: pruneDepletedMiningTargets(state.depletedTargets, nowMs),
+  };
+
+  for (const target of targets) {
+    if (getDepletedMiningTarget(target, nextState.depletedTargets)) {
+      continue;
+    }
+
+    const yellowMatch = findYellowMarkerNearMiningTarget(tick, target);
+    if (!yellowMatch) {
+      continue;
+    }
+
+    const depletion = rememberDepletedMiningTarget(nextState, nowMs, target, "visible-yellow-marker");
+    nextState = {
+      ...nextState,
+      depletedTargets: depletion.depletedTargets,
+    };
+    await saveMiningTargetSwitchDebugScreenshot(tick, {
+      reason: "visible-yellow-marker",
+      targetKey: target.key,
+      targetLabel: formatTarget(target),
+      localPoints: getMiningTargetLocalPoints(tick, target),
+      marker: yellowMatch,
+      observedMineMs: null,
+    });
+    log(
+      `Work area target already yellow; marking depleted for ${formatRespawnInfo(
+        getOreRespawnInfo(target.oreId, target.clickTile),
+      )} target=${formatTarget(
+        target,
+      )} marker=${yellowMatch.box.centerX},${yellowMatch.box.centerY} distance=${yellowMatch.distancePx.toFixed(
+        1,
+      )}px radius=${yellowMatch.radiusPx}px.`,
+    );
+  }
+
+  return nextState;
+}
+
 function formatTarget(target: MiningCacheTarget): string {
   return `${target.oreLabel} ${target.objectName} id=${target.objectId} tile=${formatWorldTile(
     target.clickTile,
@@ -818,16 +1406,7 @@ function clampLocalPointToMiningScene(
 function getCompatibleMiningSceneMouseCalibration(
   calibration: StartupPlayerTileCalibration,
 ): EndToEndSceneMouseCalibration | null {
-  const sceneCalibration = getSavedEndToEndConfig().sceneMouseCalibration;
-  if (!isSceneMouseCalibrationWindowCompatible(calibration, sceneCalibration) || !sceneCalibration.fit) {
-    return null;
-  }
-
-  if (!isSceneMouseCalibrationFitAcceptable(sceneCalibration.fit)) {
-    return null;
-  }
-
-  return sceneCalibration;
+  return getCompatibleSavedSceneMouseCalibration(calibration);
 }
 
 function projectWorldTileWithSavedSceneCalibration(
@@ -848,15 +1427,14 @@ function projectWorldTileWithSavedSceneCalibration(
 
   const dxTiles = targetTile.x - playerTile.x;
   const dyTiles = targetTile.y - playerTile.y;
-  const projectedLocalX = fit.xDx * dxTiles + fit.xDy * dyTiles + fit.xOffset;
-  const projectedLocalY = fit.yDx * dxTiles + fit.yDy * dyTiles + fit.yOffset;
-  if (!Number.isFinite(projectedLocalX) || !Number.isFinite(projectedLocalY)) {
+  const projected = projectSceneMouseCalibrationLocalPoint(fit, dxTiles, dyTiles);
+  if (!projected || !Number.isFinite(projected.localX) || !Number.isFinite(projected.localY)) {
     return null;
   }
 
   const { localPoint, wasClamped } = clampLocalPointToMiningScene(
     calibration,
-    { x: projectedLocalX, y: projectedLocalY },
+    { x: projected.localX, y: projected.localY },
     safeEdgeMarginPx,
   );
   if (wasClamped) {
@@ -874,9 +1452,9 @@ function projectWorldTileWithSavedSceneCalibration(
     dxTiles,
     dyTiles,
     distanceTiles: getWorldTileChebyshevDistance(playerTile, targetTile),
-    source: "saved-end-to-end-calibration",
-    calibrationSampleCount: fit.sampleCount,
-    calibrationMeanErrorPx: fit.meanErrorPx,
+    source: "saved-3d-calibration",
+    calibrationSampleCount: projected.sampleCount,
+    calibrationMeanErrorPx: projected.meanErrorPx,
   };
 }
 
@@ -1084,28 +1662,14 @@ function rememberMiningSceneMouseCalibrationSample(
     return { saved: false, fit: null, sampleCount: 0, reason: "delta-too-large" };
   }
 
-  const config = getSavedEndToEndConfig();
+  const sceneCalibration = getCompatibleSavedSceneMouseCalibration(calibration);
   const existingCalibration =
-    isSceneMouseCalibrationWindowCompatible(calibration, config.sceneMouseCalibration) &&
-    (!config.sceneMouseCalibration.fit || isSceneMouseCalibrationFitAcceptable(config.sceneMouseCalibration.fit))
-      ? config.sceneMouseCalibration
+    sceneCalibration && (!sceneCalibration.fit || isSceneMouseCalibrationFitAcceptable(sceneCalibration.fit))
+      ? sceneCalibration
       : null;
   const samples = [...(existingCalibration?.samples ?? []), sample].slice(-SCENE_MOUSE_CALIBRATION_MAX_SAMPLES);
   const fit = fitSceneMouseCalibrationSamples(samples);
-  const nextCalibration: EndToEndSceneMouseCalibration = {
-    schemaVersion: 1,
-    updatedAt: new Date().toISOString(),
-    windowsScalePercent: calibration.windowsScalePercent,
-    captureWidth: calibration.captureBounds.width,
-    captureHeight: calibration.captureBounds.height,
-    samples,
-    fit,
-  };
-
-  setSavedEndToEndConfig({
-    ...config,
-    sceneMouseCalibration: nextCalibration,
-  });
+  saveSharedSceneMouseCalibration(calibration, samples, fit);
 
   return {
     saved: true,
@@ -1175,6 +1739,7 @@ async function prepareMiningSceneClickPlan(
 ): Promise<MiningSceneClickPlan | null> {
   const sampleSource = options.sampleSource ?? "mining-click-hover";
   const allowRoughProjectionFallbackClick = options.allowRoughProjectionFallbackClick ?? true;
+  const requireHoverValidation = options.requireHoverValidation ?? false;
   const targetTiles = getMiningTargetFootprintTiles(target);
   const projected =
     projectMiningSceneTileInsideCapture(calibration, playerTile, target.clickTile) ??
@@ -1186,7 +1751,8 @@ async function prepareMiningSceneClickPlan(
   }
 
   if (
-    projected.source === "saved-end-to-end-calibration" &&
+    projected.source === "saved-3d-calibration" &&
+    !requireHoverValidation &&
     (projected.calibrationSampleCount ?? 0) >= MINING_SCENE_DIRECT_FIT_MIN_SAMPLES &&
     (projected.calibrationMeanErrorPx ?? Number.POSITIVE_INFINITY) <= MINING_SCENE_DIRECT_FIT_MAX_MEAN_ERROR_PX
   ) {
@@ -1321,7 +1887,7 @@ async function prepareMiningSceneClickPlan(
     return null;
   }
 
-  const hasReliableProjection = projected.source === "saved-end-to-end-calibration";
+  const hasReliableProjection = projected.source === "saved-3d-calibration";
   if (!allowRoughProjectionFallbackClick && !hasReliableProjection) {
     warn(
       `Mining scene click refused rough projection fallback for ${formatTarget(target)} because Tile Location near mouse was unreadable. attempts=${formatMiningSceneHoverAttempts(
@@ -1466,12 +2032,15 @@ function createPendingMiningClick(
   };
 }
 
-function createActiveMiningTarget(target: MiningCacheTarget, lastClickScreen: ScreenPoint): ActiveMiningTarget {
+function createActiveMiningTarget(target: MiningCacheTarget, lastClickScreen: ScreenPoint, clickedAtMs: number): ActiveMiningTarget {
   return {
     targetKey: target.key,
     targetLabel: formatTarget(target),
+    oreId: target.oreId,
+    oreLabel: target.oreLabel,
     clickTile: target.clickTile,
     lastClickScreen,
+    clickedAtMs,
   };
 }
 
@@ -1587,7 +2156,13 @@ async function clickRouteMinimapWaypoint(
       executed.clicked.y
     } delta=${plan.dxTiles},${plan.dyTiles} distance=${plan.distanceTiles} clamped=${
       plan.wasVectorClamped ? "yes" : "no"
-    }. ${formatWorldRoutePlan(route)}.`,
+    } calibration=${plan.minimapCalibrationSource} tilePx=${plan.minimapTilePx}px effectiveTilePx=${plan.effectiveMinimapTilePx.toFixed(
+      2,
+    )} tilePxScale=${plan.minimapTilePxScale.toFixed(3)} radiusRatio=${plan.minimapRadiusRatio.toFixed(
+      3,
+    )} offset=${plan.projectionOffsetLocalX.toFixed(1)},${plan.projectionOffsetLocalY.toFixed(
+      1,
+    )} minimap=${plan.minimapSource}/${plan.projectionSource}. ${formatWorldRoutePlan(route)}.`,
   );
 
   return createWalkingState(state, route, nowMs);
@@ -1624,7 +2199,9 @@ async function clickOrRouteToTarget(
   const targetDistanceTiles = route.directDistanceToTargetTiles || getWorldTileDistanceToRectangle(playerTile, target.rectangle);
   const scenePlan =
     routePathTiles <= DIRECT_SCENE_CLICK_MAX_DISTANCE_TILES
-      ? await prepareMiningSceneClickPlan(calibration, playerTile, target, "selected-target")
+      ? await prepareMiningSceneClickPlan(calibration, playerTile, target, "selected-target", {
+          requireHoverValidation: routePathTiles > 0,
+        })
       : null;
 
   if (scenePlan) {
@@ -1645,7 +2222,7 @@ async function clickOrRouteToTarget(
       actionLockUntilMs: deadlineFromNowTicks(ACTION_LOCK_TICKS_AFTER_SCENE_CLICK, nowMs),
       expectedTile: playerTile,
       pendingMiningClick: createPendingMiningClick(target, nowMs, confirmTicks),
-      activeMiningTarget: createActiveMiningTarget(target, clicked),
+      activeMiningTarget: createActiveMiningTarget(target, clicked, nowMs),
       waitingForActiveTargetYellowSinceMs: null,
     };
   }
@@ -1703,7 +2280,13 @@ async function clickRouteMinimapWaypointToBank(
       executed.clicked.x
     },${executed.clicked.y} delta=${plan.dxTiles},${plan.dyTiles} distance=${plan.distanceTiles} clamped=${
       plan.wasVectorClamped ? "yes" : "no"
-    }. ${formatWorldRoutePlan(route)}.`,
+    } calibration=${plan.minimapCalibrationSource} tilePx=${plan.minimapTilePx}px effectiveTilePx=${plan.effectiveMinimapTilePx.toFixed(
+      2,
+    )} tilePxScale=${plan.minimapTilePxScale.toFixed(3)} radiusRatio=${plan.minimapRadiusRatio.toFixed(
+      3,
+    )} offset=${plan.projectionOffsetLocalX.toFixed(1)},${plan.projectionOffsetLocalY.toFixed(
+      1,
+    )} minimap=${plan.minimapSource}/${plan.projectionSource}. ${formatWorldRoutePlan(route)}.`,
   );
 
   return createWalkingState(state, route, nowMs, "banking-walking");
@@ -1727,6 +2310,7 @@ async function clickOrRouteToBankTarget(
       ? await prepareMiningSceneClickPlan(calibration, playerTile, bankTargetAsSceneClickTarget(target), "bank-target", {
           sampleSource: "bank-click-hover",
           allowRoughProjectionFallbackClick: false,
+          requireHoverValidation: true,
         })
       : null;
 
@@ -1791,6 +2375,108 @@ function getActiveTargetMarkerSearchRadiusPx(calibration: StartupPlayerTileCalib
     ACTIVE_TARGET_YELLOW_MARKER_MIN_RADIUS_PX,
     ACTIVE_TARGET_YELLOW_MARKER_MAX_RADIUS_PX,
   );
+}
+
+function sanitizeDebugFileSegment(value: string, maxLength: number = 90): string {
+  const sanitized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return (sanitized || "unknown").slice(0, maxLength).replace(/-+$/g, "") || "unknown";
+}
+
+function buildMiningTargetSwitchDebugPath(reason: string, targetKey: string): string {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return path.join(
+    MINING_TARGET_SWITCH_DEBUG_DIR,
+    `${timestamp}-mining-target-switch-${sanitizeDebugFileSegment(reason, 36)}-${sanitizeDebugFileSegment(
+      targetKey,
+      70,
+    )}.png`,
+  );
+}
+
+async function saveMiningTargetSwitchDebugScreenshot(
+  tick: TickCapture,
+  context: {
+    reason: string;
+    targetKey: string;
+    targetLabel: string;
+    localPoints: readonly ScreenPoint[];
+    marker: { box: MithrilActiveMarkerBox; distancePx: number; radiusPx: number } | null;
+    lastClickScreen?: ScreenPoint | null;
+    observedMineMs?: number | null;
+  },
+): Promise<void> {
+  const bitmap = tick.bitmap;
+  const calibration = tick.calibration;
+  if (!bitmap || !calibration) {
+    return;
+  }
+
+  const shapes: DebugOverlayShape[] = [
+    {
+      type: "points",
+      points: context.localPoints,
+      color: { r: 0, g: 220, b: 255 },
+      thickness: 4,
+    },
+  ];
+  if (context.lastClickScreen) {
+    const lastClickLocal = screenPointToLocal(calibration, context.lastClickScreen);
+    shapes.push({
+      type: "cross",
+      x: lastClickLocal.x,
+      y: lastClickLocal.y,
+      radius: 14,
+      color: { r: 255, g: 0, b: 255 },
+      thickness: 3,
+    });
+  }
+  if (context.marker) {
+    shapes.push(
+      {
+        type: "box",
+        x: context.marker.box.x,
+        y: context.marker.box.y,
+        width: context.marker.box.width,
+        height: context.marker.box.height,
+        color: { r: 255, g: 230, b: 0 },
+        thickness: 3,
+      },
+      {
+        type: "circle",
+        x: context.marker.box.centerX,
+        y: context.marker.box.centerY,
+        radius: context.marker.radiusPx,
+        color: { r: 255, g: 230, b: 0 },
+        thickness: 2,
+      },
+    );
+  }
+
+  const debugPath = buildMiningTargetSwitchDebugPath(context.reason, context.targetKey);
+  try {
+    await saveBitmapWithDebugOverlay(bitmap, debugPath, shapes);
+    log(
+      `Mining target switch screenshot saved: reason=${context.reason} target=${context.targetLabel} path=${debugPath} marker=${
+        context.marker
+          ? `${context.marker.box.centerX},${context.marker.box.centerY} distance=${context.marker.distancePx.toFixed(
+              1,
+            )}px radius=${context.marker.radiusPx}px`
+          : "none"
+      } points=${context.localPoints.map((point) => `${Math.round(point.x)},${Math.round(point.y)}`).join("|") || "none"} miningStatus=${
+        tick.miningStatus?.status ?? "unavailable"
+      } observedMine=${context.observedMineMs !== undefined && context.observedMineMs !== null ? formatDurationMs(context.observedMineMs) : "n/a"}.`,
+    );
+  } catch (error) {
+    warn(
+      `Mining target switch screenshot save failed: reason=${context.reason} target=${context.targetLabel} path=${debugPath} error=${
+        error instanceof Error ? error.message : String(error)
+      }.`,
+    );
+  }
 }
 
 function getActiveMiningTargetLocalPoints(state: BotState, tick: TickCapture): ScreenPoint[] {
@@ -1975,7 +2661,7 @@ function selectClosestMiningTargetByPath(
   };
 }
 
-function handleActiveMiningTargetYellowMarker(state: BotState, nowMs: number, tick: TickCapture): BotState | null {
+async function handleActiveMiningTargetYellowMarker(state: BotState, nowMs: number, tick: TickCapture): Promise<BotState | null> {
   if (state.phase !== "mining" && state.phase !== "confirming-click") {
     return null;
   }
@@ -1990,10 +2676,40 @@ function handleActiveMiningTargetYellowMarker(state: BotState, nowMs: number, ti
     return null;
   }
 
+  const observedMineMs = nowMs - activeTarget.clickedAtMs;
+  const nextMiningStatsByOreId = rememberMiningOreSessionStats(
+    state.miningStatsByOreId,
+    activeTarget.oreId,
+    observedMineMs,
+    nowMs,
+  );
+  const nextStats = nextMiningStatsByOreId[activeTarget.oreId] ?? null;
+  persistObservedMiningStats(activeTarget.oreId, observedMineMs);
+  const depletion = rememberDepletedMiningTarget(
+    { ...state, miningStatsByOreId: nextMiningStatsByOreId },
+    nowMs,
+    activeTarget,
+    "yellow-marker",
+    Number.isFinite(observedMineMs) ? Math.round(observedMineMs) : null,
+  );
+  await saveMiningTargetSwitchDebugScreenshot(tick, {
+    reason: "active-target-yellow-marker",
+    targetKey: activeTarget.targetKey,
+    targetLabel: activeTarget.targetLabel,
+    localPoints: getActiveMiningTargetLocalPoints(state, tick),
+    marker: match,
+    lastClickScreen: activeTarget.lastClickScreen,
+    observedMineMs,
+  });
+
   log(
     `Active ore target marker turned yellow near ${activeTarget.targetLabel} marker=${match.box.centerX},${
       match.box.centerY
-    } distance=${match.distancePx.toFixed(1)}px radius=${match.radiusPx}px; scanning closest selected ore target.`,
+    } distance=${match.distancePx.toFixed(1)}px radius=${match.radiusPx}px; marking depleted for ${formatRespawnInfo(
+      getOreRespawnInfo(activeTarget.oreId, activeTarget.clickTile),
+    )} observedMine=${formatDurationMs(observedMineMs)} avgMine=${
+      nextStats ? formatDurationMs(nextStats.averageMineMs) : "n/a"
+    } samples=${nextStats?.sampleCount ?? 0}.`,
   );
 
   return {
@@ -2004,6 +2720,8 @@ function handleActiveMiningTargetYellowMarker(state: BotState, nowMs: number, ti
     pendingMiningClick: null,
     activeMiningTarget: null,
     waitingForActiveTargetYellowSinceMs: null,
+    depletedTargets: depletion.depletedTargets,
+    miningStatsByOreId: nextMiningStatsByOreId,
   };
 }
 
@@ -2382,36 +3100,46 @@ async function runMiningSearchTick(
     return { ...state, failedTargets };
   }
 
-  const pathfinderStartedAtMs = Date.now();
-  const selectionResult = selectClosestMiningTargetByPath(tick.playerTile, targets);
-  const pathfinderElapsedMs = Date.now() - pathfinderStartedAtMs;
-  if (selectionResult.status === "selected") {
-    const { target, route, targetCount } = selectionResult.selection;
-    const yellowMatch = findYellowMarkerNearMiningTarget(tick, target);
-    if (yellowMatch) {
-      if (shouldLogStatus(state, nowMs)) {
-        log(
-          `Pathfinder closest selected ore target still has a yellow marker; waiting until the signal clears before clicking it. target=${formatTarget(
-            target,
-          )} pathfinder=${pathfinderElapsedMs}ms path=${route.pathLength} step(s) direct=${route.directDistanceToTargetTiles} marker=${yellowMatch.box.centerX},${
-            yellowMatch.box.centerY
-          } distance=${yellowMatch.distancePx.toFixed(1)}px radius=${yellowMatch.radiusPx}px candidates=${targetCount}.`,
-        );
-        return withStatusLogTime({ ...state, failedTargets }, nowMs);
-      }
-
-      return { ...state, failedTargets };
+  const workAreaResult = resolveMiningWorkArea({ ...state, failedTargets }, nowMs, tick.playerTile, targets);
+  const workAreaTargets = workAreaResult.targets;
+  if (workAreaTargets.length === 0) {
+    if (shouldLogStatus(state, nowMs)) {
+      log(
+        `No selected ore rocks inside the active mining work area. player=${formatWorldTile(
+          tick.playerTile,
+        )} selected=${selectedOreDefinitions.map((ore) => ore.label).join(", ")} candidates=${targets.length}.`,
+      );
+      return withStatusLogTime(workAreaResult.state, nowMs);
     }
 
-    if (pathfinderElapsedMs >= 250) {
+    return workAreaResult.state;
+  }
+
+  const schedulerState = await rememberVisibleYellowWorkAreaTargets(workAreaResult.state, nowMs, tick, workAreaTargets);
+  const selectionResult = selectMiningTargetByWorkAreaScheduler(
+    nowMs,
+    tick.playerTile,
+    workAreaTargets,
+    schedulerState.depletedTargets,
+  );
+  if (selectionResult.status === "selected") {
+    const { target, route, targetCount, scoreMs, travelMs, waitMs, pathfinderMs } = selectionResult.selection;
+
+    if (pathfinderMs >= 250 || shouldLogStatus(schedulerState, nowMs)) {
       log(
-        `Pathfinder selected ore target in ${pathfinderElapsedMs}ms: target=${formatTarget(target)} path=${route.pathLength} step(s) direct=${route.directDistanceToTargetTiles} candidates=${targetCount}.`,
+        `Mining scheduler selected target: target=${formatTarget(target)} path=${route.pathLength} step(s) direct=${
+          route.directDistanceToTargetTiles
+        } score=${formatDurationMs(scoreMs)} travel=${formatDurationMs(travelMs)} wait=${formatDurationMs(
+          waitMs,
+        )} pathfinder=${pathfinderMs}ms workAreaTargets=${targetCount} depleted=${
+          schedulerState.depletedTargets.length
+        }.`,
       );
     }
 
     return clickOrRouteToTarget(
       {
-        ...state,
+        ...schedulerState,
         phase: state.phase === "walking" ? "searching" : state.phase,
         failedTargets,
       },
@@ -2423,21 +3151,36 @@ async function runMiningSearchTick(
   }
 
   if (shouldLogStatus(state, nowMs)) {
-    const reason =
-      selectionResult.status === "unavailable"
-        ? selectionResult.route.reason ?? "route-unavailable"
-        : selectionResult.status === "unmapped"
-          ? `pathfinder target tile did not map to a rock (${selectionResult.route.targetTile ? formatWorldTile(selectionResult.route.targetTile) : "none"})`
-          : "no same-plane interaction tiles";
+    if (selectionResult.status === "waiting") {
+      log(
+        `Mining scheduler waiting for work area target respawn: target=${formatTarget(
+          selectionResult.target,
+        )} wait=${formatDurationMs(selectionResult.waitMs)} path=${selectionResult.route.pathLength} step(s) workAreaTargets=${
+          selectionResult.targetCount
+        } depleted=${schedulerState.depletedTargets.length}.`,
+      );
+      return withStatusLogTime(
+        {
+          ...schedulerState,
+          actionLockUntilMs:
+            selectionResult.waitMs > MINING_TARGET_WAIT_LOG_THRESHOLD_MS
+              ? deadlineFromNowTicks(1, nowMs)
+              : nowMs + Math.max(80, Math.round(selectionResult.waitMs)),
+        },
+        nowMs,
+      );
+    }
+
+    const reason = selectionResult.status === "unavailable" ? selectionResult.reason : "no same-plane interaction tiles";
     log(
       `No pathfinder-reachable selected ore target found. player=${formatWorldTile(tick.playerTile)} selected=${selectedOreDefinitions
         .map((ore) => ore.label)
-        .join(", ")} candidates=${targets.length} pathfinder=${pathfinderElapsedMs}ms reason=${reason}.`,
+        .join(", ")} candidates=${targets.length} workAreaTargets=${workAreaTargets.length} reason=${reason}.`,
     );
-    return withStatusLogTime({ ...state, failedTargets }, nowMs);
+    return withStatusLogTime(schedulerState, nowMs);
   }
 
-  return { ...state, failedTargets };
+  return schedulerState;
 }
 
 async function runLoopTick(
@@ -2456,7 +3199,7 @@ async function runLoopTick(
     return runBankingTick(state, nowMs, tick, selectedOreDefinitions);
   }
 
-  const yellowMarkerState = handleActiveMiningTargetYellowMarker(state, nowMs, tick);
+  const yellowMarkerState = await handleActiveMiningTargetYellowMarker(state, nowMs, tick);
   if (yellowMarkerState) {
     return runMiningSearchTick(yellowMarkerState, nowMs, tick, selectedOreDefinitions);
   }
@@ -2495,7 +3238,7 @@ async function runLoop(
     await runBotEngine<BotState, EngineFunctionKey, TickCapture>({
       tickMs: GAME_TICK_MS,
       isRunning: () => AppState.automateBotRunning,
-      createInitialState,
+      createInitialState: () => createInitialState(config),
       captureTick: async ({ state }) => {
         const calibration = readStartupPlayerTileCalibration(window, {
           expectedTile: state.expectedTile,

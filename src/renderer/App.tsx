@@ -686,6 +686,18 @@ export default function App() {
     [selectedTaskNodeId],
   );
 
+  const handleRunAutomateBotCalibration = useCallback(async () => {
+    try {
+      const result = await ipcRenderer.invoke(CHANNELS.RUN_AUTOMATE_BOT_CALIBRATION);
+      if (!result?.ok) {
+        window.alert(result?.error || "Unable to run Automate Bot calibration.");
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      window.alert(`Unable to run Automate Bot calibration: ${message}`);
+    }
+  }, []);
+
   const refreshDebugFolderFiles = useCallback(async () => {
     if (!screenshotSavePath) {
       setDebugFolderFiles([]);
@@ -1676,6 +1688,7 @@ export default function App() {
             onToggleTaskNodeExpand={handleToggleTaskNodeExpand}
             onSelectTaskNode={setSelectedTaskNodeId}
             onToggleSelectedTaskRun={(taskNodeId) => void handleToggleSelectedTaskRun(taskNodeId)}
+            onRunCalibration={handleRunAutomateBotCalibration}
             onStepContextMenu={handleStepContextMenu}
             onEndToEndChecklistRefresh={() => void refreshEndToEndChecklist()}
             onEndToEndChecklistStepChange={handleEndToEndChecklistStepChange}

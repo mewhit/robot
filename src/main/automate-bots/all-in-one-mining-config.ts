@@ -5,6 +5,14 @@ export type AllInOneMiningOreDefinition = {
   inventoryItemIds?: readonly number[];
 };
 
+export type AllInOneMiningLearnedMiningStats = {
+  oreId: string;
+  sampleCount: number;
+  averageMineMs: number;
+  lastMineMs: number;
+  updatedAt: string;
+};
+
 export const ALL_IN_ONE_MINING_ORE_TYPES = [
   {
     id: "clay",
@@ -179,6 +187,7 @@ export type AllInOneMiningOreType = (typeof ALL_IN_ONE_MINING_ORE_TYPES)[number]
 
 export type AllInOneMiningConfig = {
   enabledOreTypes: Record<AllInOneMiningOreType, boolean>;
+  learnedMiningStatsByOreId?: Record<string, AllInOneMiningLearnedMiningStats>;
 };
 
 const ALL_IN_ONE_MINING_ORE_TYPE_IDS = ALL_IN_ONE_MINING_ORE_TYPES.map((ore) => ore.id);
@@ -189,7 +198,7 @@ export function createDefaultAllInOneMiningConfig(): AllInOneMiningConfig {
     enabledOreTypes[oreType] = false;
   }
 
-  return { enabledOreTypes };
+  return { enabledOreTypes, learnedMiningStatsByOreId: {} };
 }
 
 export function isAllInOneMiningOreType(value: string): value is AllInOneMiningOreType {
@@ -206,6 +215,7 @@ export function normalizeAllInOneMiningConfig(raw: unknown): AllInOneMiningConfi
     selectedOreTypes?: unknown;
   };
   const enabledOreTypes = { ...defaults.enabledOreTypes };
+  const learnedMiningStatsByOreId = normalizeAllInOneMiningLearnedStatsByOreId(candidate.learnedMiningStatsByOreId);
 
   if (candidate.enabledOreTypes && typeof candidate.enabledOreTypes === "object") {
     const rawOreTypes = candidate.enabledOreTypes as Partial<Record<AllInOneMiningOreType, boolean>>;
@@ -224,7 +234,7 @@ export function normalizeAllInOneMiningConfig(raw: unknown): AllInOneMiningConfi
     }
   }
 
-  return { enabledOreTypes };
+  return { enabledOreTypes, learnedMiningStatsByOreId };
 }
 
 export function getAllInOneMiningSelectedOreTypes(config: AllInOneMiningConfig): AllInOneMiningOreType[] {
@@ -242,6 +252,84 @@ export function setAllInOneMiningOreTypeEnabled(
     enabledOreTypes: {
       ...normalized.enabledOreTypes,
       [oreType]: enabled,
+    },
+    learnedMiningStatsByOreId: normalized.learnedMiningStatsByOreId,
+  };
+}
+
+function normalizeAllInOneMiningLearnedStats(value: unknown): AllInOneMiningLearnedMiningStats | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const candidate = value as Partial<AllInOneMiningLearnedMiningStats>;
+  const oreId = typeof candidate.oreId === "string" ? candidate.oreId.trim() : "";
+  const sampleCount = Number(candidate.sampleCount);
+  const averageMineMs = Number(candidate.averageMineMs);
+  const lastMineMs = Number(candidate.lastMineMs);
+  if (
+    !isAllInOneMiningOreType(oreId) ||
+    !Number.isFinite(sampleCount) ||
+    !Number.isFinite(averageMineMs) ||
+    !Number.isFinite(lastMineMs)
+  ) {
+    return null;
+  }
+
+  return {
+    oreId,
+    sampleCount: Math.max(0, Math.round(sampleCount)),
+    averageMineMs: Math.max(0, Math.round(averageMineMs)),
+    lastMineMs: Math.max(0, Math.round(lastMineMs)),
+    updatedAt: typeof candidate.updatedAt === "string" && candidate.updatedAt.trim() ? candidate.updatedAt.trim() : new Date().toISOString(),
+  };
+}
+
+function normalizeAllInOneMiningLearnedStatsByOreId(
+  value: unknown,
+): Record<string, AllInOneMiningLearnedMiningStats> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  const result: Record<string, AllInOneMiningLearnedMiningStats> = {};
+  for (const [rawOreId, rawStats] of Object.entries(value)) {
+    const stats = normalizeAllInOneMiningLearnedStats(rawStats);
+    if (!stats || stats.oreId !== rawOreId) {
+      continue;
+    }
+
+    result[stats.oreId] = stats;
+  }
+
+  return result;
+}
+
+export function setAllInOneMiningLearnedMiningStats(
+  config: AllInOneMiningConfig,
+  oreId: AllInOneMiningOreType,
+  observedMineMs: number,
+): AllInOneMiningConfig {
+  const normalized = normalizeAllInOneMiningConfig(config);
+  if (!Number.isFinite(observedMineMs) || observedMineMs <= 0) {
+    return normalized;
+  }
+
+  const existing = normalized.learnedMiningStatsByOreId?.[oreId] ?? null;
+  const sampleCount = (existing?.sampleCount ?? 0) + 1;
+  const averageMineMs = Math.round((((existing?.averageMineMs ?? 0) * (sampleCount - 1)) + observedMineMs) / sampleCount);
+
+  return {
+    ...normalized,
+    learnedMiningStatsByOreId: {
+      ...(normalized.learnedMiningStatsByOreId ?? {}),
+      [oreId]: {
+        oreId,
+        sampleCount,
+        averageMineMs,
+        lastMineMs: Math.round(observedMineMs),
+        updatedAt: new Date().toISOString(),
+      },
     },
   };
 }

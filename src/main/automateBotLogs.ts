@@ -140,6 +140,7 @@ export function startAutomateBotLogSession(
   botId: string,
   source: "f4" | "ui" | "bot",
   versionName?: string,
+  startReason: string = "bot-started",
 ): void {
   if (currentSession) {
     writeSessionLogFile(currentSession, source, "restarted-before-stop");
@@ -155,12 +156,12 @@ export function startAutomateBotLogSession(
     startedAtIso: now.toISOString(),
     versionName,
     runIndex: 1,
-    startReason: "bot-started",
+    startReason,
   };
 
   pushAutomateBotLog(
     "info",
-    `Automate bot log session started: botId=${botId} versionName=${versionName ?? "unversioned"} runIndex=1 source=${source}.`,
+    `Automate bot log session started: botId=${botId} versionName=${versionName ?? "unversioned"} runIndex=1 source=${source} reason=${startReason}.`,
   );
   sendAutomateBotLogs();
 }

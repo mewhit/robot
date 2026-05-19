@@ -27,6 +27,7 @@ import {
   type MinimapWorldClickGeometry,
   type MinimapWorldClickPlan,
 } from "./shared/minimap-world-clicker";
+import { projectSavedSceneMouseCalibrationWorldTile } from "./shared/scene-mouse-calibration";
 import {
   formatStartupPlayerTileCalibrationLog,
   readStartupPlayerTileCalibration,
@@ -275,6 +276,9 @@ type ProjectedObstacle = {
   projectionTile: WorldTile;
   screenPoint: ScreenPoint;
   localPoint: ScreenPoint;
+  projectionSource: "saved-3d-calibration" | "rough-model";
+  calibrationSampleCount: number | null;
+  calibrationMeanErrorPx: number | null;
 };
 
 type ObstacleOutlineMatch = ProjectedObstacle & {
@@ -1626,13 +1630,15 @@ function projectObstacleTarget(
   target: FaladorObstacleTarget,
   projectionTile: WorldTile = target.clickTile,
 ): ProjectedObstacle | null {
-  const screenPoint = projectWorldTileToScreen(calibration, playerTile, projectionTile);
+  const searchMargin = getOutlineMatchRadiusForTarget(target);
+  const savedProjection = projectSavedSceneMouseCalibrationWorldTile(calibration, playerTile, projectionTile);
+  const roughScreenPoint = savedProjection ? null : projectWorldTileToScreen(calibration, playerTile, projectionTile);
+  const screenPoint = savedProjection?.screenPoint ?? roughScreenPoint;
   if (!screenPoint) {
     return null;
   }
 
-  const localPoint = screenPointToLocal(calibration, screenPoint);
-  const searchMargin = getOutlineMatchRadiusForTarget(target);
+  const localPoint = savedProjection?.localPoint ?? screenPointToLocal(calibration, screenPoint);
   if (
     localPoint.x < -searchMargin ||
     localPoint.y < -searchMargin ||
@@ -1642,7 +1648,15 @@ function projectObstacleTarget(
     return null;
   }
 
-  return { target, projectionTile, screenPoint, localPoint };
+  return {
+    target,
+    projectionTile,
+    screenPoint,
+    localPoint,
+    projectionSource: savedProjection?.source ?? "rough-model",
+    calibrationSampleCount: savedProjection?.sampleCount ?? null,
+    calibrationMeanErrorPx: savedProjection?.meanErrorPx ?? null,
+  };
 }
 
 function isOutlineInsideRuneLiteUi(outline: AgilityOutlineDetection, bitmap: ScreenBitmap): boolean {
@@ -1866,7 +1880,9 @@ function formatObstacleSearchProjectionDebug(tick: FaladorTickCapture): string {
         )
         .join(" | ");
 
-      return `${toWorldTileLabel(projectionTile)}=>${projected.localPoint.x},${projected.localPoint.y} nearest=[${nearestOutlines || "none"}]`;
+      return `${toWorldTileLabel(projectionTile)}=>${projected.localPoint.x},${projected.localPoint.y}/${projected.projectionSource}/fitSamples=${
+        projected.calibrationSampleCount ?? 0
+      }/fitMean=${projected.calibrationMeanErrorPx?.toFixed(1) ?? "n/a"} nearest=[${nearestOutlines || "none"}]`;
     })
     .join("; ");
 
@@ -1927,7 +1943,11 @@ function collectObstacleOutlineMatches(
       outlineDistancePx: matchedOutline.distance,
       outlinePickPriority: getObstacleOutlinePickPriority(matchedOutline.reason, projectionGroupPriority),
       reachability,
-      decisionReason: `${projectionGroup} ${matchedOutline.reason} projectionTile=${toWorldTileLabel(projected.projectionTile)}`,
+      decisionReason: `${projectionGroup} ${matchedOutline.reason} projection=${projected.projectionSource} fitSamples=${
+        projected.calibrationSampleCount ?? 0
+      } fitMeanPx=${projected.calibrationMeanErrorPx?.toFixed(1) ?? "n/a"} projectionTile=${toWorldTileLabel(
+        projected.projectionTile,
+      )}`,
     });
   }
 
@@ -3445,7 +3465,13 @@ async function clickRooftopMinimapNavigation(
       plan.maxClickDistancePx
     }px clamped=${plan.wasVectorClamped ? "yes" : "no"} tilePx=${plan.minimapTilePx}px effectiveTilePx=${plan.effectiveMinimapTilePx.toFixed(
       2,
-    )} compass=${formatRooftopMinimapCompass(calibration)} center=${plan.minimapCenter.x},${plan.minimapCenter.y} detectionScore=${
+    )} calibration=${plan.minimapCalibrationSource} tilePxScale=${plan.minimapTilePxScale.toFixed(
+      3,
+    )} radiusRatio=${plan.minimapRadiusRatio.toFixed(3)} offset=${plan.projectionOffsetLocalX.toFixed(
+      1,
+    )},${plan.projectionOffsetLocalY.toFixed(1)} compass=${formatRooftopMinimapCompass(calibration)} center=${
+      plan.minimapCenter.x
+    },${plan.minimapCenter.y} detectionScore=${
       plan.minimapDetectionScore?.toFixed(2) ?? "n/a"
     } ${geometry.logDetails} detector=${plan.minimapDetectionSummary} projected=${plan.projectedScreenPoint.x},${plan.projectedScreenPoint.y} screen=${
       clicked.x

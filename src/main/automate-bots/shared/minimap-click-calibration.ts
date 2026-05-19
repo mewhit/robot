@@ -15,8 +15,17 @@ export const MINIMAP_CLICK_CALIBRATION_DEFAULT_OFFSET_MAX_PX = 48;
 export const MINIMAP_CLICK_CALIBRATION_DEFAULT_STABLE_TICKS = 2;
 export const MINIMAP_CLICK_CALIBRATION_DEFAULT_MAX_STABLE_READS = 5;
 
+export type MinimapClickCalibrationProfile = {
+  windowsScalePercent: number;
+  captureWidth: number;
+  captureHeight: number;
+  runeliteWindowWidth: number;
+  runeliteWindowHeight: number;
+};
+
 export type MinimapClickCalibrationOptions = {
   fileName: string;
+  profile: MinimapClickCalibrationProfile | null;
   defaultTilePxScale: number;
   defaultRadiusRatio: number;
   tilePxScaleMin: number;
@@ -43,7 +52,10 @@ export type MinimapClickSavedCalibration = {
   lastErrorTiles: number;
   captureWidth: number | null;
   captureHeight: number | null;
+  runeliteWindowWidth: number | null;
+  runeliteWindowHeight: number | null;
   windowsScalePercent: number | null;
+  profileKey: string | null;
   updatedAtIso: string;
   validatedAtIso: string | null;
 };
@@ -59,6 +71,7 @@ export type MinimapClickCalibrationState = {
   isCalibrationTrusted: boolean;
   startupValidationPending: boolean;
   savedCalibrationPath: string | null;
+  calibrationProfileKey: string | null;
 };
 
 export type MinimapClickCalibrationObservation = {
@@ -106,6 +119,7 @@ export function resolveMinimapClickCalibrationOptions(
 ): MinimapClickCalibrationOptions {
   return {
     fileName: options.fileName ?? MINIMAP_CLICK_CALIBRATION_FILE_NAME,
+    profile: options.profile ?? null,
     defaultTilePxScale: options.defaultTilePxScale ?? 1,
     defaultRadiusRatio: options.defaultRadiusRatio ?? 0.74,
     tilePxScaleMin: options.tilePxScaleMin ?? 0.9,
@@ -119,6 +133,26 @@ export function resolveMinimapClickCalibrationOptions(
     offsetMaxPx: options.offsetMaxPx ?? MINIMAP_CLICK_CALIBRATION_DEFAULT_OFFSET_MAX_PX,
     warn: options.warn,
   };
+}
+
+export function getMinimapClickCalibrationProfile(
+  calibration: StartupPlayerTileCalibration,
+): MinimapClickCalibrationProfile {
+  return {
+    windowsScalePercent: Math.round(calibration.windowsScalePercent),
+    captureWidth: Math.round(calibration.captureBounds.width),
+    captureHeight: Math.round(calibration.captureBounds.height),
+    runeliteWindowWidth: Math.round(calibration.windowBounds.width),
+    runeliteWindowHeight: Math.round(calibration.windowBounds.height),
+  };
+}
+
+export function getMinimapClickCalibrationProfileKey(profile: MinimapClickCalibrationProfile): string {
+  return `scale-${profile.windowsScalePercent}-capture-${profile.captureWidth}x${profile.captureHeight}-runelite-${profile.runeliteWindowWidth}x${profile.runeliteWindowHeight}`;
+}
+
+export function formatMinimapClickCalibrationProfile(profile: MinimapClickCalibrationProfile | null): string {
+  return profile ? getMinimapClickCalibrationProfileKey(profile) : "unprofiled";
 }
 
 export async function readStablePlayerTileForMinimapClickCalibration<TWindow>(
@@ -162,12 +196,23 @@ export async function readStablePlayerTileForMinimapClickCalibration<TWindow>(
   return null;
 }
 
+function getProfiledMinimapClickCalibrationFileName(fileName: string, profile: MinimapClickCalibrationProfile | null): string {
+  if (!profile) {
+    return fileName;
+  }
+
+  const extension = path.extname(fileName) || ".json";
+  const baseName = path.basename(fileName, extension);
+  return `${baseName}-${getMinimapClickCalibrationProfileKey(profile)}${extension}`;
+}
+
 export function getMinimapClickCalibrationPath(options: Partial<MinimapClickCalibrationOptions> = {}): string | null {
   const resolved = resolveMinimapClickCalibrationOptions(options);
+  const fileName = getProfiledMinimapClickCalibrationFileName(resolved.fileName, resolved.profile);
   try {
-    return path.join(app.getPath("userData"), resolved.fileName);
+    return path.join(app.getPath("userData"), fileName);
   } catch {
-    return path.join(process.cwd(), "automate-bot-logs", resolved.fileName);
+    return path.join(process.cwd(), "automate-bot-logs", fileName);
   }
 }
 
@@ -194,7 +239,7 @@ function normalizeSavedMinimapClickCalibration(
     return null;
   }
 
-  return {
+  const normalized: MinimapClickSavedCalibration = {
     version: MINIMAP_CLICK_CALIBRATION_VERSION,
     tilePxScale: clamp(candidate.tilePxScale, options.tilePxScaleMin, options.tilePxScaleMax),
     radiusRatio: clamp(candidate.radiusRatio, options.radiusRatioMin, options.radiusRatioMax),
@@ -206,10 +251,48 @@ function normalizeSavedMinimapClickCalibration(
     lastErrorTiles: Math.max(0, isFiniteNumber(candidate.lastErrorTiles) ? candidate.lastErrorTiles : 0),
     captureWidth: isFiniteNumber(candidate.captureWidth) ? Math.round(candidate.captureWidth) : null,
     captureHeight: isFiniteNumber(candidate.captureHeight) ? Math.round(candidate.captureHeight) : null,
+    runeliteWindowWidth: isFiniteNumber(candidate.runeliteWindowWidth) ? Math.round(candidate.runeliteWindowWidth) : null,
+    runeliteWindowHeight: isFiniteNumber(candidate.runeliteWindowHeight) ? Math.round(candidate.runeliteWindowHeight) : null,
     windowsScalePercent: isFiniteNumber(candidate.windowsScalePercent) ? candidate.windowsScalePercent : null,
+    profileKey: typeof candidate.profileKey === "string" ? candidate.profileKey : null,
     updatedAtIso: typeof candidate.updatedAtIso === "string" ? candidate.updatedAtIso : new Date(0).toISOString(),
     validatedAtIso: typeof candidate.validatedAtIso === "string" ? candidate.validatedAtIso : null,
   };
+
+  if (options.profile && !isSavedMinimapClickCalibrationProfileCompatible(normalized, options.profile)) {
+    options.warn?.(
+      `Minimap calibration ignored: savedProfile=${formatSavedMinimapClickCalibrationProfile(
+        normalized,
+      )} currentProfile=${formatMinimapClickCalibrationProfile(options.profile)}.`,
+    );
+    return null;
+  }
+
+  return normalized;
+}
+
+function formatSavedMinimapClickCalibrationProfile(savedCalibration: MinimapClickSavedCalibration): string {
+  if (savedCalibration.profileKey) {
+    return savedCalibration.profileKey;
+  }
+
+  return `scale-${savedCalibration.windowsScalePercent ?? "unknown"}-capture-${savedCalibration.captureWidth ?? "unknown"}x${
+    savedCalibration.captureHeight ?? "unknown"
+  }-runelite-${savedCalibration.runeliteWindowWidth ?? "unknown"}x${savedCalibration.runeliteWindowHeight ?? "unknown"}`;
+}
+
+function isSavedMinimapClickCalibrationProfileCompatible(
+  savedCalibration: MinimapClickSavedCalibration,
+  profile: MinimapClickCalibrationProfile,
+): boolean {
+  return (
+    savedCalibration.profileKey === getMinimapClickCalibrationProfileKey(profile) &&
+    savedCalibration.windowsScalePercent === profile.windowsScalePercent &&
+    savedCalibration.captureWidth === profile.captureWidth &&
+    savedCalibration.captureHeight === profile.captureHeight &&
+    savedCalibration.runeliteWindowWidth === profile.runeliteWindowWidth &&
+    savedCalibration.runeliteWindowHeight === profile.runeliteWindowHeight
+  );
 }
 
 export function readSavedMinimapClickCalibration(
@@ -255,6 +338,7 @@ export function createMinimapClickCalibrationState(
     isCalibrationTrusted: isTrusted,
     startupValidationPending: isTrusted,
     savedCalibrationPath: getMinimapClickCalibrationPath(resolved),
+    calibrationProfileKey: resolved.profile ? getMinimapClickCalibrationProfileKey(resolved.profile) : null,
   };
 }
 
@@ -276,6 +360,7 @@ export function saveMinimapClickCalibration(
 
   const averageErrorTiles =
     state.calibrationSampleCount > 0 ? state.calibrationErrorSumTiles / state.calibrationSampleCount : lastErrorTiles;
+  const profile = calibration ? getMinimapClickCalibrationProfile(calibration) : resolved.profile;
   const payload: MinimapClickSavedCalibration = {
     version: MINIMAP_CLICK_CALIBRATION_VERSION,
     tilePxScale: state.tilePxScale,
@@ -286,9 +371,12 @@ export function saveMinimapClickCalibration(
     goodStreak: state.calibrationGoodStreak,
     averageErrorTiles,
     lastErrorTiles,
-    captureWidth: calibration?.captureBounds.width ?? null,
-    captureHeight: calibration?.captureBounds.height ?? null,
-    windowsScalePercent: calibration?.windowsScalePercent ?? null,
+    captureWidth: profile?.captureWidth ?? null,
+    captureHeight: profile?.captureHeight ?? null,
+    runeliteWindowWidth: profile?.runeliteWindowWidth ?? null,
+    runeliteWindowHeight: profile?.runeliteWindowHeight ?? null,
+    windowsScalePercent: profile?.windowsScalePercent ?? null,
+    profileKey: profile ? getMinimapClickCalibrationProfileKey(profile) : null,
     updatedAtIso: new Date().toISOString(),
     validatedAtIso: state.isCalibrationTrusted ? new Date().toISOString() : null,
   };

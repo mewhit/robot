@@ -63,6 +63,21 @@ import {
   type EndToEndRoutePathSnapshot,
 } from "./end-to-end/route-path-snapshot";
 import { clickScreenPoint, getSafeScreenPoint, moveMouseHumanLike } from "./shared/robot-clicker";
+import {
+  executeMinimapWorldClickPlan,
+  projectWorldTileToMinimapClick,
+  type MinimapWorldClickCalibrationSource,
+  type MinimapWorldClickGeometry,
+  type MinimapWorldProjectionSource,
+} from "./shared/minimap-world-clicker";
+import {
+  fitSceneMouseCalibrationSamples as fitSharedSceneMouseCalibrationSamples,
+  formatSceneMouseCalibrationFit as formatSharedSceneMouseCalibrationFit,
+  getCompatibleSavedSceneMouseCalibration,
+  isSceneMouseCalibrationFitAcceptable as isSharedSceneMouseCalibrationFitAcceptable,
+  projectSceneMouseCalibrationLocalPoint as projectSharedSceneMouseCalibrationLocalPoint,
+  saveSharedSceneMouseCalibration,
+} from "./shared/scene-mouse-calibration";
 import { detectOverlayBoxInScreenshot } from "./shared/coordinate-box-detector";
 import { parseWorldTileFromMatchedLine } from "./mapping/world-coordinate";
 import { cropBitmap, saveBitmapAsync } from "./shared/save-bitmap";
@@ -565,6 +580,7 @@ async function logRuneLiteLocalApiProbe(): Promise<RuneLiteLocalApiSnapshot> {
 
 type GeneralStoreClickPlan = {
   screenPoint: ScreenPoint;
+  projectedScreenPoint: ScreenPoint;
   dxTiles: number;
   dyTiles: number;
   distanceTiles: number;
@@ -572,7 +588,16 @@ type GeneralStoreClickPlan = {
   minimapCenter: ScreenPoint;
   minimapRadiusPx: number;
   minimapTilePx: number;
+  effectiveMinimapTilePx: number;
+  minimapTilePxScale: number;
+  minimapRadiusRatio: number;
+  projectionOffsetLocalX: number;
+  projectionOffsetLocalY: number;
+  minimapCalibrationSource: MinimapWorldClickCalibrationSource;
+  maxClickDistancePx: number;
+  wasVectorClamped: boolean;
   minimapSource: "inferred-from-compass" | "inferred-from-capture" | "inferred-from-runelite-side-panel";
+  projectionSource: MinimapWorldProjectionSource;
   source: "path" | "direct-destination-anchor";
 };
 
@@ -606,7 +631,7 @@ type GeneralStoreSceneTileProjection = {
   localX: number;
   localY: number;
   wasClamped: boolean;
-  source: "rough-model" | "saved-calibration";
+  source: "rough-model" | "saved-3d-calibration";
   calibrationSampleCount: number | null;
   calibrationMeanErrorPx: number | null;
 };
@@ -1999,99 +2024,10 @@ function projectGeneralStoreSceneTilePoint(
   };
 }
 
-function solve3x3(matrix: number[][], vector: number[]): [number, number, number] | null {
-  const rows = matrix.map((row, index) => [row[0], row[1], row[2], vector[index]]);
-  for (let column = 0; column < 3; column += 1) {
-    let pivotRow = column;
-    for (let row = column + 1; row < 3; row += 1) {
-      if (Math.abs(rows[row][column]) > Math.abs(rows[pivotRow][column])) {
-        pivotRow = row;
-      }
-    }
-
-    if (Math.abs(rows[pivotRow][column]) < 1e-6) {
-      return null;
-    }
-
-    if (pivotRow !== column) {
-      const temp = rows[column];
-      rows[column] = rows[pivotRow];
-      rows[pivotRow] = temp;
-    }
-
-    const pivot = rows[column][column];
-    for (let col = column; col < 4; col += 1) {
-      rows[column][col] /= pivot;
-    }
-
-    for (let row = 0; row < 3; row += 1) {
-      if (row === column) {
-        continue;
-      }
-
-      const factor = rows[row][column];
-      for (let col = column; col < 4; col += 1) {
-        rows[row][col] -= factor * rows[column][col];
-      }
-    }
-  }
-
-  return [rows[0][3], rows[1][3], rows[2][3]];
-}
-
 function fitSceneMouseCalibrationSamples(
   samples: EndToEndSceneMouseCalibrationSample[],
 ): EndToEndSceneMouseCalibrationFit | null {
-  if (samples.length < GENERAL_STORE_SCENE_CALIBRATION_MIN_SAMPLES) {
-    return null;
-  }
-
-  const ata = [
-    [0, 0, 0],
-    [0, 0, 0],
-    [0, 0, 0],
-  ];
-  const atx = [0, 0, 0];
-  const aty = [0, 0, 0];
-
-  for (const sample of samples) {
-    const row = [sample.dxTiles, sample.dyTiles, 1];
-    for (let r = 0; r < 3; r += 1) {
-      atx[r] += row[r] * sample.localX;
-      aty[r] += row[r] * sample.localY;
-      for (let c = 0; c < 3; c += 1) {
-        ata[r][c] += row[r] * row[c];
-      }
-    }
-  }
-
-  const xCoefficients = solve3x3(ata, atx);
-  const yCoefficients = solve3x3(ata, aty);
-  if (!xCoefficients || !yCoefficients) {
-    return null;
-  }
-
-  let totalError = 0;
-  let maxError = 0;
-  for (const sample of samples) {
-    const predictedX = xCoefficients[0] * sample.dxTiles + xCoefficients[1] * sample.dyTiles + xCoefficients[2];
-    const predictedY = yCoefficients[0] * sample.dxTiles + yCoefficients[1] * sample.dyTiles + yCoefficients[2];
-    const error = Math.hypot(predictedX - sample.localX, predictedY - sample.localY);
-    totalError += error;
-    maxError = Math.max(maxError, error);
-  }
-
-  return {
-    xDx: xCoefficients[0],
-    xDy: xCoefficients[1],
-    xOffset: xCoefficients[2],
-    yDx: yCoefficients[0],
-    yDy: yCoefficients[1],
-    yOffset: yCoefficients[2],
-    sampleCount: samples.length,
-    meanErrorPx: totalError / samples.length,
-    maxErrorPx: maxError,
-  };
+  return fitSharedSceneMouseCalibrationSamples(samples);
 }
 
 function isSceneMouseCalibrationWindowCompatible(
@@ -2109,27 +2045,13 @@ function isSceneMouseCalibrationWindowCompatible(
 }
 
 function isSceneMouseCalibrationFitAcceptable(fit: EndToEndSceneMouseCalibrationFit | null): fit is EndToEndSceneMouseCalibrationFit {
-  return (
-    !!fit &&
-    fit.sampleCount >= GENERAL_STORE_SCENE_CALIBRATION_MIN_SAMPLES &&
-    fit.meanErrorPx <= GENERAL_STORE_SCENE_CALIBRATION_MAX_MEAN_ERROR_PX &&
-    fit.maxErrorPx <= GENERAL_STORE_SCENE_CALIBRATION_MAX_ERROR_PX
-  );
+  return isSharedSceneMouseCalibrationFitAcceptable(fit);
 }
 
 function getCompatibleSceneMouseCalibration(
   calibration: StartupPlayerTileCalibration,
 ): EndToEndSceneMouseCalibration | null {
-  const sceneCalibration = getSavedEndToEndConfig().sceneMouseCalibration;
-  if (!isSceneMouseCalibrationWindowCompatible(calibration, sceneCalibration) || !sceneCalibration.fit) {
-    return null;
-  }
-
-  if (!isSceneMouseCalibrationFitAcceptable(sceneCalibration.fit)) {
-    return null;
-  }
-
-  return sceneCalibration;
+  return getCompatibleSavedSceneMouseCalibration(calibration);
 }
 
 function projectGeneralStoreSceneTilePointWithCalibration(
@@ -2147,14 +2069,13 @@ function projectGeneralStoreSceneTilePointWithCalibration(
   const dxTiles = tile.x - playerTile.x;
   const dyTiles = tile.y - playerTile.y;
   const fit = sceneCalibration.fit;
-  const projectedLocalX = fit.xDx * dxTiles + fit.xDy * dyTiles + fit.xOffset;
-  const projectedLocalY = fit.yDx * dxTiles + fit.yDy * dyTiles + fit.yOffset;
-  if (!Number.isFinite(projectedLocalX) || !Number.isFinite(projectedLocalY)) {
+  const projected = projectSharedSceneMouseCalibrationLocalPoint(fit, dxTiles, dyTiles);
+  if (!projected || !Number.isFinite(projected.localX) || !Number.isFinite(projected.localY)) {
     return projectGeneralStoreSceneTilePoint(calibration, projection, tile, safeEdgeMarginPx);
   }
 
-  const roundedLocalX = Math.round(projectedLocalX);
-  const roundedLocalY = Math.round(projectedLocalY);
+  const roundedLocalX = Math.round(projected.localX);
+  const roundedLocalY = Math.round(projected.localY);
   const safeLocalX = clamp(
     roundedLocalX,
     projection.sceneLeft + safeEdgeMarginPx,
@@ -2180,9 +2101,9 @@ function projectGeneralStoreSceneTilePointWithCalibration(
     localX: safeLocalX,
     localY: safeLocalY,
     wasClamped: safeLocalX !== roundedLocalX || safeLocalY !== roundedLocalY,
-    source: "saved-calibration",
-    calibrationSampleCount: fit.sampleCount,
-    calibrationMeanErrorPx: fit.meanErrorPx,
+    source: "saved-3d-calibration",
+    calibrationSampleCount: projected.sampleCount,
+    calibrationMeanErrorPx: projected.meanErrorPx,
   };
 }
 
@@ -2200,11 +2121,12 @@ function projectGeneralStoreScenePointFromFit(
 
   const dxTiles = tile.x - playerTile.x;
   const dyTiles = tile.y - playerTile.y;
-  const localX = Math.round(fit.xDx * dxTiles + fit.xDy * dyTiles + fit.xOffset);
-  const localY = Math.round(fit.yDx * dxTiles + fit.yDy * dyTiles + fit.yOffset);
-  if (!Number.isFinite(localX) || !Number.isFinite(localY)) {
+  const projected = projectSharedSceneMouseCalibrationLocalPoint(fit, dxTiles, dyTiles);
+  if (!projected || !Number.isFinite(projected.localX) || !Number.isFinite(projected.localY)) {
     return null;
   }
+  const localX = Math.round(projected.localX);
+  const localY = Math.round(projected.localY);
 
   if (
     localX < projection.sceneLeft + safeEdgeMarginPx ||
@@ -2274,20 +2196,7 @@ function rememberGeneralStoreSceneMouseCalibrationSample(
       : null;
   const samples = [...(existingCalibration?.samples ?? []), sample].slice(-GENERAL_STORE_SCENE_CALIBRATION_MAX_SAMPLES);
   const fit = fitSceneMouseCalibrationSamples(samples);
-  const nextCalibration: EndToEndSceneMouseCalibration = {
-    schemaVersion: 1,
-    updatedAt: new Date().toISOString(),
-    windowsScalePercent: calibration.windowsScalePercent,
-    captureWidth: calibration.captureBounds.width,
-    captureHeight: calibration.captureBounds.height,
-    samples,
-    fit,
-  };
-
-  setSavedEndToEndConfig({
-    ...config,
-    sceneMouseCalibration: nextCalibration,
-  });
+  saveSharedSceneMouseCalibration(calibration, samples, fit);
 
   return {
     saved: true,
@@ -2669,11 +2578,7 @@ function selectGeneralStoreSceneCalibrationProbeTiles(
 }
 
 function formatSceneMouseCalibrationFit(fit: EndToEndSceneMouseCalibrationFit | null): string {
-  if (!fit) {
-    return "fit=unavailable";
-  }
-
-  return `fit=samples=${fit.sampleCount} mean=${fit.meanErrorPx.toFixed(1)}px max=${fit.maxErrorPx.toFixed(1)}px xDx=${fit.xDx.toFixed(2)} xDy=${fit.xDy.toFixed(2)} yDx=${fit.yDx.toFixed(2)} yDy=${fit.yDy.toFixed(2)}`;
+  return formatSharedSceneMouseCalibrationFit(fit);
 }
 
 function getGeneralStoreSceneCalibrationMicroOffsets(calibration: StartupPlayerTileCalibration): Array<{ x: number; y: number }> {
@@ -2727,7 +2632,7 @@ async function ensureGeneralStoreSceneMouseCalibration(
   }
 
   const savedFit = getSavedEndToEndConfig().sceneMouseCalibration?.fit ?? null;
-  const initialFit = existingCalibration?.fit ?? (isSceneMouseCalibrationFitAcceptable(savedFit) ? savedFit : null);
+  const initialFit = existingCalibration?.fit ?? (isSharedSceneMouseCalibrationFitAcceptable(savedFit) ? savedFit : null);
   const probeSummaries: string[] = [];
   let latestFit: EndToEndSceneMouseCalibrationFit | null = initialFit;
   log(
@@ -3954,39 +3859,48 @@ function projectGeneralStoreTileClick(
   }
 
   const minimap = inferGeneralStoreMinimap(calibration);
-  const dxTiles = waypoint.x - playerTile.x;
-  const dyTiles = waypoint.y - playerTile.y;
-  const distanceTiles = Math.max(Math.abs(dxTiles), Math.abs(dyTiles));
-  const jitterPx = Math.max(1, Math.round(minimap.tilePx * 0.6));
-  let localDx = dxTiles * minimap.tilePx;
-  let localDy = -dyTiles * minimap.tilePx;
-  const vectorLength = Math.sqrt(localDx * localDx + localDy * localDy);
-  const maxClickDistance = Math.max(1, Math.round(minimap.radiusPx * GENERAL_STORE_MINIMAP_MAX_CLICK_RADIUS_RATIO));
-  if (vectorLength > maxClickDistance) {
-    const scale = maxClickDistance / vectorLength;
-    localDx *= scale;
-    localDy *= scale;
+  const geometry: MinimapWorldClickGeometry = {
+    centerLocalX: minimap.centerLocalX,
+    centerLocalY: minimap.centerLocalY,
+    radiusPx: minimap.radiusPx,
+    tilePx: minimap.tilePx,
+    source: minimap.source,
+    detectionScore: null,
+    detectionSummary: `end-to-end-${minimap.source}`,
+    candidates: [],
+    expectedCenterLocalX: minimap.centerLocalX,
+    expectedCenterLocalY: minimap.centerLocalY,
+    expectedRadiusPx: minimap.radiusPx,
+  };
+  const plan = projectWorldTileToMinimapClick(calibration, null, playerTile, waypoint, {
+    geometry,
+    maxClickRadiusRatio: GENERAL_STORE_MINIMAP_MAX_CLICK_RADIUS_RATIO,
+    jitterPx: Math.max(1, Math.round(minimap.tilePx * 0.6)),
+  });
+  if (!plan) {
+    return null;
   }
 
-  const localX = minimap.centerLocalX + localDx + randomIntInclusive(-jitterPx, jitterPx);
-  const localY = minimap.centerLocalY + localDy + randomIntInclusive(-jitterPx, jitterPx);
-
   return {
-    screenPoint: {
-      x: calibration.captureBounds.x + Math.round(localX),
-      y: calibration.captureBounds.y + Math.round(localY),
-    },
-    minimapCenter: {
-      x: calibration.captureBounds.x + minimap.centerLocalX,
-      y: calibration.captureBounds.y + minimap.centerLocalY,
-    },
-    dxTiles,
-    dyTiles,
-    distanceTiles,
+    screenPoint: plan.screenPoint,
+    projectedScreenPoint: plan.projectedScreenPoint,
+    minimapCenter: plan.minimapCenter,
+    dxTiles: plan.dxTiles,
+    dyTiles: plan.dyTiles,
+    distanceTiles: plan.distanceTiles,
     pathTiles: Math.max(1, pathTiles),
-    minimapRadiusPx: minimap.radiusPx,
-    minimapTilePx: minimap.tilePx,
+    minimapRadiusPx: plan.minimapRadiusPx,
+    minimapTilePx: plan.minimapTilePx,
+    effectiveMinimapTilePx: plan.effectiveMinimapTilePx,
+    minimapTilePxScale: plan.minimapTilePxScale,
+    minimapRadiusRatio: plan.minimapRadiusRatio,
+    projectionOffsetLocalX: plan.projectionOffsetLocalX,
+    projectionOffsetLocalY: plan.projectionOffsetLocalY,
+    minimapCalibrationSource: plan.minimapCalibrationSource,
+    maxClickDistancePx: plan.maxClickDistancePx,
+    wasVectorClamped: plan.wasVectorClamped,
     minimapSource: minimap.source,
+    projectionSource: plan.projectionSource,
     source,
   };
 }
@@ -6592,8 +6506,34 @@ async function walkToSectionOneDestination(
       continue;
     }
 
+    const minimapClickPlan = projectGeneralStoreTileClick(
+      calibration,
+      attemptedWaypoint.tile,
+      attemptedWaypoint.pathTiles,
+      attemptedWaypoint.source,
+    );
+    if (minimapClickPlan) {
+      const travel = estimateGeneralStoreTravelWait(minimapClickPlan);
+      const execution = await executeMinimapWorldClickPlan(calibration, minimapClickPlan, {
+        safeEdgeMarginPx: GENERAL_STORE_CLICK_SAFE_EDGE_MARGIN_PX,
+        shouldContinue: () => isCurrentRunActive(token),
+        settleMs: randomIntInclusive(45, 145),
+      });
+      if (!isCurrentRunActive(token)) {
+        return false;
+      }
+
+      log(
+        `${routeDefinition.logPrefix} walk click ${attempt}/${GENERAL_STORE_MAX_WALK_CLICKS}: mode=minimap source=${minimapClickPlan.source} calibration=${minimapClickPlan.minimapCalibrationSource} target=${attemptedWaypoint.tile.x},${attemptedWaypoint.tile.y},${attemptedWaypoint.tile.z} screen=${execution.clicked.x},${execution.clicked.y} projected=${minimapClickPlan.projectedScreenPoint.x},${minimapClickPlan.projectedScreenPoint.y} center=${minimapClickPlan.minimapCenter.x},${minimapClickPlan.minimapCenter.y} minimap=${minimapClickPlan.minimapSource}/${minimapClickPlan.projectionSource} radius=${minimapClickPlan.minimapRadiusPx}px maxClick=${minimapClickPlan.maxClickDistancePx}px clamped=${minimapClickPlan.wasVectorClamped ? "yes" : "no"} tilePx=${minimapClickPlan.minimapTilePx}px effectiveTilePx=${minimapClickPlan.effectiveMinimapTilePx.toFixed(2)} tilePxScale=${minimapClickPlan.minimapTilePxScale.toFixed(3)} radiusRatio=${minimapClickPlan.minimapRadiusRatio.toFixed(3)} offset=${minimapClickPlan.projectionOffsetLocalX.toFixed(1)},${minimapClickPlan.projectionOffsetLocalY.toFixed(1)} waypointDelta=${minimapClickPlan.dxTiles},${minimapClickPlan.dyTiles} directToWaypoint=${minimapClickPlan.distanceTiles} tile(s) pathToWaypoint=${minimapClickPlan.pathTiles} step(s) clickVector=${execution.clickVectorX},${execution.clickVectorY} eta=${formatGeneralStoreTravelEstimate(travel)} sceneFallback=mouse-ocr-unconfirmed.`,
+      );
+
+      const waitMs = ticksToMs(travel.waitTicks, GAME_TICK_MS) + randomIntInclusive(80, 320);
+      await sleepWithAbort(waitMs, () => isCurrentRunActive(token));
+      continue;
+    }
+
     warn(
-      `${routeDefinition.logPrefix} movement stopped: refused to click because mouse OCR did not confirm any eligible tile. lastTarget=${attemptedWaypoint.tile.x},${attemptedWaypoint.tile.y},${attemptedWaypoint.tile.z} groups=${waypointAttempts.length}.`,
+      `${routeDefinition.logPrefix} movement stopped: refused to click because mouse OCR did not confirm any eligible tile and minimap projection was unavailable. lastTarget=${attemptedWaypoint.tile.x},${attemptedWaypoint.tile.y},${attemptedWaypoint.tile.z} groups=${waypointAttempts.length}.`,
     );
     return false;
   }

@@ -71,14 +71,156 @@ import {
   startAutomateBotFromStep,
 } from "./automateBotManager";
 import { runAgilityScreenshotCapture } from "./automate-bots/shared/screenshot-capture";
-import { sendAutomateBotLogs } from "./automateBotLogs";
+import { holdRobotKey, tapRobotKey } from "./automate-bots/shared/robot-keyboard";
+import { forceCameraNorthForCalibration } from "./automate-bots/shared/camera-north-calibration";
+import { runSceneMouseAutoCalibration } from "./automate-bots/shared/scene-mouse-auto-calibration";
+import { getSceneMouseCalibrationActiveFitMetrics } from "./automate-bots/shared/scene-mouse-calibration";
+import { runMinimapClickAutoCalibration } from "./automate-bots/shared/minimap-click-auto-calibration";
+import {
+  pushAutomateBotLog,
+  sendAutomateBotLogs,
+  startAutomateBotLogSession,
+  stopAutomateBotLogSession,
+} from "./automateBotLogs";
 import { listLogReportFiles, sendLogReport } from "./logReporter";
 import { CHANNELS } from "./ipcChannels";
+import { findRuneLiteWindow, focusRuneLiteWindowForAutomation } from "./runeLiteWindow";
 import { readOsrsCacheMapRegionView } from "./automate-bots/cache/cache-map-view";
 import { fetchEndToEndSectionOneChecklist } from "./automate-bots/end-to-end/guide-checklist";
 import { readLatestEndToEndRoutePathSnapshot } from "./automate-bots/end-to-end/route-path-snapshot";
 
 const robot = ((robotModule as unknown as { default?: any }).default ?? robotModule) as any;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function runAutomateBotCalibration(): Promise<{ ok: true } | { ok: false; error: string }> {
+  let calibrationLogSessionStarted = false;
+  let calibrationStopReason = "calibration-failed";
+
+  try {
+    if (AppState.automateBotRunning) {
+      const message = "Stop the running Automate Bot before 3D calibration.";
+      pushAutomateBotLog("error", `Automate Bot calibration: ${message}`);
+      return { ok: false, error: message };
+    }
+
+    startAutomateBotLogSession("calibration", "ui", "3d-scene-mouse", "calibration-started");
+    calibrationLogSessionStarted = true;
+    pushAutomateBotLog("info", "Automate Bot calibration: started from UI.");
+
+    const runeLiteWindow = findRuneLiteWindow();
+    if (!runeLiteWindow) {
+      const message = "RuneLite window not found for Automate Bot calibration.";
+      calibrationStopReason = "runelite-window-not-found";
+      pushAutomateBotLog("error", `Automate Bot calibration: ${message}`);
+      return { ok: false, error: message };
+    }
+
+    const runeLiteBounds = runeLiteWindow.getBounds();
+    pushAutomateBotLog(
+      "info",
+      `Automate Bot calibration: RuneLite window detected bounds=${runeLiteBounds.width}x${runeLiteBounds.height}@${runeLiteBounds.x},${runeLiteBounds.y} visible=${runeLiteWindow.isVisible() ? "yes" : "no"}.`,
+    );
+    pushAutomateBotLog("info", "Automate Bot calibration: focusing RuneLite, holding W for 2000ms, then pressing PageDown 3 times.");
+    focusRuneLiteWindowForAutomation();
+    await sleep(150);
+
+    const pitchResult = await holdRobotKey("w", 2000);
+    if (!pitchResult.ok) {
+      throw new Error(pitchResult.error || "W hold failed.");
+    }
+    pushAutomateBotLog("info", "Automate Bot calibration: camera pitch hold completed.");
+
+    await sleep(100);
+
+    for (let index = 0; index < 3; index += 1) {
+      const zoomResult = await tapRobotKey("pagedown", {
+        minHoldMs: 45,
+        maxHoldMs: 90,
+        afterMs: 120,
+      });
+      if (!zoomResult.ok) {
+        throw new Error(zoomResult.error || `PageDown press ${index + 1} failed.`);
+      }
+      pushAutomateBotLog("info", `Automate Bot calibration: PageDown zoom press ${index + 1}/3 completed.`);
+    }
+
+    await sleep(250);
+    pushAutomateBotLog("info", "Automate Bot calibration: starting camera north calibration.");
+    const cameraNorth = await forceCameraNorthForCalibration(runeLiteWindow, {
+      shouldContinue: () => !AppState.automateBotRunning,
+      log: (message) => pushAutomateBotLog("info", `Automate Bot calibration: ${message}`),
+    });
+    if (!cameraNorth.ok) {
+      calibrationStopReason = "camera-north-calibration-failed";
+      pushAutomateBotLog("error", `Automate Bot calibration: ${cameraNorth.error}`);
+      return { ok: false, error: cameraNorth.error };
+    }
+    pushAutomateBotLog(
+      "info",
+      `Automate Bot calibration: camera north ready after ${cameraNorth.attempts} attempt(s); ${cameraNorth.summary}.`,
+    );
+
+    await sleep(250);
+    pushAutomateBotLog("info", "Automate Bot calibration: starting 3D scene mouse sampling.");
+
+    const sceneCalibration = await runSceneMouseAutoCalibration(runeLiteWindow, {
+      source: "automate-button-calibration",
+      log: (message) => pushAutomateBotLog("info", `Automate Bot calibration: ${message}`),
+    });
+    if (!sceneCalibration.ok) {
+      const message = sceneCalibration.error || "3D scene calibration failed.";
+      calibrationStopReason = "scene-calibration-failed";
+      pushAutomateBotLog("error", `Automate Bot calibration: ${message}`);
+      return { ok: false, error: message };
+    }
+
+    const activeSceneFit = getSceneMouseCalibrationActiveFitMetrics(sceneCalibration.fit);
+    pushAutomateBotLog(
+      "info",
+      `Automate Bot calibration: done. 3D samples=${sceneCalibration.sampleCount} activeFit=${
+        activeSceneFit?.model ?? "none"
+      } fitSamples=${activeSceneFit?.sampleCount ?? "n/a"} mean=${
+        activeSceneFit?.meanErrorPx.toFixed(1) ?? "n/a"
+      }px max=${activeSceneFit?.maxErrorPx.toFixed(1) ?? "n/a"}px.`,
+    );
+
+    pushAutomateBotLog("info", "Automate Bot calibration: starting minimap click calibration.");
+    const minimapCalibration = await runMinimapClickAutoCalibration(runeLiteWindow, {
+      assumeCameraNorth: true,
+      isRunning: () => !AppState.automateBotRunning,
+      log: (message) => pushAutomateBotLog("info", `Automate Bot calibration: ${message}`),
+    });
+    if (!minimapCalibration.ok) {
+      const message = minimapCalibration.error || "Minimap click calibration failed.";
+      calibrationStopReason = "minimap-calibration-failed";
+      pushAutomateBotLog("error", `Automate Bot calibration: ${message}`);
+      return { ok: false, error: message };
+    }
+
+    pushAutomateBotLog(
+      "info",
+      `Automate Bot calibration: minimap done. samples=${minimapCalibration.sampleCount} trusted=${
+        minimapCalibration.trusted ? "yes" : "no"
+      } path=${minimapCalibration.savedCalibrationPath ?? "none"}.`,
+    );
+    calibrationStopReason = "calibration-completed";
+    return { ok: true };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    calibrationStopReason = "calibration-error";
+    pushAutomateBotLog("error", `Automate Bot calibration failed: ${message}`);
+    console.error(`Automate Bot calibration failed: ${message}`);
+    return { ok: false, error: message };
+  } finally {
+    if (calibrationLogSessionStarted) {
+      pushAutomateBotLog("info", `Automate Bot calibration: log session closing reason=${calibrationStopReason}.`);
+      stopAutomateBotLogSession("ui", calibrationStopReason);
+    }
+  }
+}
 
 export function setupIpcHandlers() {
   const resolveScreenshotFolderStartPath = (): string => {
@@ -162,6 +304,8 @@ export function setupIpcHandlers() {
       return { ok: false, error: message };
     }
   });
+
+  ipcMain.handle(CHANNELS.RUN_AUTOMATE_BOT_CALIBRATION, async () => runAutomateBotCalibration());
 
   ipcMain.handle(CHANNELS.GET_LOG_REPORT_FILES, async () => {
     try {

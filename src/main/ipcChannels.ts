@@ -5,6 +5,7 @@ export const CHANNELS = {
   SET_SELECTED_AUTOMATE_BOT: "set-selected-automate-bot",
   TOGGLE_SELECTED_AUTOMATE_BOT: "toggle-selected-automate-bot",
   START_AUTOMATE_BOT_FROM_STEP: "start-automate-bot-from-step",
+  RUN_AUTOMATE_BOT_CALIBRATION: "run-automate-bot-calibration",
   RUN_COORDINATE_DETECTOR: "run-coordinate-detector",
   RUN_SCREENSHOT_CAPTURE: "run-screenshot-capture",
   PICK_SCREENSHOT_SAVE_PATH: "pick-screenshot-save-path",

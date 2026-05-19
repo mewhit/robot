@@ -7,6 +7,10 @@ import {
   searchRuneliteMinimapGeometry,
   type RuneliteMinimapGeometryCandidate,
 } from "./minimap-geometry-detector";
+import {
+  getMinimapClickCalibrationProfile,
+  readSavedMinimapClickCalibration,
+} from "./minimap-click-calibration";
 
 const RUNELITE_MINIMAP_CENTER_RIGHT_OFFSET_LOGICAL = 122;
 const RUNELITE_MINIMAP_CENTER_Y_LOGICAL = 84;
@@ -15,6 +19,7 @@ const RUNELITE_MINIMAP_TILE_PX_LOGICAL = 4;
 const RUNELITE_MINIMAP_DEFAULT_MAX_CLICK_RADIUS_RATIO = 0.82;
 
 export type MinimapWorldProjectionSource = string;
+export type MinimapWorldClickCalibrationSource = "explicit" | "saved" | "default";
 
 export type MinimapWorldProjectionAxes = {
   northX: number;
@@ -51,6 +56,11 @@ export type MinimapWorldClickPlan = {
   expectedMinimapRadiusPx: number;
   minimapTilePx: number;
   effectiveMinimapTilePx: number;
+  minimapTilePxScale: number;
+  minimapRadiusRatio: number;
+  projectionOffsetLocalX: number;
+  projectionOffsetLocalY: number;
+  minimapCalibrationSource: MinimapWorldClickCalibrationSource;
   maxClickDistancePx: number;
   wasVectorClamped: boolean;
   minimapSource: string;
@@ -96,6 +106,15 @@ export type ExecutedMinimapWorldClick<TPlan extends ExecutableMinimapWorldClickP
   clickVectorX: number;
   clickVectorY: number;
 };
+
+function hasExplicitMinimapCalibrationOptions(options: MinimapWorldClickOptions): boolean {
+  return (
+    options.tilePxScale !== undefined ||
+    options.radiusRatio !== undefined ||
+    options.projectionOffsetLocalX !== undefined ||
+    options.projectionOffsetLocalY !== undefined
+  );
+}
 
 function getScaleFromCalibration(calibration: StartupPlayerTileCalibration): number {
   const scale = calibration.windowsScalePercent / 100;
@@ -199,7 +218,24 @@ export function projectWorldTileToMinimapClick(
   const dxTiles = targetTile.x - playerTile.x;
   const dyTiles = targetTile.y - playerTile.y;
   const distanceTiles = Math.max(Math.abs(dxTiles), Math.abs(dyTiles));
-  const effectiveTilePx = Math.max(1, minimap.tilePx * (options.tilePxScale ?? 1));
+  const hasExplicitCalibration = hasExplicitMinimapCalibrationOptions(options);
+  const savedCalibration = hasExplicitCalibration
+    ? null
+    : readSavedMinimapClickCalibration({ profile: getMinimapClickCalibrationProfile(calibration) });
+  const minimapCalibrationSource: MinimapWorldClickCalibrationSource = hasExplicitCalibration
+    ? "explicit"
+    : savedCalibration
+      ? "saved"
+      : "default";
+  const tilePxScale = options.tilePxScale ?? savedCalibration?.tilePxScale ?? 1;
+  const radiusRatio =
+    options.radiusRatio ??
+    savedCalibration?.radiusRatio ??
+    options.maxClickRadiusRatio ??
+    RUNELITE_MINIMAP_DEFAULT_MAX_CLICK_RADIUS_RATIO;
+  const projectionOffsetLocalX = options.projectionOffsetLocalX ?? savedCalibration?.projectionOffsetLocalX ?? 0;
+  const projectionOffsetLocalY = options.projectionOffsetLocalY ?? savedCalibration?.projectionOffsetLocalY ?? 0;
+  const effectiveTilePx = Math.max(1, minimap.tilePx * tilePxScale);
   const jitterPx = Math.max(0, Math.round(options.jitterPx ?? effectiveTilePx * 0.5));
   const axes = options.projectionAxes ?? getMinimapWorldProjectionAxes(calibration, options);
   let localDx = (axes.eastX * dxTiles + axes.northX * dyTiles) * effectiveTilePx;
@@ -207,10 +243,7 @@ export function projectWorldTileToMinimapClick(
   const vectorLength = Math.hypot(localDx, localDy);
   const maxClickDistancePx = Math.max(
     1,
-    Math.round(
-      minimap.radiusPx *
-        (options.radiusRatio ?? options.maxClickRadiusRatio ?? RUNELITE_MINIMAP_DEFAULT_MAX_CLICK_RADIUS_RATIO),
-    ),
+    Math.round(minimap.radiusPx * radiusRatio),
   );
   let wasVectorClamped = false;
   if (vectorLength > maxClickDistancePx) {
@@ -220,8 +253,8 @@ export function projectWorldTileToMinimapClick(
     localDy *= vectorScale;
   }
 
-  const projectedLocalX = minimap.centerLocalX + localDx + (options.projectionOffsetLocalX ?? 0);
-  const projectedLocalY = minimap.centerLocalY + localDy + (options.projectionOffsetLocalY ?? 0);
+  const projectedLocalX = minimap.centerLocalX + localDx + projectionOffsetLocalX;
+  const projectedLocalY = minimap.centerLocalY + localDy + projectionOffsetLocalY;
   const localX = projectedLocalX + (jitterPx > 0 ? randomIntInclusive(-jitterPx, jitterPx) : 0);
   const localY = projectedLocalY + (jitterPx > 0 ? randomIntInclusive(-jitterPx, jitterPx) : 0);
   const clickedPathTiles = Math.max(
@@ -254,6 +287,11 @@ export function projectWorldTileToMinimapClick(
     expectedMinimapRadiusPx: minimap.expectedRadiusPx,
     minimapTilePx: minimap.tilePx,
     effectiveMinimapTilePx: effectiveTilePx,
+    minimapTilePxScale: tilePxScale,
+    minimapRadiusRatio: radiusRatio,
+    projectionOffsetLocalX,
+    projectionOffsetLocalY,
+    minimapCalibrationSource,
     maxClickDistancePx,
     wasVectorClamped,
     minimapSource: minimap.source ?? "detected-from-contour",
